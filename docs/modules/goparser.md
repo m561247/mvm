@@ -33,8 +33,13 @@ most complex stage in the pipeline.
 - **`ImportPackageValues(m map[string]map[string]reflect.Value)`** --
   populates `Packages` with binary (native Go) package values, using
   `symbol.BinPkg` to wrap them.
-- **`SetPkgfs(pkgPath string)`** -- sets the parser's virtual filesystem
-  for resolving imported source packages.
+- **`SetPkgfs(pkgPath string)`** -- sets the parser's primary virtual
+  filesystem for resolving imported source packages.
+- **`SetStdlibFS(fsys fs.FS)`** -- second-tier fallback, typically
+  `stdlib.SrcFS()` for embedded generics-first packages.
+- **`SetRemoteFS(fsys fs.FS)`** -- third-tier fallback, typically a
+  `modfs.FS` that fetches modules from a Go module proxy on demand.
+  See [modfs](modfs.md).
 - **`ParseDecl(toks Tokens) (handled bool, err error)`** -- resolve a
   single declaration during Phase 1 without emitting code. Delegates to
   `parsePackage`, `parseImports`, `parseConst`, `parseType`,
@@ -166,7 +171,10 @@ call site.
 Import resolution lives in `import.go`. `ParseAll` is the main entry point:
 
 1. If `src` is empty and `name` is a directory, reads all `.go` files from
-   `pkgfs` (excluding `_test.go` and subdirectories).
+   the first FS that owns it -- in order: `pkgfs`, `stdlibfs`,
+   `remotefs`. The pkgfs error is preserved when all fallbacks miss, so
+   downstream error messages still reference the user's primary
+   filesystem (excluding `_test.go` and subdirectories).
 2. Calls `scanDecls` (unexported) to split source into top-level declaration
    groups without parsing bodies.
 3. Runs `preRegisterStructTypes` to insert placeholder `*vm.Type` entries

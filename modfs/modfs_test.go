@@ -1,0 +1,321 @@
+package modfs
+
+import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+// fakeProxy serves Go module proxy responses backed by an in-memory map.
+// modules maps "<modPath>@<version>" -> file -> contents.
+type fakeProxy struct {
+	t        *testing.T
+	modules  map[string]map[string]string // key: modPath@version
+	latest   map[string]string            // modPath -> version
+	requests int64                        // counts handled requests for assertions
+}
+
+func (p *fakeProxy) handler(w http.ResponseWriter, r *http.Request) {
+	atomic.AddInt64(&p.requests, 1)
+	// URL: /<escaped-mod-path>/@latest or /<escaped-mod-path>/@v/<ver>.zip
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if mod, _, ok := splitAtSegment(path, "@latest"); ok {
+		mod = unescapePath(mod)
+		ver, has := p.latest[mod]
+		if !has {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"Version": ver})
+		return
+	}
+	mod, rest, ok := splitAtSegment(path, "@v")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	mod = unescapePath(mod)
+	if !strings.HasSuffix(rest, ".zip") {
+		http.NotFound(w, r)
+		return
+	}
+	ver := strings.TrimSuffix(strings.TrimPrefix(rest, "/"), ".zip")
+	files, has := p.modules[mod+"@"+ver]
+	if !has {
+		http.NotFound(w, r)
+		return
+	}
+	zipBytes, err := buildZip(mod, ver, files)
+	if err != nil {
+		p.t.Fatalf("buildZip: %v", err)
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	_, _ = w.Write(zipBytes)
+}
+
+func splitAtSegment(path, seg string) (before, after string, ok bool) {
+	idx := strings.Index(path, "/"+seg)
+	if idx < 0 {
+		return "", "", false
+	}
+	return path[:idx], path[idx+1+len(seg):], true
+}
+
+// unescapePath reverses the case-encoding (!a -> A) used by the proxy
+// protocol. Test-only helper.
+func unescapePath(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '!' && i+1 < len(s) && s[i+1] >= 'a' && s[i+1] <= 'z' {
+			b.WriteByte(s[i+1] - ('a' - 'A'))
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func buildZip(mod, ver string, files map[string]string) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	prefix := mod + "@" + ver + "/"
+	for name, body := range files {
+		w, err := zw.Create(prefix + name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := io.WriteString(w, body); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func newTestFS(t *testing.T, p *fakeProxy) *FS {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(p.handler))
+	t.Cleanup(srv.Close)
+	return New(Options{Proxy: srv.URL})
+}
+
+func TestOpenFile(t *testing.T) {
+	p := &fakeProxy{
+		t:      t,
+		latest: map[string]string{"github.com/foo/bar": "v1.2.3"},
+		modules: map[string]map[string]string{
+			"github.com/foo/bar@v1.2.3": {
+				"go.mod":     "module github.com/foo/bar\n",
+				"hello.go":   "package bar\nfunc Hello() string { return \"hi\" }\n",
+				"sub/sub.go": "package sub\nvar X = 1\n",
+			},
+		},
+	}
+	f := newTestFS(t, p)
+
+	data, err := fs.ReadFile(f, "github.com/foo/bar/hello.go")
+	if err != nil {
+		t.Fatalf("read hello.go: %v", err)
+	}
+	if !strings.Contains(string(data), "func Hello") {
+		t.Errorf("unexpected hello.go: %q", data)
+	}
+
+	// Subdirectory inside the same module should be served by the cached
+	// module download (no extra @latest fetch).
+	subData, err := fs.ReadFile(f, "github.com/foo/bar/sub/sub.go")
+	if err != nil {
+		t.Fatalf("read sub/sub.go: %v", err)
+	}
+	if !strings.Contains(string(subData), "var X = 1") {
+		t.Errorf("unexpected sub.go: %q", subData)
+	}
+}
+
+func TestReadDir(t *testing.T) {
+	p := &fakeProxy{
+		t:      t,
+		latest: map[string]string{"github.com/foo/bar": "v0.0.1"},
+		modules: map[string]map[string]string{
+			"github.com/foo/bar@v0.0.1": {
+				"go.mod":   "module github.com/foo/bar\n",
+				"a.go":     "package bar\n",
+				"b.go":     "package bar\n",
+				"sub/c.go": "package sub\n",
+			},
+		},
+	}
+	f := newTestFS(t, p)
+
+	entries, err := fs.ReadDir(f, "github.com/foo/bar")
+	if err != nil {
+		t.Fatalf("ReadDir root: %v", err)
+	}
+	got := names(entries)
+	want := []string{"a.go", "b.go", "go.mod", "sub"}
+	if !slices.Equal(got, want) {
+		t.Errorf("root entries: got %v, want %v", got, want)
+	}
+	for _, e := range entries {
+		if e.Name() == "sub" && !e.IsDir() {
+			t.Error("sub should be a directory")
+		}
+		if e.Name() == "a.go" && e.IsDir() {
+			t.Error("a.go should not be a directory")
+		}
+	}
+
+	subEntries, err := fs.ReadDir(f, "github.com/foo/bar/sub")
+	if err != nil {
+		t.Fatalf("ReadDir sub: %v", err)
+	}
+	if got, want := names(subEntries), []string{"c.go"}; !slices.Equal(got, want) {
+		t.Errorf("sub entries: got %v, want %v", got, want)
+	}
+}
+
+func TestStat(t *testing.T) {
+	p := &fakeProxy{
+		t:      t,
+		latest: map[string]string{"github.com/foo/bar": "v1.0.0"},
+		modules: map[string]map[string]string{
+			"github.com/foo/bar@v1.0.0": {
+				"a.go":     "package bar\n",
+				"sub/c.go": "package sub\n",
+			},
+		},
+	}
+	f := newTestFS(t, p)
+
+	fi, err := fs.Stat(f, "github.com/foo/bar")
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Error("module root should be a dir")
+	}
+
+	fi, err = fs.Stat(f, "github.com/foo/bar/a.go")
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if fi.IsDir() {
+		t.Error("a.go should not be a dir")
+	}
+	if fi.Size() == 0 {
+		t.Error("a.go size should be > 0")
+	}
+
+	if _, err := fs.Stat(f, "github.com/foo/bar/missing.go"); err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
+func TestCaseEncoding(t *testing.T) {
+	p := &fakeProxy{
+		t:      t,
+		latest: map[string]string{"github.com/Foo/Bar": "v1.0.0"},
+		modules: map[string]map[string]string{
+			"github.com/Foo/Bar@v1.0.0": {
+				"main.go": "package bar\n",
+			},
+		},
+	}
+	f := newTestFS(t, p)
+
+	data, err := fs.ReadFile(f, "github.com/Foo/Bar/main.go")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "package bar") {
+		t.Errorf("unexpected: %q", data)
+	}
+}
+
+func TestNotFound(t *testing.T) {
+	p := &fakeProxy{t: t, latest: map[string]string{}, modules: map[string]map[string]string{}}
+	f := newTestFS(t, p)
+
+	if _, err := fs.ReadFile(f, "github.com/nope/nope/x.go"); err == nil {
+		t.Error("expected error for missing module")
+	}
+}
+
+func TestNegativeCache(t *testing.T) {
+	// Probe should not retry the same missing module on subsequent calls.
+	p := &fakeProxy{t: t, latest: map[string]string{}, modules: map[string]map[string]string{}}
+	f := newTestFS(t, p)
+
+	for range 3 {
+		_, _ = fs.ReadFile(f, "example.com/missing/pkg/a.go")
+	}
+	// First call probes 3 candidates (example.com/missing,
+	// example.com/missing/pkg, example.com/missing/pkg/a.go) -> 3 fetches.
+	// Subsequent calls hit the negative cache and issue 0 fetches.
+	if got := atomic.LoadInt64(&p.requests); got != 3 {
+		t.Errorf("expected 3 proxy requests across 3 lookups, got %d", got)
+	}
+}
+
+func TestProbeFindsModule(t *testing.T) {
+	// Shortest-first probing must find the module even when the import
+	// path has more components than the module path.
+	p := &fakeProxy{
+		t:      t,
+		latest: map[string]string{"github.com/foo/bar": "v1.0.0"},
+		modules: map[string]map[string]string{
+			"github.com/foo/bar@v1.0.0": {"deep/nested/x.go": "package nested\n"},
+		},
+	}
+	f := newTestFS(t, p)
+	if _, err := fs.ReadFile(f, "github.com/foo/bar/deep/nested/x.go"); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// Expected: 1 probe miss (github.com/foo) + @latest + zip = 3 requests.
+	if got := atomic.LoadInt64(&p.requests); got != 3 {
+		t.Errorf("expected 3 proxy requests (1 probe miss + latest + zip), got %d", got)
+	}
+}
+
+func TestEscapePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"github.com/foo/bar", "github.com/foo/bar"},
+		{"github.com/Foo/Bar", "github.com/!foo/!bar"},
+		{"v1.2.3", "v1.2.3"},
+		{"AB", "!a!b"},
+	}
+	for _, c := range cases {
+		got, err := escapePath(c.in)
+		if err != nil {
+			t.Errorf("%q: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("escapePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	if _, err := escapePath("é"); err == nil {
+		t.Error("expected error for non-ASCII")
+	}
+}
+
+func names(entries []fs.DirEntry) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.Name()
+	}
+	return out
+}

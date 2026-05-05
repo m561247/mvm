@@ -27,6 +27,7 @@ type Parser struct {
 	noPkg           bool           // true if package statement is not mandatory (test, repl).
 	pkgfs           fs.FS          // filesystem to read imported sources from
 	stdlibfs        fs.FS          // fallback filesystem for embedded stdlib sources
+	remotefs        fs.FS          // last-resort filesystem (e.g. network module proxy)
 	importRemaining []Tokens       // code-gen declarations from imported source packages
 
 	funcScope         string
@@ -85,6 +86,13 @@ func (p *Parser) SetPkgfs(pkgPath string) {
 // sources are embedded in the interpreter binary.
 func (p *Parser) SetStdlibFS(fsys fs.FS) {
 	p.stdlibfs = fsys
+}
+
+// SetRemoteFS installs a last-resort filesystem consulted when neither
+// pkgfs nor stdlibfs contain the requested import path. Typical use is a
+// modfs.FS that fetches modules from a proxy on demand.
+func (p *Parser) SetRemoteFS(fsys fs.FS) {
+	p.remotefs = fsys
 }
 
 // Parser errors.

@@ -30,9 +30,10 @@ standard library. It has three responsibilities:
 - **`PackagePatchers() map[string][]PackagePatcher`** -- patcher list,
   consulted once by `Interp.patchStdlibOverrides` on the first `Eval`.
 - **`SrcFS() fs.FS`** -- filesystem rooted at the embedded `stdlib/src/`
-  tree. Used by `goparser.Parser.stdlibfs` as a fallback when importing
-  generics-first packages that cannot be reflected through
-  `cmd/extract -gen`.
+  tree. Installed as the parser's second-tier FS (after `pkgfs`, before
+  `remotefs`) so importing generics-first packages that cannot be
+  reflected through `cmd/extract -gen` resolves locally without going
+  to the network. See [modfs](modfs.md) for the third tier.
 
 ## Internal design
 
@@ -84,8 +85,10 @@ entries because their generic functions never materialise until
 instantiation. Instead, their upstream source is embedded under
 `stdlib/src/<pkg>/<pkg>.go`. The interpreter sets `Parser.stdlibfs` to
 `stdlib.SrcFS()` at construction; `ParseAll` falls back to it when
-`pkgfs` does not contain the requested import path. Interpreted code
-parses these packages through the normal generic-instantiation path.
+`pkgfs` does not contain the requested import path, and falls through
+again to `remotefs` (if installed) when neither has it. Interpreted
+code parses these packages through the normal generic-instantiation
+path.
 
 ### Hand-written bindings
 

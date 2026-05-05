@@ -105,6 +105,14 @@ if the program did not emit one, so the shell prompt is not overwritten.
 `stdlib/jsonx` is imported for side effects so its `init()` registers the
 json patcher and arg proxies before any interpreter is constructed.
 
+Both `run` and `test` install a `modfs.FS` as the parser's remote
+filesystem so imports can be fetched from a Go module proxy on demand.
+The proxy URL follows `GOPROXY` semantics: unset uses the default
+public proxy, `GOPROXY=off` disables network imports, otherwise the
+first URL entry of the (comma- or pipe-separated) list is used.
+`direct` entries are treated as disable since modfs has no direct VCS
+fetch path.
+
 ### `mvm test`
 
 A lightweight `go test` analogue for package directories. It reads every

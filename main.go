@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,9 +14,35 @@ import (
 
 	"github.com/mvm-sh/mvm/interp"
 	"github.com/mvm-sh/mvm/lang/golang"
+	"github.com/mvm-sh/mvm/modfs"
 	"github.com/mvm-sh/mvm/stdlib"
 	_ "github.com/mvm-sh/mvm/stdlib/all"
 )
+
+// newRemoteFS builds the parser's remote-FS fallback from the GOPROXY
+// environment variable, mirroring the Go toolchain's semantics:
+//
+//   - unset / empty: use the default public proxy
+//   - "off":         disable network imports (returns nil)
+//   - any URL list:  use the first URL entry as the proxy; "direct"/"off"
+//     entries disable since modfs has no direct VCS path
+func newRemoteFS() fs.FS {
+	p := os.Getenv("GOPROXY")
+	if p == "" {
+		return modfs.New(modfs.Options{})
+	}
+	for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == ',' || r == '|' }) {
+		switch strings.TrimSpace(part) {
+		case "":
+			continue
+		case "off", "direct":
+			return nil
+		default:
+			return modfs.New(modfs.Options{Proxy: strings.TrimSpace(part)})
+		}
+	}
+	return nil
+}
 
 // newlineTracker wraps a writer and tracks whether the last byte written was a newline.
 type newlineTracker struct {
@@ -82,6 +109,7 @@ func runCmd(arg []string) error {
 
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
+	i.SetRemoteFS(newRemoteFS())
 
 	out := &newlineTracker{w: os.Stdout}
 	i.SetIO(os.Stdin, out, os.Stderr)
@@ -165,6 +193,7 @@ func testCmd(arg []string) error {
 
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
+	i.SetRemoteFS(newRemoteFS())
 	i.AutoImportPackages()
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
 

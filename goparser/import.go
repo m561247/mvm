@@ -81,11 +81,12 @@ func (p *Parser) ParseAll(name, src string) (out []Tokens, err error) {
 		}
 		fsys := p.pkgfs
 		fi, err := fs.Stat(fsys, name)
-		if err != nil && p.stdlibfs != nil {
-			if fi2, err2 := fs.Stat(p.stdlibfs, name); err2 == nil {
-				fsys = p.stdlibfs
-				fi = fi2
-				err = nil
+		for _, fb := range []fs.FS{p.stdlibfs, p.remotefs} {
+			if err == nil || fb == nil {
+				break
+			}
+			if fi2, err2 := fs.Stat(fb, name); err2 == nil {
+				fsys, fi, err = fb, fi2, nil
 			}
 		}
 		if err != nil {
