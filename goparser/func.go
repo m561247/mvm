@@ -226,12 +226,19 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 					break
 				}
 			}
-			// Method: derive fname from receiver type name.
+			// Method: derive fname from receiver type name. If the receiver
+			// paren block has no Ident (e.g. empty `()`), this is actually an
+			// anonymous func whose return type starts with a non-Type ident,
+			// like `func() time.Time { ... }` where `time` is a Pkg, not a
+			// Type. Treat it as anonymous instead of synthesizing a bogus
+			// `<scope>.<ident>` symbol name.
 			recvr, scanErr := p.scanBlock(in[1].Token, false)
 			if scanErr != nil {
 				return nil, scanErr
 			}
-			fname = recvTypeName(recvr) + "." + in[2].Str
+			if rname := recvTypeName(recvr); rname != "" {
+				fname = rname + "." + in[2].Str
+			}
 		}
 		if fname == "" {
 			// Anonymous function whose return type starts with a keyword (e.g. func() func() int {}).

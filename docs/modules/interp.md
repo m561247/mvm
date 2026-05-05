@@ -96,12 +96,14 @@ The mvm binary dispatches on the first CLI argument:
 |----------|--------|
 | (none) | `run` with no args -- enter the REPL |
 | `run` | Run a Go source file, evaluate `-e "<expr>"`, or enter the REPL |
-| `test` | Run Go tests in a package directory (see below) |
+| `test` | Run Go tests in a target package (see below) |
 | `-h`, `--help`, `help` | Print usage |
 | anything else | Treated as `run` with all args passed through |
 
 `run` wraps stdout in a `newlineTracker` that appends a trailing newline
 if the program did not emit one, so the shell prompt is not overwritten.
+A leading `#!` line on the source file is stripped before evaluation so
+shebang-style scripts (`#!/usr/bin/env mvm`) work after `chmod +x`.
 `stdlib/jsonx` is imported for side effects so its `init()` registers the
 json patcher and arg proxies before any interpreter is constructed.
 
@@ -113,34 +115,51 @@ first URL entry of the (comma- or pipe-separated) list is used.
 `direct` entries are treated as disable since modfs has no direct VCS
 fetch path.
 
+Top-level errors are written to stderr verbatim (no `log.Lshortfile`
+prefix), so a parser/compiler `file:line:col: msg` reaches the user
+unaltered.
+
 ### `mvm test`
 
-A lightweight `go test` analogue for package directories. It reads every
-`.go` file in the given directory (default `.`), separates `_test.go`
-files from non-test sources, scans the test files for
-`func Test*(t *testing.T)` declarations, and stitches a synthetic
-`package main` program:
+A lightweight `go test` analogue. The target may be a local directory
+(default `".") or a remote import path; both paths share a single
+synthesized `testing.Main` driver at the end.
+
+| Target | Loader |
+|--------|--------|
+| existing local directory | `os.ReadDir` + per-file `i.Eval(path, content)` |
+| import path (e.g. `github.com/google/uuid`) | `i.SetIncludeTests(true)` + `i.Eval(target, "")` (directory-mode `ParseAll`) |
+
+The loader is selected by trying `filepath.Abs(target)` followed by
+`os.ReadDir`; on miss the path is treated as an import and resolved
+through the parser's FS chain (`pkgfs` -> `stdlibfs` -> `remotefs`),
+fetching from the Go module proxy if needed. Test files are included
+because `SetIncludeTests(true)` flips a Parser flag that
+`LoadPackageSources` reads when the directory branch enumerates `.go`
+files. The flag is saved/restored by `importSrc` so transitive
+imports never pull in their own `_test.go` files.
+
+After loading, `runTestDriver` collects every `Test*` symbol via
+`i.FuncNames("Test")`, builds a single string of the form
 
 ```
-package main
-import "testing"
-<pkg sources with package clauses stripped>
-<test sources with package clauses stripped>
-func main() {
-    testing.Main(/* deps */, []testing.InternalTest{
-        {Name: "TestFoo", F: TestFoo}, ...
-    }, nil, nil)
-}
+testing.Main(func(p, s string) (bool, error) { return true, nil },
+    []testing.InternalTest{{Name: "TestX", F: TestX}, ...}, nil, nil)
 ```
 
-This program is then run through the normal `Eval` path.
-`os.Args` is overwritten so `testing.Main`'s flag parsing sees only the
-`-test.*` flags that followed the directory argument.
+and Eval's it in a final round. `os.Args` is overwritten beforehand so
+`testing.Main`'s flag parsing sees only the `-test.*` flags that
+followed the target argument.
 
-This approach sidesteps having to implement `go test` package layout
-rules or coverage instrumentation; it only requires that the package
-compiles and that `Test*` signatures are regex-visible at the top of
-each file.
+The local-directory branch sequentially Eval's files, so cross-file
+references (e.g. a func in `a.go` referencing one in `b.go`) only
+resolve if the file order happens to match the dependency order. The
+import-path branch goes through directory-mode `ParseAll`, which runs
+the Phase-1 fixed-point retry loop across the union of all files, and
+therefore handles cross-file references uniformly. Promoting the
+local-directory branch to the same dir-mode load is a planned cleanup
+but currently held off to preserve existing build-tag-relaxed local
+behavior.
 
 ## Dependencies
 

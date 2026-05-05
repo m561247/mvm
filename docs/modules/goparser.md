@@ -25,11 +25,19 @@ most complex stage in the pipeline.
   parse all statements into a postfix token stream.
 - **`ParseAll(name, src string) ([]Tokens, error)`** -- top-level entry
   point for multi-file compilation. If `src` is empty and `name` is a
-  directory, reads all `.go` files (excluding `_test.go`) from it via
-  `pkgfs`. Runs Phase 1 (declaration resolution with retry loop) and
-  returns remaining declarations for Phase 2 code generation. Also
-  handles `import` statements by recursively calling itself for
-  dependencies.
+  directory, loads its `.go` files via `LoadPackageSources` and runs
+  Phase 1 (declaration resolution with retry loop) on the union;
+  returns remaining declarations for Phase 2 code generation. Handles
+  `import` statements by recursively calling itself.
+- **`LoadPackageSources(importPath string, includeTests bool) ([]PackageSource, error)`**
+  -- enumerates the `.go` files of a package directory through the
+  FS chain (`pkgfs` -> `stdlibfs` -> `remotefs`) and applies build-tag
+  filtering (`MatchFileName` + `//go:build` directives). When
+  `includeTests` is false the result excludes `_test.go` (the import
+  path uses this); `mvm test <importpath>` flips it on. Result order
+  matches `fs.ReadDir`, which is sorted by filename.
+- **`PackageSource{Name, Content string}`** -- one .go file's basename
+  and content, as returned by `LoadPackageSources`.
 - **`ImportPackageValues(m map[string]map[string]reflect.Value)`** --
   populates `Packages` with binary (native Go) package values, using
   `symbol.BinPkg` to wrap them.
@@ -40,6 +48,10 @@ most complex stage in the pipeline.
 - **`SetRemoteFS(fsys fs.FS)`** -- third-tier fallback, typically a
   `modfs.FS` that fetches modules from a Go module proxy on demand.
   See [modfs](modfs.md).
+- **`SetIncludeTests(b bool)`** -- toggle whether dir-mode `ParseAll`
+  (and therefore `LoadPackageSources`) includes `_test.go` files.
+  Saved and restored across `importSrc` so the flag stays local to the
+  top-level test target and never leaks into transitive imports.
 - **`ParseDecl(toks Tokens) (handled bool, err error)`** -- resolve a
   single declaration during Phase 1 without emitting code. Delegates to
   `parsePackage`, `parseImports`, `parseConst`, `parseType`,
@@ -65,10 +77,30 @@ most complex stage in the pipeline.
   scanned receiver tokens (e.g. `"T"` from `(t T)`, `"*T"` from
   `(t *T)`).
 
-### Error types
+### Error types and diagnostics
 
-- **`ErrUndefined{Name}`** -- symbol not yet defined. The compiler catches
-  this to trigger retry during Phase 1 declaration resolution.
+- **`ErrUndefined{Name, Loc}`** -- symbol not yet defined. The Phase 1
+  retry loop matches via `errors.As(err, &eu)`, so the type is preserved
+  while the optional `Loc` (`"file:line:col"`) prefixes the rendered
+  message when set. The compiler populates `Loc` via `c.errUndef`; the
+  parser leaves it empty for retry-only paths where the location is
+  irrelevant.
+- **`p.errAt(tok, format, args...)`** (unexported helper, mirrored as
+  `c.errAt` on the compiler). Formats an error with the source position
+  of `tok` resolved through `Sources.FormatPos`. Falls back to the bare
+  message when the position cannot be resolved (synthetic tokens,
+  empty Sources). This is the canonical way to raise position-aware
+  errors from the parser and is the pattern most user-facing structural
+  errors are migrated to.
+
+Source-position resolution relies on tokens carrying *absolute*
+positions in a unified pos space. `ParseAll` calls
+`p.PosBase = p.Sources.Add(name, src)` *before* invoking `scanDecls`,
+so `scanAt(p.PosBase, src, true)` shifts every scanned token's `Pos`
+into the right `[Base, Base+Len)` window. The directory-mode loader
+registers each file under `name+"/"+f.Name()`, so a parse error from
+inside an imported module reports the actual filename rather than just
+the package path.
 
 ## Internal design
 
@@ -99,6 +131,20 @@ for init; cond; post { body }
 ```
 
 Labels are scoped and auto-numbered (e.g. `for0`, `if1`) via `labelCount`.
+
+### Switch and select clause splitting
+
+`switch`, `type-switch` and `select` bodies all reach the parser as a
+single `BraceBlock`. The parser splits the body into per-case clauses
+via `Tokens.SplitStart(lang.Case)` and then moves any `default` clause
+to the last position. A small helper, `caseClauses(body)`, wraps these
+two steps with a filter: it discards leading or trailing segments that
+do not start with `Case` or `Default`. This drops the `[Comment]`
+clauses produced when the scanner inserts a synthetic semicolon after
+a stray comment between `{` and the first `case` (a pattern that
+appears in `github.com/google/uuid/uuid.go`). Without the filter,
+`moveDefaultLast` and downstream `parseCaseClause` indexing would
+panic on the short clause.
 
 ### Scope tracking
 
@@ -159,6 +205,17 @@ name. `parseFunc` saves the original symbol (`savedRecvOuter`) before
 parsing, copies the receiver symbol into the function scope, then restores
 (or deletes) the outer-scope entry.
 
+A second subtlety: an anonymous function whose return type starts with
+an Ident (e.g. `func() time.Time { ... }`) reaches `parseFunc` looking
+syntactically like a method declaration -- `func`, `ParenBlock`, `Ident`.
+The parser disambiguates by checking that the Ident is a known *Type*;
+otherwise it falls into the method branch, scans an empty receiver
+block, and would synthesize a bogus `<scope>.<ident>` symbol name
+(e.g. `TestClockSeq.time` if `time` is a Pkg, not a Type). The
+method branch is gated by `recvTypeName(recvr) != ""` so an empty
+receiver yields no name and the function is treated as anonymous
+(`#fN`) instead.
+
 ### Variadic parameters
 
 `parseParamTypes` detects `...T` syntax (the `Ellipsis` token) and converts
@@ -170,24 +227,31 @@ call site.
 
 Import resolution lives in `import.go`. `ParseAll` is the main entry point:
 
-1. If `src` is empty and `name` is a directory, reads all `.go` files from
-   the first FS that owns it -- in order: `pkgfs`, `stdlibfs`,
-   `remotefs`. The pkgfs error is preserved when all fallbacks miss, so
-   downstream error messages still reference the user's primary
-   filesystem (excluding `_test.go` and subdirectories).
-2. Calls `scanDecls` (unexported) to split source into top-level declaration
+1. If `src` is empty and `name` is a directory, calls `LoadPackageSources`
+   to enumerate `.go` files through the FS chain (`pkgfs` -> `stdlibfs`
+   -> `remotefs`). The pkgfs error is preserved when all fallbacks miss,
+   so downstream error messages still reference the user's primary
+   filesystem. The `includeTests` flag (set via `SetIncludeTests`)
+   controls whether `_test.go` files are included; default off.
+2. For each loaded source, registers it with `Sources.Add(name+"/"+filename, content)`
+   *before* scanning, so `scanDecls` produces tokens with absolute
+   positions resolvable back to the right file.
+3. `scanDecls` (unexported) splits each source into top-level declaration
    groups without parsing bodies.
-3. Runs `preRegisterStructTypes` to insert placeholder `*vm.Type` entries
+4. Runs `preRegisterStructTypes` to insert placeholder `*vm.Type` entries
    for struct type definitions, enabling forward and mutual type references
    (e.g. `type F func(*A); type A struct{F}`).
-4. Enters the Phase 1 retry loop: each declaration is passed to `ParseDecl`.
+5. Enters the Phase 1 retry loop: each declaration is passed to `ParseDecl`.
    Failures with `ErrUndefined` are retried until convergence; rollback is
    lightweight (only `SymTracker` keys are deleted).
-5. Returns the remaining declarations (func bodies, var initializers) after
+6. Returns the remaining declarations (func bodies, var initializers) after
    running `SplitAndSortVarDecls`.
 
 `importSrc` handles `import` statements by calling `ParseAll` recursively
-for the imported package path.
+for the imported package path. It saves/restores both `pkgName` and
+`includeTests` around the recursive call, so the imported package's
+own `package X` declaration does not clash with the current one and a
+test target's `_test.go` files do not leak into its transitive imports.
 
 ## Dependencies
 

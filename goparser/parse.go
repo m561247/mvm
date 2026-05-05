@@ -29,6 +29,7 @@ type Parser struct {
 	pkgfs           fs.FS          // filesystem to read imported sources from
 	stdlibfs        fs.FS          // fallback filesystem for embedded stdlib sources
 	remotefs        fs.FS          // last-resort filesystem (e.g. network module proxy)
+	includeTests    bool           // include _test.go files when loading package sources
 	importRemaining []Tokens       // code-gen declarations from imported source packages
 
 	funcScope         string
@@ -94,6 +95,13 @@ func (p *Parser) SetStdlibFS(fsys fs.FS) {
 // modfs.FS that fetches modules from a proxy on demand.
 func (p *Parser) SetRemoteFS(fsys fs.FS) {
 	p.remotefs = fsys
+}
+
+// SetIncludeTests toggles whether ParseAll's directory-mode load includes
+// _test.go files. Off by default (matching `import "X"` resolution); turn
+// on for `mvm test <importpath>` so test functions become callable.
+func (p *Parser) SetIncludeTests(b bool) {
+	p.includeTests = b
 }
 
 // Parser errors.

@@ -13,12 +13,81 @@ import (
 	"github.com/mvm-sh/mvm/vm"
 )
 
+// PackageSource is a single .go file's basename and content as loaded by
+// LoadPackageSources.
+type PackageSource struct {
+	Name    string // basename (e.g. "uuid.go")
+	Content string
+}
+
+// LoadPackageSources returns the .go files of the given package import path
+// (a directory in the FS chain pkgfs -> stdlibfs -> remotefs), filtered by
+// build tags (file-name and //go:build directives). When includeTests is
+// false, _test.go files are skipped (matching `import "X"` resolution);
+// pass true to include them (used by `mvm test <importpath>`).
+//
+// Result order matches fs.ReadDir, which is sorted by filename.
+func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]PackageSource, error) {
+	if p.pkgfs == nil {
+		p.pkgfs = os.DirFS(".")
+	}
+	fsys := p.pkgfs
+	fi, err := fs.Stat(fsys, importPath)
+	for _, fb := range []fs.FS{p.stdlibfs, p.remotefs} {
+		if err == nil || fb == nil {
+			break
+		}
+		if fi2, err2 := fs.Stat(fb, importPath); err2 == nil {
+			fsys, fi, err = fb, fi2, nil
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("%s: not a package directory", importPath)
+	}
+	entries, err := fs.ReadDir(fsys, importPath)
+	if err != nil {
+		return nil, err
+	}
+	var out []PackageSource
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		if !includeTests && strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		if !MatchFileName(e.Name(), p.buildCtx) {
+			continue
+		}
+		buf, err := fs.ReadFile(fsys, importPath+"/"+e.Name())
+		if err != nil {
+			return nil, err
+		}
+		src := string(buf)
+		if !matchBuildDirective(src, p.buildCtx) {
+			continue
+		}
+		out = append(out, PackageSource{Name: e.Name(), Content: src})
+	}
+	return out, nil
+}
+
 func (p *Parser) importSrc(pkgPath string) (err error) {
 	// Save and restore parser state so the imported package's
-	// "package" declaration does not conflict with the current one.
+	// "package" declaration does not conflict with the current one,
+	// and so includeTests stays local to the top-level test target
+	// rather than leaking into transitive imports.
 	savedPkgName := p.pkgName
+	savedIncludeTests := p.includeTests
 	p.pkgName = ""
-	defer func() { p.pkgName = savedPkgName }()
+	p.includeTests = false
+	defer func() {
+		p.pkgName = savedPkgName
+		p.includeTests = savedIncludeTests
+	}()
 
 	// Snapshot existing symbol pointers so we can identify bindings
 	// added or replaced by this import. A later import that redefines an
@@ -74,52 +143,17 @@ func (p *Parser) ParseAll(name, src string) (out []Tokens, err error) {
 	var decls []Tokens
 
 	if src == "" {
-		// Get content from file(s). Primary pkgfs first; stdlib fallback resolves
-		// embedded generics-first packages (cmp, slices, ...) when the user pkgfs
-		// does not provide them.
-		if p.pkgfs == nil {
-			p.pkgfs = os.DirFS(".")
-		}
-		fsys := p.pkgfs
-		fi, err := fs.Stat(fsys, name)
-		for _, fb := range []fs.FS{p.stdlibfs, p.remotefs} {
-			if err == nil || fb == nil {
-				break
-			}
-			if fi2, err2 := fs.Stat(fb, name); err2 == nil {
-				fsys, fi, err = fb, fi2, nil
-			}
-		}
+		sources, err := p.LoadPackageSources(name, p.includeTests)
 		if err != nil {
 			return out, err
 		}
-		if fi.IsDir() {
-			files, err := fs.ReadDir(fsys, name)
-			if err != nil {
-				return out, err
+		for _, s := range sources {
+			p.PosBase = p.Sources.Add(name+"/"+s.Name, s.Content)
+			d, derr := p.scanDecls(s.Content)
+			if derr != nil {
+				return out, derr
 			}
-			for _, f := range files {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".go") || strings.HasSuffix(f.Name(), "_test.go") {
-					continue
-				}
-				if !MatchFileName(f.Name(), p.buildCtx) {
-					continue
-				}
-				buf, err := fs.ReadFile(fsys, name+"/"+f.Name())
-				if err != nil {
-					return out, err
-				}
-				src := string(buf)
-				if !matchBuildDirective(src, p.buildCtx) {
-					continue
-				}
-				p.PosBase = p.Sources.Add(name+"/"+f.Name(), src)
-				d, err := p.scanDecls(src)
-				if err != nil {
-					return out, err
-				}
-				decls = append(decls, d...)
-			}
+			decls = append(decls, d...)
 		}
 	} else {
 		p.PosBase = p.Sources.Add(name, src)

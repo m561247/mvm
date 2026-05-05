@@ -53,6 +53,32 @@ then `0/x` (builtins). First match wins.
 Method lookup traverses embedded field chains to find promoted methods,
 returning the field index path needed to reach the receiver.
 
+### MethodByName ambiguity heuristic
+
+For Var/LocalVar/Value receivers whose `Type.Name` is empty (the
+common case for mvm-created struct types and pointer-to-struct
+results from field access), `MethodByName` searches the symbol table
+for a Type entry whose `Rtype` matches and uses *that* key as the
+type name to construct the method lookup. The same `Rtype` can appear
+under multiple keys:
+
+- the unqualified short name `T` (from the user's type decl),
+- a package-qualified alias `pkgpath.T` written by `importSrc`,
+- an anonymous-struct stringification like `struct { F int }`
+  (from `zeroInitLocals` registering names for var init).
+
+Methods are registered under the short receiver name (e.g. `*T.M`), so
+lookups through the qualified or stringified key would miss. To handle
+this, `MethodByName` iterates candidate keys and prefers the one that
+*also* has a registered method (`k.M` or `*k.M` is in the map). If
+none has a registered method, it falls back to the first match -- this
+preserves prior behavior for receivers that genuinely have no methods.
+
+This is a heuristic. The planned canonical-pkg-qualified-symbol-keys
+refactor will replace it: every type and method gets stored under
+`pkgpath.T` / `pkgpath.*T.M` with short names becoming a
+scope-visibility concern, eliminating the ambiguity at the root.
+
 ## Dependencies
 
 - `vm/` -- `Type`, `Value` structures.

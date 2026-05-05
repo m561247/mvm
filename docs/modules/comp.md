@@ -14,9 +14,9 @@ slice and populates a `Data` slice (the global memory segment).
 
 - **`Compiler`** -- embeds `*goparser.Parser`. Manages `Code`, `Data`,
   `Entry` (start IP), string deduplication (`strings` map), method ID
-  allocation (`methodIDs` map), a type-pointer dedup cache (`typeIdxs`),
-  and `posBase` (byte offset of the current source in the `Sources`
-  registry for position resolution).
+  allocation (`methodIDs` map), and a type-pointer dedup cache
+  (`typeIdxs`). Position resolution rides on the embedded Parser's
+  `Sources` registry and `PosBase`; tokens carry absolute positions.
 - **`Compile(name, src string) error`** -- end-to-end compilation. Delegates
   Phase 1 (declaration resolution with retry loop) to `ParseAll`, then runs
   `allocGlobalSlots` and Phase 2 code generation (var initializers first,
@@ -24,6 +24,18 @@ slice and populates a `Data` slice (the global memory segment).
   inline, `"f:<path>"` for file).
 - **`Dump() / ApplyDump(d)`** -- snapshot and restore global variable
   state (used for REPL resets).
+- **`c.errAt(t, format, args...)`** -- builds an error formatted from
+  `format`/`args` prefixed with `Sources.FormatPos(t.Pos)` when the
+  position resolves; falls back to the bare message otherwise. Mirrors
+  `goparser.Parser.errAt`. The compiler-side copy exists because the
+  parser helper is unexported.
+- **`c.errUndef(t, name)`** -- returns a `goparser.ErrUndefined{Name,
+  Loc}` with `Loc` populated from `t.Pos`. The Phase-1 retry loop in
+  `import.go` matches via `errors.As(err, &eu)`, so the type is
+  preserved while users see a `file:line:col` prefix on the rendered
+  message. All `ErrUndefined` sites in `compiler.go` go through this
+  helper; bare `goparser.ErrUndefined{Name: ...}` literals are reserved
+  for the few parser sites where no token is in scope.
 
 ## Internal design
 
@@ -261,6 +273,21 @@ The compiler maintains a `methodIDs` map assigning unique integers to
 method names. When a concrete type is wrapped in an interface
 (`IfaceWrap`), the compiler verifies that all required methods exist.
 `IfaceCall` dispatches by method ID at runtime.
+
+### Package member access
+
+`lang.Period` over a `symbol.Pkg` receiver resolves `pkg.Name` against
+the package's `Values` map. When the entry is a non-nil pointer (e.g.
+`reflect.ValueOf(&rand.Reader)`, the standard pattern used by
+`stdlib.BinPkg` to preserve declared types), the compiler stores the
+symbol's type from the reflect.Value's *static* type
+(`v.Type()`), not from `v.Interface()`. Going through `Interface()`
+unboxes the interface and yields the *dynamic* concrete type
+(`*rand.reader`), which then breaks short-decl inference like
+`r := rand.Reader` -- the destination slot would be typed
+`*rand.reader` while the runtime rhs is `io.Reader`, and `reflect.Set`
+panics. Using the static type keeps `r`'s declared type at `io.Reader`,
+matching Go's specification.
 
 ## Dependencies
 

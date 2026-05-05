@@ -145,11 +145,18 @@ func runCmd(arg []string) error {
 	return err
 }
 
-const testUsageText = `Usage: mvm test [dir] [testing-flags]
-Runs Go tests found in *_test.go files of the given package directory (default ".").
-Flags after [dir] are forwarded to testing.Main; use the -test. prefix (e.g. -test.v, -test.run REGEX).
+const testUsageText = `Usage: mvm test [target] [testing-flags]
+Runs Go tests found in *_test.go files of the given target. Target may be a
+local directory (default ".") or an import path (e.g. "github.com/google/uuid")
+fetched dynamically via the Go module proxy.
+Flags after [target] are forwarded to testing.Main; use the -test. prefix
+(e.g. -test.v, -test.run REGEX).
 `
 
+// testCmd runs the tests of a Go package. The target is either a local
+// directory (existing files Eval'd individually, current behavior) or an
+// import path resolved through the FS chain incl. modfs (loaded as one
+// package via dir-mode ParseAll so cross-file refs resolve).
 func testCmd(arg []string) error {
 	tflag := flag.NewFlagSet("test", flag.ContinueOnError)
 	tflag.Usage = func() { _, _ = fmt.Fprint(os.Stdout, testUsageText) }
@@ -158,21 +165,41 @@ func testCmd(arg []string) error {
 	}
 	args := tflag.Args()
 
-	dir := "."
+	target := "."
 	var pass []string
 	if len(args) > 0 {
-		dir = args[0]
+		target = args[0]
 		pass = args[1:]
 	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
 
-	entries, err := os.ReadDir(absDir)
-	if err != nil {
-		return err
+	os.Args = append([]string{"mvm-test"}, pass...)
+
+	i := interp.NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetRemoteFS(newRemoteFS())
+	i.AutoImportPackages()
+	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
+
+	// Try target as a local directory first; fall back to import-path
+	// resolution (modfs / stdlibfs / pkgfs) on miss.
+	if absDir, aerr := filepath.Abs(target); aerr == nil {
+		if entries, rerr := os.ReadDir(absDir); rerr == nil {
+			if err := evalLocalDir(i, absDir, entries); err != nil {
+				return err
+			}
+			return runTestDriver(i)
+		}
 	}
+	i.SetIncludeTests(true)
+	if _, err := i.Eval(target, ""); err != nil {
+		return fmt.Errorf("loading %q: %w", target, err)
+	}
+	return runTestDriver(i)
+}
+
+// evalLocalDir Evals each .go file in a local directory in turn.
+// Mirrors mvm test's pre-dynamic-import behavior.
+func evalLocalDir(i *interp.Interp, absDir string, entries []os.DirEntry) error {
 	var paths []string
 	hasTest := false
 	for _, e := range entries {
@@ -187,15 +214,6 @@ func testCmd(arg []string) error {
 	if !hasTest {
 		return fmt.Errorf("no *_test.go files found in %s", absDir)
 	}
-
-	os.Args = append([]string{"mvm-test"}, pass...)
-
-	i := interp.NewInterpreter(golang.GoSpec)
-	i.ImportPackageValues(stdlib.Values)
-	i.SetRemoteFS(newRemoteFS())
-	i.AutoImportPackages()
-	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
-
 	for _, p := range paths {
 		buf, err := os.ReadFile(p)
 		if err != nil {
@@ -205,7 +223,12 @@ func testCmd(arg []string) error {
 			return err
 		}
 	}
+	return nil
+}
 
+// runTestDriver synthesizes a testing.Main call over all Test* funcs
+// registered in the interpreter's symbol table and runs it.
+func runTestDriver(i *interp.Interp) error {
 	testNames := i.FuncNames("Test")
 	if len(testNames) == 0 {
 		fmt.Fprintln(os.Stderr, "testing: warning: no tests to run")
@@ -219,6 +242,6 @@ func testCmd(arg []string) error {
 		fmt.Fprintf(&driver, "{Name: %q, F: %s},", name, name)
 	}
 	driver.WriteString("}, nil, nil)")
-	_, err = i.Eval("_testmain", driver.String())
+	_, err := i.Eval("_testmain", driver.String())
 	return err
 }
