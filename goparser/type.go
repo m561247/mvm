@@ -380,6 +380,13 @@ func (p *Parser) parseTypeElems(lt Tokens) ([]vm.TypeElem, error) {
 func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, vars []string, variadic bool, err error) {
 	// Parse from right to left, to allow multiple comma separated parameters of the same type.
 	list := in.Split(lang.Comma)
+	// sawTypeOnly tracks whether a previously-parsed (rightward) param had no
+	// name. Mixed `(name type, type)` is invalid in Go: once a type-only param
+	// appears, the rest of the list must be type-only too. This prevents a
+	// forward-declared type Ident on the left from being misclassified as a
+	// param name with shared type from the right (e.g. `(UUID, error)` where
+	// UUID is defined in another file not yet parsed).
+	sawTypeOnly := false
 	for i := len(list) - 1; i >= 0; i-- {
 		t := list[i]
 		if len(t) == 0 {
@@ -402,11 +409,23 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 					}
 					return nil, nil, false, ErrMissingType
 				}
-				// Type was omitted, apply the previous one from the right.
-				types = append([]*vm.Type{types[0]}, types...)
-				p.addSymVar(i, len(list), param, types[0], flag)
-				vars = append([]string{param}, vars...)
-				continue
+				// Once a rightward param is type-only, the list is a type list:
+				// this lone Ident is a (possibly forward-declared) type, not a
+				// param name to inherit the right-side type.
+				if sawTypeOnly {
+					if _, _, ok := p.Symbols.Get(origName, p.scope); !ok {
+						return nil, nil, false, ErrUndefined{Name: origName}
+					}
+					// Restore the full token and treat it as a type expression below.
+					t = list[i]
+					param = ""
+				} else {
+					// Type was omitted, apply the previous one from the right.
+					types = append([]*vm.Type{types[0]}, types...)
+					p.addSymVar(i, len(list), param, types[0], flag)
+					vars = append([]string{param}, vars...)
+					continue
+				}
 			}
 		}
 		// Detect variadic parameter: ...T becomes []T.
@@ -426,6 +445,9 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 		}
 		types = append([]*vm.Type{typ}, types...)
 		vars = append([]string{param}, vars...)
+		if param == "" {
+			sawTypeOnly = true
+		}
 	}
 	return types, vars, variadic, err
 }

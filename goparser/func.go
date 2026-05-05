@@ -2,6 +2,7 @@ package goparser
 
 import (
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -327,6 +328,26 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	}
 	l := max(p.framelen[p.funcScope]-1, 0)
 	out = append(out, newGrow(l, in[0].Pos))
+	// Zero-initialize named-return struct/array slots. Otherwise Grow leaves
+	// the slot as an empty Value{} with an invalid reflect.Value, and `&t` on a
+	// named return falls into Addr's `!v.ref.IsValid()` branch which synthesizes
+	// `*interface{}`, breaking later field/index access. Nilable kinds already
+	// work with the zero slot. p.namedOut is right-to-left, so j=0 -> Returns[n-1].
+	if n := len(p.namedOut); n > 0 {
+		var initVars []string
+		var initTypes []*vm.Type
+		for j, name := range p.namedOut {
+			typ := s.Type.Returns[n-1-j]
+			switch typ.Rtype.Kind() {
+			case reflect.Struct, reflect.Array:
+				initVars = append(initVars, name)
+				initTypes = append(initTypes, typ)
+			}
+		}
+		if len(initVars) > 0 {
+			out = append(out, p.zeroInitLocals(initVars, initTypes)...)
+		}
+	}
 	out = append(out, toks...)
 	if out[len(out)-1].Tok != lang.Return {
 		// Ensure that a return statement is always added at end of function.

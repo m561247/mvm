@@ -773,7 +773,8 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		return out, err
 	}
 
-	if placeholder != nil {
+	switch {
+	case placeholder != nil:
 		if placeholder.Rtype.Kind() == reflect.Interface {
 			// Finalize interface: copy method set and constraint elements onto the placeholder.
 			placeholder.IfaceMethods = typ.IfaceMethods
@@ -786,9 +787,25 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		if s, ok := p.Symbols[name]; ok {
 			s.Value = vm.NewValue(placeholder.Rtype)
 		}
-	} else {
-		typ.Name = in[0].Str
+	case isAlias:
+		// `type X = T` aliases share identity with T: register the symbol
+		// pointing at the source type unchanged.
 		p.SymAdd(symbol.UnsetAddr, name, vm.NewValue(typ.Rtype), symbol.Type, typ)
+	default:
+		// `type X T` defines a new named type. Clone so we don't mutate the
+		// source type's Name/Methods (would break sibling decls like
+		// `type A byte; type B byte`, where both would otherwise share byte's
+		// vm.Type and clobber each other's method tables).
+		nt := *typ
+		nt.Name = in[0].Str
+		nt.Methods = nil
+		nt.Placeholder = false
+		if typ.Base != nil {
+			nt.Base = typ.Base
+		} else {
+			nt.Base = typ
+		}
+		p.SymAdd(symbol.UnsetAddr, name, vm.NewValue(nt.Rtype), symbol.Type, &nt)
 	}
 	return out, err
 }
