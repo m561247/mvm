@@ -170,7 +170,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		pkgName := in[l-1].Str
 		s, _, ok := p.Symbols.Get(pkgName, p.scope)
 		if !ok || s.Kind != symbol.Pkg {
-			return nil, nil, 0, ErrUndefined{pkgName}
+			return nil, nil, 0, ErrUndefined{Name: pkgName}
 		}
 		pkg, ok := p.Packages[s.PkgPath]
 		if !ok {
@@ -256,13 +256,13 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 	case id == lang.Ident:
 		s, _, ok := p.Symbols.Get(t.Str, p.scope)
 		if !ok {
-			return nil, nil, 0, ErrUndefined{t.Str}
+			return nil, nil, 0, ErrUndefined{Name: t.Str}
 		}
 		if s.Kind != symbol.Const {
 			return nil, nil, 0, errors.New("symbol is not a constant")
 		}
 		if s.Cval == nil {
-			return nil, nil, 0, ErrUndefined{t.Str}
+			return nil, nil, 0, ErrUndefined{Name: t.Str}
 		}
 		return s.Cval, s.Type, 1, err
 

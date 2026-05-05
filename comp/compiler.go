@@ -54,7 +54,6 @@ func NewCompiler(spec *lang.Spec) *Compiler {
 
 // Compile parses src and generates code and data, or returns a non-nil error.
 // Code and data are added incrementally in c.Code and C.Data.
-// name identifies the source ("m:<content>" for inline, "f:<path>" for file).
 func (c *Compiler) Compile(name, src string) error {
 	remaining, err := c.ParseAll(name, src)
 	if err != nil {
@@ -144,8 +143,6 @@ func (c *Compiler) findTypeSym(rtype reflect.Type) *vm.Type {
 	return nil
 }
 
-// findConcreteFuncSym scans the symbol table for a concrete function whose
-// qualified name ends with ".name" (e.g. "T.Method"). Returns nil if not found.
 func (c *Compiler) findConcreteFuncSym(name string) *symbol.Symbol {
 	suffix := "." + name
 	for k, sym := range c.Symbols {
@@ -156,10 +153,6 @@ func (c *Compiler) findConcreteFuncSym(name string) *symbol.Symbol {
 	return nil
 }
 
-// findEmbeddedIfaceMethod walks embedded fields looking for an interface that
-// declares a method with the given name. reflect.StructOf represents embedded
-// interface fields as interface{}, so reflect-based MethodByName cannot find
-// their methods. Returns the field index path to the interface field, or nil.
 func findEmbeddedIfaceMethod(typ *vm.Type, name string) ([]int, reflect.Type) {
 	for _, emb := range typ.Embedded {
 		if emb.Type == nil {
@@ -180,9 +173,6 @@ func findEmbeddedIfaceMethod(typ *vm.Type, name string) ([]int, reflect.Type) {
 	return nil, nil
 }
 
-// findEmbeddedMethod walks embedded fields looking for a native method that
-// reflect.StructOf failed to promote. Returns the reflect.Method, the field
-// index path to the embedded receiver, and whether an Addr is needed.
 func findEmbeddedMethod(typ *vm.Type, rtype reflect.Type, name string, path []int) (reflect.Method, []int, bool) {
 	for _, emb := range typ.Embedded {
 		embRtype := rtype.Field(emb.FieldIdx).Type
@@ -272,10 +262,16 @@ func (c *Compiler) stringIndex(s string) int {
 	return i
 }
 
-func errorf(format string, v ...any) error {
-	_, file, line, _ := runtime.Caller(1)
-	loc := fmt.Sprintf("%s:%d: ", path.Base(file), line)
-	return fmt.Errorf(loc+format, v...)
+func (c *Compiler) errAt(t goparser.Token, format string, args ...any) error {
+	msg := fmt.Sprintf(format, args...)
+	if loc := c.Sources.FormatPos(t.Pos); loc != "" {
+		return fmt.Errorf("%s: %s", loc, msg)
+	}
+	return errors.New(msg)
+}
+
+func (c *Compiler) errUndef(t goparser.Token, name string) error {
+	return goparser.ErrUndefined{Name: name, Loc: c.Sources.FormatPos(t.Pos)}
 }
 
 func showStack(stack []*symbol.Symbol) {
@@ -318,10 +314,6 @@ func (c *Compiler) emitField(t goparser.Token, path []int) {
 	c.emit(t, vm.Field, path...)
 }
 
-// fieldPathOffset returns the byte offset of the field reached from rt by the
-// given reflect StructField index path, matching Go's unsafe.Offsetof for a
-// single selector expression (summing intermediate offsets when the field is
-// promoted through embedded fields).
 func fieldPathOffset(rt reflect.Type, path []int) uintptr {
 	var off uintptr
 	for _, i := range path {
@@ -347,7 +339,6 @@ func (c *Compiler) emitIfaceWrapAt(t goparser.Token, ifaceTyp, concreteTyp *vm.T
 	c.emit(t, vm.IfaceWrap, c.typeIndex(concreteTyp), depth)
 }
 
-// emitMapValueWrap emits WrapFunc for func-typed map values, or IfaceWrap otherwise.
 func (c *Compiler) emitMapValueWrap(t goparser.Token, elemTyp *vm.Type, vs *symbol.Symbol) {
 	if vs.Type != nil && vs.Type.Rtype.Kind() == reflect.Func {
 		c.emit(t, vm.WrapFunc, c.typeIndex(vs.Type))
@@ -356,7 +347,6 @@ func (c *Compiler) emitMapValueWrap(t goparser.Token, elemTyp *vm.Type, vs *symb
 	}
 }
 
-// emitTypeOrGlobal emits Fnew (or FnewE) for type symbols, or GetGlobal for values.
 func (c *Compiler) emitTypeOrGlobal(t goparser.Token, sym *symbol.Symbol, index int) {
 	if sym.Kind == symbol.Type {
 		switch sym.Type.Rtype.Kind() {
@@ -397,10 +387,12 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 	// checkTopN returns ErrUndefined if any of the top n stack entries is an unresolved
 	// identifier (Unset with a non-empty Name). Anonymous Unset entries (Name=="") are
 	// legitimate intermediate values (e.g. field-access results) and are not checked.
-	checkTopN := func(n int) error {
+	// t is the current token; its position is attached to the error so the user
+	// sees file:line:col rather than a bare "undefined: X".
+	checkTopN := func(t goparser.Token, n int) error {
 		for j := 0; j < n; j++ {
 			if i := len(stack) - 1 - j; i >= 0 && stack[i].Kind == symbol.Unset && stack[i].Name != "" {
-				return goparser.ErrUndefined{Name: stack[i].Name}
+				return c.errUndef(t, stack[i].Name)
 			}
 		}
 		return nil
@@ -476,7 +468,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.GetGlobal, c.stringIndex(s))
 
 		case lang.Add, lang.Mul, lang.Sub, lang.Quo, lang.Rem:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			right, left := pop(), pop()
@@ -498,14 +490,14 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 
 		case lang.Minus:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			typ := symbol.Vtype(top())
 			c.emit(t, numericOp(vm.NegInt, typ))
 
 		case lang.Not:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			c.emit(t, vm.Not)
@@ -514,7 +506,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			// Unary '+' is idempotent. Nothing to do.
 
 		case lang.Addr:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			srcType := pop().Type
@@ -540,21 +532,21 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 
 		case lang.Deref:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			s := pop()
 			if s.Type == nil {
-				return goparser.ErrUndefined{Name: s.Name}
+				return c.errUndef(t, s.Name)
 			}
 			if !s.Type.IsPtr() {
-				return errorf("cannot dereference non-pointer type %v", s.Type)
+				return c.errAt(t, "cannot dereference non-pointer type %v", s.Type)
 			}
 			push(&symbol.Symbol{Kind: symbol.Value, Type: s.Type.Elem()})
 			c.emit(t, vm.Deref)
 
 		case lang.TypeAssert:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			okForm := t.Arg[0].(int)
@@ -586,7 +578,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.TypeBranch, c.resolveLabel(t, &fixList), typeIdx)
 
 		case lang.Index:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			okForm := len(t.Arg) > 0 && t.Arg[0].(int) == 1
@@ -594,7 +586,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			s := pop()
 			vt := symbol.Vtype(s)
 			if vt == nil {
-				return goparser.ErrUndefined{Name: s.Name}
+				return c.errUndef(t, s.Name)
 			}
 			if vt.IsPtr() {
 				vt = vt.Elem()
@@ -622,7 +614,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 
 		case lang.Greater, lang.Less, lang.GreaterEqual, lang.LessEqual:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			s2, s1 := pop(), pop()
@@ -646,7 +638,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 
 		case lang.NotEqual:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			push(&symbol.Symbol{Type: booleanOpType(pop(), pop())})
@@ -654,7 +646,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.Not)
 
 		case lang.And:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			typ := arithmeticOpType(pop(), pop())
@@ -662,7 +654,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.BitAnd)
 
 		case lang.Or:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			typ := arithmeticOpType(pop(), pop())
@@ -670,7 +662,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.BitOr)
 
 		case lang.Xor:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			typ := arithmeticOpType(pop(), pop())
@@ -678,7 +670,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.BitXor)
 
 		case lang.AndNot:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			typ := arithmeticOpType(pop(), pop())
@@ -686,7 +678,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.BitAndNot)
 
 		case lang.Shl:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			pop()         // shift amount
@@ -697,7 +689,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.BitShl)
 
 		case lang.Shr:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			pop()         // shift amount
@@ -708,13 +700,13 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.BitShr)
 
 		case lang.BitComp:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			c.emit(t, vm.BitComp)
 
 		case lang.Arrow: // unary channel receive: <-ch
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			okForm := 0
@@ -723,7 +715,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 			ch := pop()
 			if ch.Type.Rtype.Kind() != reflect.Chan {
-				return errorf("invalid channel receive: not a channel type")
+				return c.errAt(t, "invalid channel receive: not a channel type")
 			}
 			elemType := ch.Type.Elem()
 			push(&symbol.Symbol{Kind: symbol.Value, Type: elemType})
@@ -735,7 +727,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 		case lang.Call:
 			narg := t.Arg[0].(int)
 			spread := len(t.Arg) > 1 && t.Arg[1].(int) != 0
-			if err := checkTopN(narg); err != nil {
+			if err := checkTopN(t, narg); err != nil {
 				return err
 			}
 			s := stack[len(stack)-1-narg]
@@ -766,7 +758,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 			if s.Kind == symbol.Type {
 				if narg != 1 {
-					return errorf("type conversion requires exactly one argument")
+					return c.errAt(t, "type conversion requires exactly one argument")
 				}
 				c.removeFnew(s.Index)
 				arg := pop() // argument (top of stack)
@@ -781,7 +773,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 			if s.MethodExpr {
 				if narg < 1 {
-					return errorf("method expression call requires at least a receiver argument")
+					return c.errAt(t, "method expression call requires at least a receiver argument")
 				}
 				methodNarg := narg - 1
 				methodWantsPtr := strings.HasPrefix(s.Name, "*")
@@ -823,7 +815,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			if s.Kind != symbol.Value {
 				typ := s.Type
 				if typ == nil {
-					return goparser.ErrUndefined{Name: s.Name}
+					return c.errUndef(t, s.Name)
 				}
 				// Wrap concrete args in Iface when the parameter expects an interface type.
 				// Use mvm-level Params types (which carry IfaceMethods) when available.
@@ -1078,7 +1070,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 		case lang.Define:
 			showStack(stack)
 			n := t.Arg[0].(int)
-			if err := checkTopN(n); err != nil {
+			if err := checkTopN(t, n); err != nil {
 				return err
 			}
 			l := len(stack)
@@ -1094,7 +1086,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					typ := r.Type
 					if typ == nil {
 						if !r.Value.Reflect().IsValid() {
-							return goparser.ErrUndefined{Name: lhs[i].Name}
+							return c.errUndef(t, lhs[i].Name)
 						}
 						typ = vm.TypeOf(r.Value.Interface())
 					}
@@ -1121,7 +1113,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				typ := r.Type
 				if typ == nil {
 					if !r.Value.Reflect().IsValid() {
-						return goparser.ErrUndefined{Name: lhs[i].Name}
+						return c.errUndef(t, lhs[i].Name)
 					}
 					typ = vm.TypeOf(r.Value.Interface())
 				}
@@ -1138,7 +1130,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Assign:
 			n := t.Arg[0].(int)
-			if err := checkTopN(n); err != nil { // check rhs values (top n items)
+			if err := checkTopN(t, n); err != nil { // check rhs values (top n items)
 				return err
 			}
 			if n > 1 {
@@ -1249,7 +1241,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 
 		case lang.DerefAssign:
-			if err := checkTopN(2); err != nil { // check rhs and pointer target
+			if err := checkTopN(t, 2); err != nil { // check rhs and pointer target
 				return err
 			}
 			pop() // rhs
@@ -1257,7 +1249,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.DerefSet)
 
 		case lang.IndexAssign:
-			if err := checkTopN(3); err != nil { // check container, index, and value
+			if err := checkTopN(t, 3); err != nil { // check container, index, and value
 				return err
 			}
 			s := stack[len(stack)-3]
@@ -1271,20 +1263,20 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			case reflect.Map:
 				c.emit(t, vm.MapSet)
 			default:
-				return errorf("not a map or array: %s", s.Name)
+				return c.errAt(t, "not a map or array: %s", s.Name)
 			}
 			c.emit(t, vm.Pop, 1)
 			stack = stack[:len(stack)-3]
 
 		case lang.Equal:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			push(&symbol.Symbol{Type: booleanOpType(pop(), pop())})
 			c.emit(t, vm.Equal)
 
 		case lang.EqualSet:
-			if err := checkTopN(2); err != nil {
+			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
 			push(&symbol.Symbol{Type: booleanOpType(pop(), pop())})
@@ -1311,7 +1303,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				for _, fvName := range s.FreeVars {
 					fvSym := c.Symbols[fvName]
 					if fvSym == nil {
-						return goparser.ErrUndefined{Name: fvName}
+						return c.errUndef(t, fvName)
 					}
 					if outerCloSym != nil {
 						if idx := outerCloSym.FreeVarIndex(fvName); idx >= 0 {
@@ -1428,7 +1420,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.Len, t.Arg[0].(int))
 
 		case lang.JumpFalse:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			if c.fuseCmpJump(t, &fixList, vm.LowerIntImm, vm.LowerIntImmJumpFalse,
@@ -1440,7 +1432,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emitJump(t, &fixList, vm.JumpFalse)
 
 		case lang.JumpSetFalse, lang.JumpSetTrue:
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			pop()                             // LHS result: consumed on the non-jumping path; both paths leave one value at label.
@@ -1476,9 +1468,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Period:
 			if len(stack) < 1 {
-				return errorf("missing symbol")
+				return c.errAt(t, "missing symbol")
 			}
-			if err := checkTopN(1); err != nil {
+			if err := checkTopN(t, 1); err != nil {
 				return err
 			}
 			s := pop()
@@ -1518,7 +1510,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				push(sym)
 				c.emitTypeOrGlobal(t, sym, l)
 			case symbol.Unset:
-				return errorf("invalid symbol: %s", s.Name)
+				return c.errAt(t, "invalid symbol: %s", s.Name)
 			default:
 				// Dynamic dispatch for interface receiver.
 				if s.Type != nil && s.Type.IsInterface() {
@@ -1541,7 +1533,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 							}
 						}
 						if rtype == nil {
-							return goparser.ErrUndefined{Name: methodName}
+							return c.errUndef(t, methodName)
 						}
 						methodSym = &symbol.Symbol{Kind: symbol.Value, Type: &vm.Type{Rtype: rtype}}
 					}
@@ -1599,7 +1591,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					break
 				}
 				if s.Type == nil {
-					return goparser.ErrUndefined{Name: s.Name}
+					return c.errUndef(t, s.Name)
 				}
 				typ := s.Type.Rtype
 				isPtr := typ.Kind() == reflect.Pointer
@@ -1717,7 +1709,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					c.emit(t, vm.IfaceCall, c.methodID(methodName), recvTypeHint)
 					break
 				}
-				return goparser.ErrUndefined{Name: t.Str[1:]}
+				return c.errUndef(t, t.Str[1:])
 			}
 
 		case lang.Next:
@@ -1834,19 +1826,19 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				// or func(yield func(K, V) bool).
 				ft := vt.Rtype
 				if ft.NumIn() != 1 || ft.NumOut() != 0 {
-					return errorf("cannot range over %s (must be func(yield func(...) bool))", ft)
+					return c.errAt(t, "cannot range over %s (must be func(yield func(...) bool))", ft)
 				}
 				yieldType := ft.In(0)
 				if yieldType.Kind() != reflect.Func || yieldType.NumOut() != 1 ||
 					yieldType.Out(0).Kind() != reflect.Bool {
-					return errorf("cannot range over %s (yield must return bool)", ft)
+					return c.errAt(t, "cannot range over %s (yield must return bool)", ft)
 				}
 				yieldArity := yieldType.NumIn()
 				if yieldArity < 1 || yieldArity > 2 {
-					return errorf("cannot range over %s (yield must take 1 or 2 args)", ft)
+					return c.errAt(t, "cannot range over %s (yield must take 1 or 2 args)", ft)
 				}
 				if n > yieldArity {
-					return errorf("range-over-func: too many iteration variables (%d) for yield arity %d", n, yieldArity)
+					return c.errAt(t, "range-over-func: too many iteration variables (%d) for yield arity %d", n, yieldArity)
 				}
 				// c.B encodes typeSym.Index+1 so the VM can wrap a mvm Closure
 				// into a native Go func; 0 is reserved as "not a func range".
@@ -1883,7 +1875,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			isX := 0
 			switch s.Kind {
 			case symbol.Type:
-				return errorf("cannot defer a type conversion")
+				return c.errAt(t, "cannot defer a type conversion")
 			case symbol.Value:
 				isX = 1
 			case symbol.Builtin:
@@ -1893,7 +1885,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				// position and Return dispatches the opcode directly.
 				op, ok := builtinDeferOp[s.Name]
 				if !ok {
-					return errorf("cannot defer builtin %s", s.Name)
+					return c.errAt(t, "cannot defer builtin %s", s.Name)
 				}
 				c.emit(t, vm.Push, int(op))
 				isX = 2
@@ -1908,7 +1900,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			narg := t.Arg[0].(int)
 			s := stack[len(stack)-1-narg]
 			if s.Kind == symbol.Type {
-				return errorf("cannot use a type conversion as a goroutine")
+				return c.errAt(t, "cannot use a type conversion as a goroutine")
 			}
 			pop() // function
 			for i := 0; i < narg; i++ {
@@ -1931,7 +1923,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Return:
 			numOut := t.Arg[0].(int)
-			if err := checkTopN(numOut); err != nil {
+			if err := checkTopN(t, numOut); err != nil {
 				return err
 			}
 			// Wrap concrete return values in Iface when the function return type is an interface.
@@ -2069,8 +2061,6 @@ func (c *Compiler) emitConstConvert(t goparser.Token, s *symbol.Symbol, typ *vm.
 	c.emitNumConvert(t, typ, symbol.Vtype(s), depth)
 }
 
-// emitNumConvert emits a Convert when lhs and rhs have different numeric types
-// (e.g. assigning int to float64). depth is the stack offset of the value.
 func (c *Compiler) emitNumConvert(t goparser.Token, lhsType, rhsType *vm.Type, depth int) {
 	if lhsType == nil || rhsType == nil || lhsType.Rtype == rhsType.Rtype {
 		return

@@ -121,7 +121,7 @@ func (p *Parser) registerFunc(toks Tokens) (bool, error) {
 			// pending (e.g. constraint referencing a not-yet-seen generic type).
 			// Defer via ErrUndefined so the retry loop processes this after the
 			// generic type declaration completes.
-			return false, ErrUndefined{baseName}
+			return false, ErrUndefined{Name: baseName}
 		}
 		typeName := recvTypeName(recvr)
 		if typeName == "" {
