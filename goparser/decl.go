@@ -16,7 +16,7 @@ var nilValue = vm.ValueOf(nil)
 
 func (p *Parser) parseConst(in Tokens) (out Tokens, err error) {
 	if len(in) < 2 {
-		return out, errors.New("missing expression")
+		return out, p.errAt(in[0], "missing expression after const")
 	}
 	if in[1].Tok != lang.ParenBlock {
 		return p.parseConstLine(in[1:])
@@ -158,7 +158,7 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, length int, err error) {
 	l := len(in) - 1
 	if l < 0 {
-		return nil, nil, 0, errors.New("missing argument")
+		return nil, nil, 0, errors.New("missing argument in constant expression")
 	}
 	t := in[l]
 	id := t.Tok
@@ -408,7 +408,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		return nil, nil, 0, fmt.Errorf("unsupported constant call: %s", fname)
 
 	default:
-		return nil, nil, 0, errors.New("invalid constant expression")
+		return nil, nil, 0, p.errAt(in[l], "invalid constant expression")
 	}
 }
 
@@ -625,10 +625,10 @@ var gotok = map[lang.Token]token.Token{
 
 func (p *Parser) parseImports(in Tokens) (out Tokens, err error) {
 	if p.fname != "" {
-		return out, errors.New("unexpected import")
+		return out, p.errAt(in[0], "unexpected import inside function body")
 	}
 	if len(in) < 2 {
-		return out, errors.New("missing expression")
+		return out, p.errAt(in[0], "missing import path after import")
 	}
 	if in[1].Tok != lang.ParenBlock {
 		return p.parseImportLine(in[1:])
@@ -649,7 +649,7 @@ func (p *Parser) parseImports(in Tokens) (out Tokens, err error) {
 func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 	l := len(in)
 	if l == 0 {
-		return out, errors.New("invalid number of arguments")
+		return out, errors.New("empty import declaration")
 	}
 	// Find the import path string, ignoring trailing tokens (e.g. comments).
 	si := l - 1
@@ -657,7 +657,7 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 		si--
 	}
 	if si < 0 {
-		return out, fmt.Errorf("invalid argument %v", in[0])
+		return out, p.errAt(in[0], "expected import path string, got %s", in[0].Tok)
 	}
 	l = si + 1 // effective length up to and including the string token
 	pp := in[si].Block()
@@ -690,13 +690,13 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 
 func (p *Parser) parsePackageDecl(in Tokens) (out Tokens, err error) {
 	if len(in) != 2 {
-		return out, errors.New("invalid number of arguments")
+		return out, p.errAt(in[0], "package declaration takes one identifier")
 	}
 	if in[1].Tok != lang.Ident {
-		return out, errors.New("not an ident")
+		return out, p.errAt(in[1], "expected package name, got %s", in[1].Tok)
 	}
 	if p.pkgName != "" && p.pkgName != in[1].Str {
-		return out, fmt.Errorf("package %s; expected %s", in[1].Str, p.pkgName)
+		return out, p.errAt(in[1], "package %s; expected %s", in[1].Str, p.pkgName)
 	}
 	p.pkgName = in[1].Str
 	return out, err
@@ -727,7 +727,7 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		return out, ErrMissingType
 	}
 	if in[0].Tok != lang.Ident {
-		return out, errors.New("not an ident")
+		return out, p.errAt(in[0], "expected type name, got %s", in[0].Tok)
 	}
 	isAlias := in[1].Tok == lang.Assign
 	toks := in[1:]

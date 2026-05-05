@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,9 +59,9 @@ func (t *newlineTracker) Write(p []byte) (int, error) {
 }
 
 func main() {
-	log.SetFlags(log.Lshortfile)
 	if err := dispatch(os.Args[1:]); err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 

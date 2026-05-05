@@ -3,6 +3,7 @@ package goparser
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"reflect"
@@ -97,7 +98,7 @@ func (p *Parser) SetRemoteFS(fsys fs.FS) {
 
 // Parser errors.
 var (
-	errBody     = errors.New("missign body")
+	errBody     = errors.New("missing body")
 	errBreak    = errors.New("invalid break statement")
 	errContinue = errors.New("invalid continue statement")
 	errFor      = errors.New("invalid for statement")
@@ -120,13 +121,18 @@ func NewParser(spec *lang.Spec, noPkg bool) *Parser {
 	return p
 }
 
-// scan performs lexical analysis on s and returns Tokens or an error.
+func (p *Parser) errAt(tok Token, format string, args ...any) error {
+	msg := fmt.Sprintf(format, args...)
+	if loc := p.Sources.FormatPos(tok.Pos); loc != "" {
+		return fmt.Errorf("%s: %s", loc, msg)
+	}
+	return errors.New(msg)
+}
+
 func (p *Parser) scan(s string, endSemi bool) (out Tokens, err error) {
 	return p.scanAt(0, s, endSemi)
 }
 
-// scanAt is like scan but adds basePos to every token position, so that
-// block-relative positions become absolute within the source file.
 func (p *Parser) scanAt(basePos int, s string, endSemi bool) (out Tokens, err error) {
 	toks, err := p.Scan(s, endSemi)
 	if err != nil {
@@ -139,18 +145,14 @@ func (p *Parser) scanAt(basePos int, s string, endSemi bool) (out Tokens, err er
 	return out, err
 }
 
-// scanBlock scans the inner content of a block token, adjusting positions
-// so they are absolute within the source file rather than block-relative.
 func (p *Parser) scanBlock(bt scan.Token, endSemi bool) (Tokens, error) {
 	return p.scanAt(bt.Pos+bt.Beg, bt.Block(), endSemi)
 }
 
-// parseTokBlock parses the inner content of a block token with absolute positions.
 func (p *Parser) parseTokBlock(bt scan.Token) (Tokens, error) {
 	return p.parseAt(bt.Pos+bt.Beg, bt.Block())
 }
 
-// parseAt is like Parse but adds basePos to every token position.
 func (p *Parser) parseAt(basePos int, src string) (out Tokens, err error) {
 	in, err := p.scanAt(basePos, src, true)
 	if err != nil {
@@ -159,9 +161,6 @@ func (p *Parser) parseAt(basePos int, src string) (out Tokens, err error) {
 	return p.parseStmts(in)
 }
 
-// stmtEnd returns the index of the semicolon ending the first statement in toks,
-// accounting for HasInit tokens (if, for, switch) which contain internal semicolons.
-// Labeled statements (Label: for/switch ...) are treated as a single statement.
 func (p *Parser) stmtEnd(toks Tokens) (int, error) {
 	end := toks.Index(lang.Semicolon)
 	if end == -1 {
@@ -210,7 +209,7 @@ func (p *Parser) parseStmts(in Tokens) (out Tokens, err error) {
 
 // scanDecls scans src and returns its top-level statements as token slices, without parsing them.
 func (p *Parser) scanDecls(src string) ([]Tokens, error) {
-	toks, err := p.scan(src, true)
+	toks, err := p.scanAt(p.PosBase, src, true)
 	if err != nil {
 		return nil, err
 	}
@@ -233,8 +232,6 @@ func (p *Parser) ParseOneStmt(toks Tokens) (Tokens, error) {
 	return out, err
 }
 
-// drainPendingMethods appends any accumulated generic method definitions
-// to the output and clears the pending buffer.
 func (p *Parser) drainPendingMethods(out *Tokens) {
 	if len(p.pendingMethodDefs) > 0 {
 		*out = append(*out, p.pendingMethodDefs...)

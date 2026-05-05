@@ -64,7 +64,7 @@ func (p *Parser) splitAndSortVarDecls(decls []Tokens) []Tokens {
 
 func (p *Parser) varLines(toks Tokens) ([]Tokens, error) {
 	if len(toks) < 2 {
-		return nil, errors.New("missing expression")
+		return nil, p.errAt(toks[0], "missing expression after var")
 	}
 	if toks[1].Tok != lang.ParenBlock {
 		return []Tokens{toks[1:]}, nil
@@ -83,6 +83,9 @@ func (p *Parser) splitVarBlock(decl Tokens) []Tokens {
 	}
 	result := make([]Tokens, 0, len(lines))
 	for _, line := range lines {
+		for len(line) > 0 && line[len(line)-1].Tok == lang.Comment {
+			line = line[:len(line)-1]
+		}
 		if len(line) > 0 {
 			d := make(Tokens, 1, 1+len(line))
 			d[0] = decl[0]
@@ -240,7 +243,7 @@ func (p *Parser) parseStmt(in Tokens) (out Tokens, err error) {
 	// Preliminary: make sure that a pkgName is defined (or about to be).
 	if in[0].Tok != lang.Package && p.pkgName == "" {
 		if !p.noPkg {
-			return out, errors.New("no package defined")
+			return out, p.errAt(in[0], "no package defined")
 		}
 		p.pkgName = "main"
 	}
@@ -263,7 +266,7 @@ func (p *Parser) parseStmt(in Tokens) (out Tokens, err error) {
 		}
 		return p.parseFunc(in)
 	case lang.Fallthrough:
-		return out, errors.New("fallthrough statement out of place")
+		return out, p.errAt(in[0], "fallthrough statement out of place")
 	case lang.Defer:
 		return p.parseDefer(in)
 	case lang.Go:

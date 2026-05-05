@@ -13,7 +13,7 @@ import (
 
 func (p *Parser) parseDefer(in Tokens) (out Tokens, err error) {
 	if len(in) < 2 {
-		return nil, errors.New("invalid defer statement")
+		return nil, p.errAt(in[0], "invalid defer statement")
 	}
 	expr := in[1:]
 	// The last token must be a ParenBlock containing the call arguments.
@@ -21,7 +21,7 @@ func (p *Parser) parseDefer(in Tokens) (out Tokens, err error) {
 	// because the lang.Func case in parseExpr would consume a trailing '()'.
 	last := len(expr) - 1
 	if last < 0 || expr[last].Tok != lang.ParenBlock {
-		return nil, errors.New("defer requires a function call")
+		return nil, p.errAt(in[0], "defer requires a function call")
 	}
 	callTok := expr[last]
 	narg, err := p.numItems(callTok.Block(), lang.Comma)
@@ -45,12 +45,12 @@ func (p *Parser) parseDefer(in Tokens) (out Tokens, err error) {
 
 func (p *Parser) parseGo(in Tokens) (out Tokens, err error) {
 	if len(in) < 2 {
-		return nil, errors.New("invalid go statement")
+		return nil, p.errAt(in[0], "invalid go statement")
 	}
 	expr := in[1:]
 	last := len(expr) - 1
 	if last < 0 || expr[last].Tok != lang.ParenBlock {
-		return nil, errors.New("go requires a function call")
+		return nil, p.errAt(in[0], "go requires a function call")
 	}
 	callTok := expr[last]
 	narg, err := p.numItems(callTok.Block(), lang.Comma)
@@ -504,7 +504,7 @@ func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prev
 	var conds, body Tokens
 	tl := in.Split(lang.Colon)
 	if len(tl) != 2 {
-		return nil, false, errors.New("invalid case clause")
+		return nil, false, p.errAt(in[0], "invalid case clause")
 	}
 	conds = tl[0][1:]
 	pos := in[0].Pos
@@ -513,10 +513,10 @@ func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prev
 	bodyRaw := tl[1]
 	if fi := bodyRaw.Index(lang.Fallthrough); fi >= 0 {
 		if index == maximum {
-			return nil, false, errors.New("cannot fallthrough final case in switch")
+			return nil, false, p.errAt(bodyRaw[fi], "cannot fallthrough final case in switch")
 		}
 		if fi+2 < len(bodyRaw) {
-			return nil, false, errors.New("fallthrough statement out of place")
+			return nil, false, p.errAt(bodyRaw[fi], "fallthrough statement out of place")
 		}
 		hasFallthrough = true
 		bodyRaw = bodyRaw[:fi]
@@ -577,7 +577,7 @@ type selectCase struct {
 func (p *Parser) parseSelectCase(cl Tokens, index int, pos int, ci *selectCase) error {
 	tl := cl.Split(lang.Colon)
 	if len(tl) != 2 {
-		return errors.New("invalid select case clause")
+		return p.errAt(cl[0], "invalid select case clause")
 	}
 	header := tl[0][1:]
 	bodyToks := append(Tokens{}, tl[1]...)
@@ -621,7 +621,11 @@ func (p *Parser) parseSelectCase(cl Tokens, index int, pos int, ci *selectCase) 
 		for j, lt := range lhsToks {
 			if len(lt) != 1 || lt[0].Tok != lang.Ident {
 				p.popScope()
-				return errors.New("invalid select recv assignment")
+				anchor := cl[0]
+				if len(lt) > 0 {
+					anchor = lt[0]
+				}
+				return p.errAt(anchor, "invalid select recv assignment")
 			}
 			name := lt[0].Str
 			if name == "_" {
@@ -655,7 +659,7 @@ func (p *Parser) parseSelectCase(cl Tokens, index int, pos int, ci *selectCase) 
 		if assignIdx >= 0 {
 			p.popScope()
 		}
-		return errors.New("select recv case requires <-")
+		return p.errAt(cl[0], "select recv case requires <-")
 	}
 	var err error
 	if ci.chanToks, err = p.parseExpr(chExpr[1:], ""); err != nil {
@@ -682,7 +686,7 @@ type SelectCaseDesc struct {
 // parseSelect parses a select statement: select { case <-ch: ... case ch <- v: ... default: ... }.
 func (p *Parser) parseSelect(in Tokens) (out Tokens, err error) {
 	if len(in) < 2 || in[len(in)-1].Tok != lang.BraceBlock {
-		return nil, errors.New("invalid select statement")
+		return nil, p.errAt(in[0], "invalid select statement")
 	}
 	pos := in[0].Pos
 
@@ -778,7 +782,7 @@ func (p *Parser) parseReturn(in Tokens) (out Tokens, err error) {
 
 	s := p.function
 	if s == nil || s.Type == nil {
-		return nil, errors.New("return statement outside function")
+		return nil, p.errAt(in[0], "return statement outside function")
 	}
 	in[0].Arg = []any{s.Type.Rtype.NumOut(), s.Type}
 	out = append(out, in[0])

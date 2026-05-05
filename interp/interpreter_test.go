@@ -134,6 +134,13 @@ func TestExpr(t *testing.T) {
 	})
 }
 
+func TestParseErrorPos(t *testing.T) {
+	run(t, []etest{
+		{n: "import_in_func", src: `func main() { import "fmt" }`, err: `test:1:15: unexpected import inside function body`},
+		{n: "var_no_expr_in_func", src: `func main() { var }`, err: `test:1:15: missing expression after var`},
+	})
+}
+
 func TestAssign(t *testing.T) {
 	run(t, []etest{
 		{n: "#00", src: "var a int = 1; a", res: "1"},
@@ -1822,6 +1829,7 @@ func TestVar(t *testing.T) {
 		{n: "#07", src: "var a = 1; func f() int { var a, b int = 3, 4; return a+b}; a+f()", res: "8"},
 		{n: "#08", src: `var a = "hello"; a`, res: "hello"},
 		{n: "#09", src: `var ( a, b int = 4+1, 3; c = 8); a+b+c`, res: "16"},
+		{n: "#10", src: "var (\n\tx = 1\n\n\t// stray comment\n\ty = 2\n)\nx+y", res: "3"},
 	})
 }
 

@@ -2,6 +2,7 @@ package goparser
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -31,7 +32,7 @@ func (p *Parser) importSrc(pkgPath string) (err error) {
 
 	remaining, err := p.ParseAll(pkgPath, "")
 	if err != nil {
-		return err
+		return fmt.Errorf("while importing %q: %w", pkgPath, err)
 	}
 
 	// Store remaining declarations (func bodies, var initializers)
@@ -112,8 +113,8 @@ func (p *Parser) ParseAll(name, src string) (out []Tokens, err error) {
 				if !matchBuildDirective(src, p.buildCtx) {
 					continue
 				}
+				p.PosBase = p.Sources.Add(name+"/"+f.Name(), src)
 				d, err := p.scanDecls(src)
-				p.PosBase = p.Sources.Add(name, src)
 				if err != nil {
 					return out, err
 				}
@@ -121,8 +122,8 @@ func (p *Parser) ParseAll(name, src string) (out []Tokens, err error) {
 			}
 		}
 	} else {
-		decls, err = p.scanDecls(src)
 		p.PosBase = p.Sources.Add(name, src)
+		decls, err = p.scanDecls(src)
 		if err != nil {
 			return out, err
 		}
