@@ -253,6 +253,9 @@ func (p *Parser) ParseDecl(toks Tokens) (handled bool, err error) {
 	for len(toks) > 0 && toks[len(toks)-1].Tok == lang.Comment {
 		toks = toks[:len(toks)-1]
 	}
+	for len(toks) > 0 && toks[0].Tok == lang.Comment {
+		toks = toks[1:]
+	}
 	if len(toks) == 0 {
 		return true, nil
 	}

@@ -114,4 +114,10 @@ def"`, err: "1:1: block not terminated"},
 	{n: "#47", src: "ж := 42", tok: `Ident"ж" Define Int"42" Semicolon `},
 	{n: "#48", src: "café + 1", tok: `Ident"café" Add Int"1" Semicolon `},
 	{n: "#49", src: "日本語", tok: `Ident"日本語" Semicolon `},
+
+	// Comments are transparent to auto-semicolon insertion (Go spec).
+	{n: "#50", src: "// foo\nx := 1", tok: `Comment"// foo" Ident"x" Define Int"1" Semicolon `},
+	{n: "#51", src: "// a\n// b\nx := 1", tok: `Comment"// a" Comment"// b" Ident"x" Define Int"1" Semicolon `},
+	{n: "#52", src: "a,\n// c\nb", tok: `Ident"a" Comma Comment"// c" Ident"b" Semicolon `},
+	{n: "#53", src: "x := 1 // foo\ny := 2", tok: `Ident"x" Define Int"1" Comment"// foo" Semicolon Ident"y" Define Int"2" Semicolon `},
 }

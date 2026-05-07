@@ -1895,6 +1895,20 @@ func TestComposite(t *testing.T) {
 		{n: "iface_slice_display", src: `import "fmt"; type T struct{name string}; fmt.Sprintf("%v", []interface{}{T{"hello"}})`, res: `[{hello}]`},
 		// Inline closure as composite literal field value.
 		{n: "func_field_closure", src: `type T struct{ F func() int }; s := T{F: func() int { return 42 }}; s.F()`, res: `42`},
+		// Comment-only line between struct fields inside a slice literal.
+		// Regression: scanner used to insert an auto-Semicolon after the
+		// comment, which leaked into parseExpr (pkg/errors errors_test.go).
+		{n: "comment_between_struct_fields", src: "type T struct{ a, b int }\n" +
+			"s := []T{{\n" +
+			"\t// leading comment\n" +
+			"\ta: 1,\n" +
+			"\tb: 2,\n" +
+			"}, {\n" +
+			"\t// another comment\n" +
+			"\ta: 3,\n" +
+			"\tb: 4,\n" +
+			"}}\n" +
+			"s[0].a + s[1].b", res: `5`},
 	})
 }
 

@@ -138,8 +138,17 @@ func (sc *Scanner) Scan(src string, semiEOF bool) (tokens []Token, err error) {
 		skip := false
 		if len(tokens) > 0 && t.Str == "\n" {
 			// Check for automatic semi-colon insertion after newline.
-			last := tokens[len(tokens)-1]
-			if last.Tok.IsKeyword() && sc.TokenProps[last.Tok].SkipSemi ||
+			// Comments are transparent to the rule (Go spec): walk back
+			// past Comment tokens to inspect the last non-comment token.
+			j := len(tokens) - 1
+			for j > 0 && tokens[j].Tok == lang.Comment {
+				j--
+			}
+			last := tokens[j]
+			if last.Tok == lang.Comment {
+				// Only comments precede this newline: nothing to terminate.
+				skip = true
+			} else if last.Tok.IsKeyword() && sc.TokenProps[last.Tok].SkipSemi ||
 				last.Tok.IsOperator() && !sc.TokenProps[last.Tok].SkipSemi ||
 				last.Tok == lang.Comma ||
 				last.Tok == lang.Semicolon {

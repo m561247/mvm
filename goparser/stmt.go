@@ -114,6 +114,9 @@ func (p *Parser) splitVarBlock(decl Tokens) []Tokens {
 		for len(line) > 0 && line[len(line)-1].Tok == lang.Comment {
 			line = line[:len(line)-1]
 		}
+		for len(line) > 0 && line[0].Tok == lang.Comment {
+			line = line[1:]
+		}
 		if len(line) > 0 {
 			d := make(Tokens, 1, 1+len(line))
 			d[0] = decl[0]
@@ -442,6 +445,9 @@ func (p *Parser) parseVarDecl(toks Tokens) (handled bool, err error) {
 func (p *Parser) parseStmt(in Tokens) (out Tokens, err error) {
 	for len(in) > 0 && in[len(in)-1].Tok == lang.Comment {
 		in = in[:len(in)-1]
+	}
+	for len(in) > 0 && in[0].Tok == lang.Comment {
+		in = in[1:]
 	}
 	if len(in) == 0 {
 		return nil, nil
