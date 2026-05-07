@@ -56,7 +56,8 @@ type Symbol struct {
 	// from the outermost operand to this field. Used by unsafe.Offsetof.
 	HasFieldOffset bool
 	FieldOffset    uintptr
-	Data           any // optional extra data (e.g. generic template)
+	Data           any              // optional extra data (e.g. generic template)
+	Reads          map[*Symbol]bool // for Func: package-level Var symbols read transitively by the body
 }
 
 // NeedsCell reports whether this variable should be promoted to a heap cell

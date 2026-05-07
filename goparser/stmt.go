@@ -174,18 +174,191 @@ func (p *Parser) sortByDeps(decls []Tokens) []Tokens {
 	return result
 }
 
+// collectIdents records sibling-var deps for toks. Free-function and
+// concrete-method calls pull in the callee's precomputed Symbol.Reads;
+// qualified pkg refs (`pkg.X`) are dropped because imported pkgs init
+// before us.
 func (p *Parser) collectIdents(toks Tokens, nameSet map[string]int, out map[int]bool) {
-	for _, t := range toks {
-		if t.Tok == lang.Ident {
-			if dep, ok := nameSet[t.Str]; ok {
+	p.walkRefs(toks, "", func(sym *symbol.Symbol) {
+		switch sym.Kind {
+		case symbol.Var:
+			if dep, ok := nameSet[sym.Name]; ok {
 				out[dep] = true
 			}
-		} else if t.Tok.IsBlock() {
-			if inner, err := p.scanBlock(t.Token, false); err == nil {
-				p.collectIdents(inner, nameSet, out)
+		case symbol.Func:
+			for r := range sym.Reads {
+				if dep, ok := nameSet[r.Name]; ok {
+					out[dep] = true
+				}
 			}
 		}
+	})
+}
+
+// collectFuncReads computes Symbol.Reads for every Func/method as the
+// transitive set of package-level Vars its body reads. Interface
+// dispatch and runtime-fetched func values stay opaque (see
+// _samples/init_iface.go, init_indirect_call.go).
+func (p *Parser) collectFuncReads(decls []Tokens) {
+	// calls is keyed only by the funcs we actually walk, not the entire
+	// symbol table; the fixed-point below iterates this small set.
+	calls := map[*symbol.Symbol]map[*symbol.Symbol]bool{}
+	for _, decl := range decls {
+		if len(decl) < 2 || decl[0].Tok != lang.Func {
+			continue
+		}
+		sym, body, scope := p.funcSymBodyScope(decl)
+		if sym == nil || body == nil {
+			continue
+		}
+		sym.Reads = map[*symbol.Symbol]bool{}
+		called := map[*symbol.Symbol]bool{}
+		calls[sym] = called
+		p.registerParamPlaceholders(sym, scope)
+		p.walkRefs(body, scope, func(s *symbol.Symbol) {
+			switch s.Kind {
+			case symbol.Var:
+				sym.Reads[s] = true
+			case symbol.Func:
+				if s != sym {
+					called[s] = true
+				}
+			}
+		})
 	}
+	for {
+		changed := false
+		for sym, called := range calls {
+			for callee := range called {
+				for v := range callee.Reads {
+					if !sym.Reads[v] {
+						sym.Reads[v] = true
+						changed = true
+					}
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+}
+
+// registerParamPlaceholders inserts LocalVar stubs at `scope/name` so
+// the walker's scope-aware lookup sees params and the receiver as
+// locals. Phase-2 `parseFunc` overwrites them via addSymVar.
+func (p *Parser) registerParamPlaceholders(sym *symbol.Symbol, scope string) {
+	if scope == "" {
+		return
+	}
+	add := func(name string) {
+		if name == "" || name == "_" {
+			return
+		}
+		key := scope + "/" + name
+		if _, exists := p.Symbols[key]; exists {
+			return
+		}
+		p.Symbols[key] = &symbol.Symbol{Kind: symbol.LocalVar, Name: name}
+	}
+	for _, n := range sym.InNames {
+		add(n)
+	}
+	for _, n := range sym.OutNames {
+		add(n)
+	}
+	add(sym.RecvName)
+}
+
+// funcSymBodyScope returns the Symbol, parsed body, and parseFunc-style
+// scope path for a func/method decl (zero values if body-less or
+// unregistered). The scope matches `parseFunc`'s `pushScope(fname)`.
+func (p *Parser) funcSymBodyScope(decl Tokens) (*symbol.Symbol, Tokens, string) {
+	bi := decl.LastIndex(lang.BraceBlock)
+	if bi < 0 {
+		return nil, nil, ""
+	}
+	var name string
+	switch decl[1].Tok {
+	case lang.Ident:
+		name = decl[1].Str
+	case lang.ParenBlock:
+		if len(decl) < 4 || decl[2].Tok != lang.Ident {
+			return nil, nil, ""
+		}
+		recvr, err := p.scanBlock(decl[1].Token, false)
+		if err != nil {
+			return nil, nil, ""
+		}
+		recvType := recvTypeName(recvr)
+		if recvType == "" {
+			return nil, nil, ""
+		}
+		name = recvType + "." + decl[2].Str
+	default:
+		return nil, nil, ""
+	}
+	sym, ok := p.Symbols[name]
+	if !ok {
+		return nil, nil, ""
+	}
+	body, err := p.scanBlock(decl[bi].Token, false)
+	if err != nil {
+		return nil, nil, ""
+	}
+	return sym, body, name
+}
+
+// walkRefs invokes visit for every package-scope Var/Func Ident, or
+// method symbol via Period dispatch. Pkg/Func receivers are dropped
+// (qualified pkg refs init first; MethodByName on a func value is
+// meaningless).
+func (p *Parser) walkRefs(toks Tokens, scope string, visit func(*symbol.Symbol)) {
+	for i, t := range toks {
+		if t.Tok != lang.Ident {
+			if t.Tok.IsBlock() {
+				if inner, err := p.scanBlock(t.Token, false); err == nil {
+					p.walkRefs(inner, scope, visit)
+				}
+			}
+			continue
+		}
+		// Period-prefix first: x.Foo is never a sibling-var ref to Foo.
+		if i > 0 && toks[i-1].Tok == lang.Period {
+			j := prevIdentBeforePeriod(toks, i)
+			if j < 0 {
+				continue
+			}
+			recv, _, ok := p.Symbols.Get(toks[j].Str, scope)
+			if !ok || recv.Kind == symbol.Pkg || recv.Kind == symbol.Func {
+				continue
+			}
+			if m, _ := p.Symbols.MethodByName(recv, t.Str); m != nil && m.Kind == symbol.Func {
+				visit(m)
+			}
+			continue
+		}
+		sym, sc, ok := p.Symbols.Get(t.Str, scope)
+		if !ok || sc != "" {
+			continue
+		}
+		if sym.Kind == symbol.Var || sym.Kind == symbol.Func {
+			visit(sym)
+		}
+	}
+}
+
+// prevIdentBeforePeriod returns the index of the receiver Ident at the
+// head of an `expr.Method` chain at idx, or -1 if not found.
+func prevIdentBeforePeriod(toks Tokens, idx int) int {
+	j := idx - 2
+	for j >= 0 && (toks[j].Tok == lang.BraceBlock || toks[j].Tok == lang.ParenBlock || toks[j].Tok == lang.BracketBlock) {
+		j--
+	}
+	if j < 0 || toks[j].Tok != lang.Ident {
+		return -1
+	}
+	return j
 }
 
 func (p *Parser) parseVarDecl(toks Tokens) (handled bool, err error) {
