@@ -592,6 +592,7 @@ func (p *Parser) parseEmbeddedField(lt Tokens) (fieldType, origType *vm.Type) {
 	}
 	ft := *typ
 	ft.Name = name
+	ft.Base = typ
 	if isPtr {
 		return vm.PointerTo(&ft), typ
 	}

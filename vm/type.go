@@ -685,8 +685,16 @@ func (t *Type) FieldLookup(name string) ([]int, *Type) {
 		if i < len(t.Fields) {
 			// Return a shallow copy with the type name (not the field name that
 			// Fields[i].Name holds for StructOf), so that method lookup works.
+			// Prefer the back-linked Base type's name: for defined types whose
+			// underlying is a basic kind (e.g. `type Frame uintptr`), reflect's
+			// f.Type.Name() returns the underlying name ("uintptr") and loses
+			// the user-level name needed to find methods on Frame.
 			ft := *t.Fields[i]
-			ft.Name = f.Type.Name()
+			if ft.Base != nil && ft.Base.Name != "" {
+				ft.Name = ft.Base.Name
+			} else {
+				ft.Name = f.Type.Name()
+			}
 			ft.PkgPath = f.PkgPath
 			return f.Index, &ft
 		}

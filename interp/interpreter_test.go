@@ -2057,15 +2057,24 @@ func TestMethod(t *testing.T) {
 			t := &T{f}; t.Do(); s`, res: "done"},
 
 		// Defined type whose underlying is a basic type, accessed through a
-		// struct field, then chain-called: the named type is lost (treated
-		// as the underlying type), so the method lookup fails.
+		// struct field, then chain-called. Regression: vm.Type.FieldLookup
+		// overwrote the field-type Name with reflect's f.Type.Name() (which
+		// returns "uintptr" for `type Frame uintptr`), losing the user-level
+		// name needed to find methods on Frame. The fix preserves ft.Base.Name
+		// (back-link to the original named vm.Type) when set.
 		// Surfaces in pkg/errors json_test.go: `tt.Frame.MarshalText()`.
-		// `var f Frame = tt.F` works; `f := tt.F` does not.
-		{n: "named_type_method_via_field_chain", skip: true, src: `type Frame uintptr
+		{n: "named_type_method_via_field_chain", src: `type Frame uintptr
 			func (f Frame) Tag() string { return "ok" }
 			type T struct{ F Frame }
 			tt := T{F: Frame(0)}
 			tt.F.Tag()`, res: `ok`},
+		// Same shape via an embedded field. parseEmbeddedField now also sets
+		// ft.Base so FieldLookup can recover the named type.
+		{n: "named_type_method_via_embedded_field", src: `type Frame uintptr
+			func (f Frame) Tag() string { return "ok" }
+			type T struct{ Frame; want string }
+			tt := T{Frame(0), "x"}
+			tt.Frame.Tag()`, res: `ok`},
 	})
 }
 

@@ -442,12 +442,16 @@ func (p *Parser) parseComposite(s, typ string) (Tokens, int, error) {
 	var result Tokens
 	var sliceLen int
 	for i, sub := range tokens.Split(lang.Comma) {
+		sub = sub.TrimComments()
 		if len(sub) == 0 {
 			continue
 		}
 		toks, err := p.parseExpr(sub, typ)
 		if err != nil {
 			return result, 0, err
+		}
+		if len(toks) == 0 {
+			continue
 		}
 		if noColon {
 			// Insert a numeric index key and a colon operator.
