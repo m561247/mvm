@@ -138,10 +138,14 @@ pointer-sized stores per native function call from interpreted code.
 
 **Harder / weaker:**
 
-- `runtimeFuncMeta` is a `sync.Map` that grows unbounded. Sentinels
-  are allocated per captured frame; long-running programs that
-  capture many stacks will leak. A sweep is the obvious next step
-  but not yet implemented.
+- `runtimeFuncMeta` would grow unbounded if every stack capture
+  allocated a fresh sentinel. To prevent that, `mvmCallers` interns
+  sentinels by `(IP, Pos)` via `sentinelByFrame` (`sync.Map`) in
+  `stdlib/runtime_virt.go`. Total entries are bounded by the number
+  of distinct interpreted call sites -- typically a few thousand,
+  finite for any given program. Long-running embedders that
+  recompile across many programs grow the map across recompiles;
+  a public `Clear` API can be added if that becomes a problem.
 - Single-machine-at-a-time semantics on `ActiveMachine`. Acceptable
   for current uses; needs revisiting before the planned profiler
   runs concurrent with interpreted goroutines.

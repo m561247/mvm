@@ -4,10 +4,24 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/mvm-sh/mvm/vm"
 )
+
+// frameKey is the dedup key for sentinelByFrame: the bytecode position
+// IP plus the source position Pos uniquely identify a call site within
+// a single program. Two calls to runtime.Callers from the same line
+// reuse the same sentinel, which bounds runtimeFuncMeta growth at the
+// number of distinct interpreted call sites rather than the number of
+// stack captures.
+type frameKey struct {
+	IP  int
+	Pos uint32
+}
+
+var sentinelByFrame sync.Map // frameKey -> *runtime.Func
 
 // init registers a PackagePatcher for "runtime" so that interpreted code
 // calling runtime.Callers / runtime.FuncForPC observes the interpreter's
@@ -65,22 +79,45 @@ func mvmCallers(m *vm.Machine, skip int, pcs []uintptr) int {
 		if n >= len(pcs) {
 			return false
 		}
-		file, line, _ := di.Sources.Resolve(int(f.Pos))
-		name := qualifyFuncName(di.FuncAt(f.IP), file)
-		if file == "" {
-			file = "?"
-			line = 0
-		} else {
-			file = "modfs/" + file
-		}
-		rf := vm.NewRuntimeFuncSentinel()
-		vm.RegisterRuntimeFunc(rf, name, file, line)
+		rf := internSentinel(di, f)
 		// pkg/errors' Frame.pc() does (uintptr(f) - 1) so we add 1.
 		pcs[n] = uintptr(unsafe.Pointer(rf)) + 1
 		n++
 		return true
 	})
 	return n
+}
+
+// internSentinel returns a *runtime.Func sentinel for the given frame,
+// reusing a previously allocated one when the (IP, Pos) call site has
+// been seen before. First-encounter sentinels are registered with
+// vm.RegisterRuntimeFunc. The intern cache bounds runtimeFuncMeta size
+// at O(distinct call sites) instead of O(stack captures).
+func internSentinel(di *vm.DebugInfo, f vm.StackFrame) *runtime.Func {
+	key := frameKey{IP: f.IP, Pos: uint32(f.Pos)} //nolint:gosec
+	if v, ok := sentinelByFrame.Load(key); ok {
+		return v.(*runtime.Func)
+	}
+	file, line, _ := di.Sources.Resolve(int(f.Pos))
+	name := qualifyFuncName(di.FuncAt(f.IP), file)
+	if file == "" {
+		file = "?"
+		line = 0
+	} else {
+		file = "modfs/" + file
+	}
+	rf := vm.NewRuntimeFuncSentinel()
+	vm.RegisterRuntimeFunc(rf, name, file, line)
+	actual, loaded := sentinelByFrame.LoadOrStore(key, rf)
+	if loaded {
+		// Lost the race: another goroutine interned a sentinel for the
+		// same key. The metadata is identical so it doesn't matter
+		// which one wins; just drop ours and use theirs. The orphaned
+		// sentinel stays in runtimeFuncMeta -- a small bounded leak
+		// proportional to race count, not capture count.
+		return actual.(*runtime.Func)
+	}
+	return rf
 }
 
 // mvmFuncForPC accepts either a sentinel pc produced by mvmCallers or a

@@ -670,10 +670,15 @@ sequenceDiagram
     VM-->>User: shim returns metadata from side table
 ```
 
-**Limitations** (tracked, not yet addressed):
+**Limitations:**
 
-- The side `sync.Map` grows unbounded -- sentinels are never collected
-  even after the captured stack has been discarded.
+- Sentinels are interned by `(IP, Pos)` in `stdlib/runtime_virt.go`'s
+  `sentinelByFrame` map, so `runtimeFuncMeta` size is bounded by the
+  number of distinct interpreted call sites (typically thousands)
+  rather than the number of stack captures. Long-running embedders
+  that recompile the program many times still grow the map across
+  recompiles -- nothing sweeps the cache automatically. A public
+  `Clear` would be straightforward to add when needed.
 - Single-machine-at-a-time semantics leaks under truly concurrent
   goroutine execution.
 
