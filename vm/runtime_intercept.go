@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // RuntimeFuncInfo holds the synthesized Name/FileLine for a *runtime.Func
@@ -68,7 +69,8 @@ type runtimeFuncSentinel struct {
 // unique. Use it together with RegisterRuntimeFunc to mark a PC as
 // virtualized.
 func NewRuntimeFuncSentinel() *runtime.Func {
-	return &(&runtimeFuncSentinel{}).rf
+	s := &runtimeFuncSentinel{}
+	return (*runtime.Func)(unsafe.Pointer(s))
 }
 
 // RegisterRuntimeFunc associates Name/File/Line metadata with rf so that
