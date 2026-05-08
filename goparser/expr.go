@@ -165,6 +165,19 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 			}
 			if s != nil && s.Kind == symbol.Type {
 				ctype = t.Str
+				// Non-composite uses of a Type ident: T(x) (conversion),
+				// T.Method (method expression), and struct-field-key
+				// shadows (T:value inside a composite). For these, the
+				// speculative Fnew the compiler would otherwise emit is
+				// pure noise; tag the token so the comp Ident handler
+				// skips it. T{...} is the only composite use, so absence
+				// of the tag still drives Fnew emission for that path.
+				if i+1 < lin {
+					switch in[i+1].Tok {
+					case lang.ParenBlock, lang.Period, lang.Colon:
+						t.MarkNoFnew()
+					}
+				}
 			}
 			out = append(out, t)
 
@@ -439,11 +452,36 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 	}
 
 	noColon := len(tokens) > 0 && tokens.Index(lang.Colon) == -1
+	// For struct composite literals, the LHS of `field: value` is always a
+	// field NAME (not a value reference). Detect this case here and stash
+	// the name on the Colon token's Arg so the compiler never sees the key
+	// as an Ident -- avoiding a speculative load that would later have to
+	// be nop'd, and which could clash with a same-named outer local.
+	isStruct := false
+	if !noColon {
+		if sym := p.Symbols[typ]; sym != nil && sym.Type.IsStruct() {
+			isStruct = true
+		}
+	}
+
 	var result Tokens
 	var sliceLen int
 	for i, sub := range tokens.Split(lang.Comma) {
 		sub = sub.TrimComments()
 		if len(sub) == 0 {
+			continue
+		}
+		if isStruct && len(sub) >= 2 && sub[0].Tok == lang.Ident && sub[1].Tok == lang.Colon {
+			fieldName := sub[0].Str
+			valueToks, verr := p.parseExpr(sub[2:], typ)
+			if verr != nil {
+				return result, 0, verr
+			}
+			if len(valueToks) == 0 {
+				continue
+			}
+			result = append(result, valueToks...)
+			result = append(result, newFieldColon(fieldName, sub[1].Pos))
 			continue
 		}
 		toks, err := p.parseExpr(sub, typ)

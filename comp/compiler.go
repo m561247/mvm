@@ -763,7 +763,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if narg != 1 {
 					return c.errAt(t, "type conversion requires exactly one argument")
 				}
-				c.removeFnew(s.Index)
+				if !s.NoFnew {
+					c.removeFnew(s.Index)
+				}
 				arg := pop() // argument (top of stack)
 				pop()        // type symbol
 				push(&symbol.Symbol{Kind: symbol.Value, Type: s.Type})
@@ -951,6 +953,32 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.Call, narg, callNret)
 
 		case lang.Colon:
+			// Struct field key: parseComposite stashed the field name in
+			// Arg[0], so the key never entered the Ident handler and only
+			// the value is on the stack. This avoids the speculative key
+			// load that would otherwise need patching when the field name
+			// shadows a same-named outer local.
+			if fieldName, ok := t.FieldKeyName(); ok {
+				vs := pop()
+				ts := top()
+				tsType := ts.Type
+				if ts.IsPtr() {
+					tsType = ts.Type.Elem()
+				}
+				if !tsType.IsStruct() {
+					break
+				}
+				j, ft := tsType.FieldLookup(fieldName)
+				if j == nil {
+					break
+				}
+				if ft != nil && ft.Rtype.Kind() == reflect.Func {
+					c.emit(t, vm.WrapFunc, c.typeIndex(ft))
+				}
+				c.emitIfaceWrap(t, ft, vs.Type)
+				c.emit(t, vm.FieldSet, j...)
+				break
+			}
 			vs := pop() // value
 			ks := pop() // key or index
 			ts := top()
@@ -1001,7 +1029,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if j == nil {
 					break
 				}
-				if ks.Kind == symbol.Type {
+				if ks.Kind == symbol.Type && !ks.NoFnew {
 					c.removeFnew(ks.Index)
 				}
 				if ft != nil && ft.Rtype.Kind() == reflect.Func {
@@ -1372,6 +1400,18 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						c.Data = append(c.Data, s.Value)
 					}
 				}
+				// Type idents tagged by the parser as non-composite (T(x),
+				// T.M, or struct-field-key shadow) skip the speculative
+				// Fnew. Mark the stack entry so consumer ops (Period
+				// method-expr, Call type-conversion, Colon Type) know not
+				// to scan back for a matching Fnew -- which would otherwise
+				// find an unrelated earlier Fnew of the same type.
+				if s.Kind == symbol.Type && t.NoFnew() {
+					sc := *s
+					sc.NoFnew = true
+					stack[len(stack)-1] = &sc
+					break
+				}
 				c.emitTypeOrGlobal(t, s, s.Index)
 			}
 
@@ -1573,7 +1613,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					// Method expression: Type.Method yields a func with receiver as first arg.
 					// A composite literal (T{}.Method) is a value, not a method expression.
 					if s.Kind == symbol.Type && !s.Composite {
-						c.removeFnew(s.Index)
+						if !s.NoFnew {
+							c.removeFnew(s.Index)
+						}
 						push(&symbol.Symbol{
 							Kind:       symbol.Func,
 							Name:       m.Name,

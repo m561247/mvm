@@ -774,3 +774,6 @@ func (t *Type) embeddedFieldLookup(name string) ([]int, *Type) {
 
 // IsPtr returns true if type t is of pointer kind.
 func (t *Type) IsPtr() bool { return t.Rtype.Kind() == reflect.Pointer }
+
+// IsStruct returns true if type t is of struct kind.
+func (t *Type) IsStruct() bool { return t != nil && t.Rtype != nil && t.Rtype.Kind() == reflect.Struct }

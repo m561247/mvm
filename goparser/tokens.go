@@ -85,6 +85,39 @@ func (toks Tokens) SplitStart(tok lang.Token) (result []Tokens) {
 	}
 }
 
+// FieldKeyName returns the field name of a struct-composite-literal key
+// Colon token (emitted by newFieldColon), and false otherwise.
+func (t Token) FieldKeyName() (string, bool) {
+	if len(t.Arg) == 0 {
+		return "", false
+	}
+	name, ok := t.Arg[0].(string)
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// noFnewMarker tags a Type Ident token whose role is non-composite (type
+// conversion T(x), method expression T.M, or a struct field-key shadow).
+// The compiler skips the speculative Fnew emit when the marker is present,
+// which avoids the matching removeFnew patches on the consumer side.
+type noFnewMarker struct{}
+
+// MarkNoFnew tags this Token (intended for Type Idents) so the compiler
+// will not emit a speculative Fnew for it.
+func (t *Token) MarkNoFnew() { t.Arg = append(t.Arg, noFnewMarker{}) }
+
+// NoFnew reports whether this Token was tagged via MarkNoFnew.
+func (t Token) NoFnew() bool {
+	for _, a := range t.Arg {
+		if _, ok := a.(noFnewMarker); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func newToken(tok lang.Token, str string, pos int, arg ...any) Token {
 	return Token{Token: scan.Token{Tok: tok, Str: str, Pos: pos}, Arg: arg}
 }
@@ -108,9 +141,11 @@ func newJumpSetTrue(label string, pos int) Token      { return newToken(lang.Jum
 func newComposite(ctype string, pos, sliceLen int) Token {
 	return newToken(lang.Composite, ctype, pos, sliceLen)
 }
-func newIndex(pos int) Token  { return newToken(lang.Index, "", pos) }
-func newInt(i, pos int) Token { return newToken(lang.Int, strconv.Itoa(i), pos) }
-func newColon(pos int) Token  { return newToken(lang.Colon, "", pos) }
+func newIndex(pos int) Token                   { return newToken(lang.Index, "", pos) }
+func newInt(i, pos int) Token                  { return newToken(lang.Int, strconv.Itoa(i), pos) }
+func newColon(pos int) Token                   { return newToken(lang.Colon, "", pos) }
+func newFieldColon(name string, pos int) Token { return newToken(lang.Colon, "", pos, name) }
+
 func newLen(i, pos int) Token { return newToken(lang.Len, "", pos, i) }
 func newSlice(pos int) Token  { return newToken(lang.Slice, "", pos) }
 func newTypeAssert(typ *vm.Type, pos, okForm int) Token {
