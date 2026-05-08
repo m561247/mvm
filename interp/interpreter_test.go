@@ -1704,7 +1704,6 @@ func newConnPool() *connPool { return &connPool{name: "connPool"} }
 b := newBaseClient(newConnPool())
 b.connPool.(*connPool).name`, res: "connPool"},
 
-		// type assertion on interface value stored in struct field
 		{n: "iface_struct_field_assert", src: `
 import "io"
 import "strings"
@@ -1713,14 +1712,12 @@ a := rac{io.NopCloser(strings.NewReader("test"))}
 _, ok := a.r.(io.Closer)
 ok`, res: "true"},
 
-		// type assertion must return false when concrete type lacks the method
 		{n: "iface_assert_wrong_iface", src: `
 import "io"
 import "strings"
 func f(r io.Reader) bool { _, ok := r.(io.Closer); return ok }
 f(strings.NewReader("test"))`, res: "false"},
 
-		// type assertion to unrelated concrete type must not panic
 		{n: "native_iface_to_wrong_struct", src: `
 import "errors"
 type T struct { P1 int }
@@ -1735,18 +1732,28 @@ var i interface{} = errors.New("boom")
 _, ok := i.(T)
 ok`, res: "false"},
 
-		// Type-assert a native error to a user-defined interface that the
-		// concrete type does not satisfy. Regression: vm.go's TypeAssert used
-		// rv.Type().AssignableTo(dstTyp.Rtype) which is always true for
-		// user-defined interfaces (Rtype = AnyRtype), bypassing the method-set
-		// check. pkg/errors's Cause() relies on this: native errorString must
-		// NOT satisfy the local `causer` interface (Cause() error).
+		// Regression: TypeAssert previously used AssignableTo to dstTyp.Rtype
+		// which equals AnyRtype for user-defined interfaces, yielding false
+		// positives (every type "matched"). Native errorString must NOT
+		// satisfy the local causer interface.
 		{n: "user_iface_native_err_no_match", src: `
 import "errors"
 type causer interface { Cause() error }
 e := errors.New("test")
 _, ok := e.(causer)
 ok`, res: "false"},
+
+		// Regression: pointer-receiver methods on user types are registered
+		// on the value type's vm.Type (with PtrRecv); the runtime concrete
+		// *T has empty Methods. ResolveMethodType walks to ElemType so the
+		// assertion sees them. pkg/errors's Cause() relied on this.
+		{n: "user_iface_ptr_recv_match", src: `
+type stringer interface { String() string }
+type W struct { s string }
+func (w *W) String() string { return w.s }
+var s stringer = &W{s: "ok"}
+_, ok := s.(stringer)
+ok`, res: "true"},
 	})
 }
 

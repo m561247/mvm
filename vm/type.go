@@ -142,15 +142,33 @@ func (t *Type) Implements(iface *Type) bool {
 	// so reflect can check implementation.
 	nativeIface := iface.Rtype.NumMethod() > 0
 	for _, im := range iface.IfaceMethods {
-		if im.ID < 0 || im.ID >= len(t.Methods) || !t.Methods[im.ID].IsResolved() {
-			if nativeIface {
-				return t.Rtype.Implements(iface.Rtype)
-			}
-			// Native concrete type with no mvm Methods: check reflect method set.
-			return iface.NativeImplements(t.Rtype)
+		if t.ResolveMethodType(im.ID) != nil {
+			continue
 		}
+		if nativeIface {
+			return t.Rtype.Implements(iface.Rtype)
+		}
+		// Native concrete type with no mvm Methods: check reflect method set.
+		return iface.NativeImplements(t.Rtype)
 	}
 	return true
+}
+
+// ResolveMethodType returns the Type whose Methods[id] holds the resolved
+// entry — t itself, or t.ElemType when t is a pointer that doesn't carry
+// its own Methods slice (mvm registers pointer-receiver methods on the
+// value type's vm.Type). Returns nil when no resolved entry is found.
+func (t *Type) ResolveMethodType(id int) *Type {
+	if id < 0 {
+		return nil
+	}
+	if id < len(t.Methods) && t.Methods[id].IsResolved() {
+		return t
+	}
+	if t.ElemType != nil && id < len(t.ElemType.Methods) && t.ElemType.Methods[id].IsResolved() {
+		return t.ElemType
+	}
+	return nil
 }
 
 // NativeImplements reports whether native reflect type rt has all the methods
@@ -515,7 +533,7 @@ func (v Value) IsIface() bool {
 // Exportable returns rv with its read-only flag cleared so that .Interface()
 // and .Call() do not panic on values obtained from unexported struct fields.
 func Exportable(rv reflect.Value) reflect.Value {
-	if rv.CanInterface() {
+	if !rv.IsValid() || rv.CanInterface() {
 		return rv
 	}
 	if rv.CanAddr() {

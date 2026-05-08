@@ -504,7 +504,7 @@ func (m *Machine) Run() (err error) {
 			// taken off an unexported struct field). In that case .Interface()
 			// panics, so guard the Closure/int checks with CanInterface — such
 			// values are plain func values and fall through to the func path.
-			canCallInterface := fval.ref.CanInterface()
+			canCallInterface := fval.ref.IsValid() && fval.ref.CanInterface()
 			var clo Closure
 			var isClosure, isInt bool
 			var iv int
@@ -965,13 +965,18 @@ func (m *Machine) Run() (err error) {
 				break
 			}
 			ifc := mem[sp].IfaceVal()
-			// Fall back to reflect-based dispatch when the concrete type
-			// has no compiled method entry (native type in a mvm interface).
-			if methodID >= len(ifc.Typ.Methods) || !ifc.Typ.Methods[methodID].IsResolved() {
+			// Pointer types share their value type's method set in Go: mvm
+			// registers pointer-receiver methods on the value type, so *T's
+			// Methods slice may be empty even when the method is resolved
+			// on T. ResolveMethodType walks to ElemType when needed.
+			methodTyp := ifc.Typ.ResolveMethodType(methodID)
+			if methodTyp == nil {
+				// Fall back to reflect-based dispatch when neither T nor *T
+				// has a compiled method entry (native type in mvm interface).
 				mem[sp] = Value{ref: nativeMethodLookup(ifc.Val.Reflect(), m.MethodNames[methodID])}
 				break
 			}
-			method := ifc.Typ.Methods[methodID]
+			method := methodTyp.Methods[methodID]
 			// The concrete type inside an embedded interface field is only known at runtime.
 			nativeFallback := false
 			for method.EmbedIface {
