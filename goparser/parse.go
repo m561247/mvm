@@ -39,7 +39,8 @@ type Parser struct {
 	continueLabel     string
 	pendingLabel      string               // user label preceding the current for/switch statement
 	labeledJump       map[string][2]string // maps user label to [continueLabel, breakLabel]
-	clonum            int                  // closure instance number
+	clonum            int                  // closure instance number, package-global counter
+	funcN             int                  // anonymous-function counter within the current outer function
 	initNum           int                  // init function instance counter
 	InitFuncs         []string             // ordered list of init function internal names
 	blankSeq          int                  // counter for unique blank identifier names

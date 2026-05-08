@@ -200,6 +200,22 @@ func (p *Parser) registerParamsFromSym(s *symbol.Symbol) {
 	}
 }
 
+// anonFuncName synthesizes a name for an anonymous closure. Inside a
+// named outer function the form is "#<outer>.func<N>" with N a
+// per-outer counter; outside any function it falls back to
+// "#f<clonum>" with the package-global counter. The leading '#' is
+// the scope marker that distinguishes synthesized symbols from
+// user-named methods of form "TypeName.MethodName".
+func (p *Parser) anonFuncName() string {
+	clo := p.clonum
+	p.clonum++
+	if p.fname != "" {
+		p.funcN++
+		return "#" + p.fname + ".func" + strconv.Itoa(p.funcN)
+	}
+	return "#f" + strconv.Itoa(clo)
+}
+
 func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	var fname string
 
@@ -222,8 +238,7 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 			// this is an anonymous func with a named return type (e.g. func(T) Ret{}).
 			if s, _, ok := p.Symbols.Get(t.Str, p.scope); ok && s.IsType() {
 				if len(in) < 4 || in[3].Tok != lang.ParenBlock {
-					fname = "#f" + strconv.Itoa(p.clonum) // Generated closure symbol name.
-					p.clonum++
+					fname = p.anonFuncName()
 					break
 				}
 			}
@@ -243,16 +258,16 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 		}
 		if fname == "" {
 			// Anonymous function whose return type starts with a keyword (e.g. func() func() int {}).
-			fname = "#f" + strconv.Itoa(p.clonum)
-			p.clonum++
+			fname = p.anonFuncName()
 		}
 	default:
-		fname = "#f" + strconv.Itoa(p.clonum) // Generated closure symbol name.
-		p.clonum++
+		fname = p.anonFuncName()
 	}
 
 	ofname := p.fname
 	p.fname = fname
+	ofuncN := p.funcN
+	p.funcN = 0
 	ofunc := p.function
 	funcScope := p.funcScope
 	onamedOut := p.namedOut
@@ -289,6 +304,7 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 
 	defer func() {
 		p.fname = ofname // TODO remove in favor of function.
+		p.funcN = ofuncN
 		p.function = ofunc
 		p.funcScope = funcScope
 		p.namedOut = onamedOut

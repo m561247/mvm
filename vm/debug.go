@@ -17,8 +17,19 @@ import (
 type DebugInfo struct {
 	Sources scan.Sources          // source position registry (multi-file / REPL)
 	Labels  map[int]string        // code address -> label/function name
+	Funcs   []FuncRange           // function bytecode ranges, used by FuncAt to pick the innermost frame
 	Globals map[int]string        // data index -> symbol name
 	Locals  map[string][]LocalVar // function name -> local variable list
+}
+
+// FuncRange describes the bytecode range of a function (or anonymous
+// closure). End is one past the last instruction of the body (i.e. an
+// exclusive bound). Closures are emitted inline within their outer
+// function so ranges nest; FuncAt picks the innermost containing range.
+type FuncRange struct {
+	Start int
+	End   int
+	Name  string
 }
 
 // LocalVar describes a local variable within a function frame.
@@ -36,11 +47,31 @@ func NewDebugInfo() *DebugInfo {
 	}
 }
 
-// FuncAt returns the function label whose code address is the largest
-// value in Labels that is <= ip. Returns "" when no label qualifies.
+// FuncAt returns the name of the innermost function whose bytecode
+// range contains ip. Falls back to a "largest start <= ip" scan over
+// Labels when Funcs is empty (e.g. snapshots produced before
+// BuildDebugInfo started populating ranges). Returns "" when no
+// function qualifies.
 func (d *DebugInfo) FuncAt(ip int) string {
 	if d == nil {
 		return ""
+	}
+	if len(d.Funcs) > 0 {
+		bestLen := 0
+		bestName := ""
+		for _, fr := range d.Funcs {
+			if ip < fr.Start || ip >= fr.End {
+				continue
+			}
+			length := fr.End - fr.Start
+			if bestName == "" || length < bestLen {
+				bestLen = length
+				bestName = fr.Name
+			}
+		}
+		if bestName != "" {
+			return bestName
+		}
 	}
 	bestAddr := -1
 	bestName := ""

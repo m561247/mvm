@@ -34,6 +34,8 @@ type Compiler struct {
 	Data    []vm.Value // produced data, will be at the bottom of VM stack
 	Entry   int        // offset in Code to start execution from
 
+	FuncRanges []vm.FuncRange // bytecode [Start, End) range for every compiled function, in source order
+
 	strings   map[string]int                  // locations of strings in Data
 	methodIDs map[string]int                  // global method ID by method name
 	typeIdxs  map[*vm.Type]int                // dedup cache for typeIndex, keyed by mvm type pointer
@@ -368,6 +370,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 	stack := []*symbol.Symbol{}   // for symbolic evaluation and type checking
 	flen := []int{}               // stack length according to function scopes
 	funcStack := []string{}       // names of functions currently being compiled
+	funcStartStack := []int{}     // entry code address per function on funcStack, used to record FuncRange on exit
 	jumpDepth := map[string]int{} // expected compile-stack depth at short-circuit merge labels
 	exprBaseStack := []int{}      // stack of compile-stack depths at expression-statement starts; nested (closure body inside outer call args) requires a stack, not a single base
 	growPos := []int{}            // code positions of Grow instructions per function scope
@@ -1390,6 +1393,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					}
 					flen = append(flen, len(stack))
 					funcStack = append(funcStack, t.Str)
+					funcStartStack = append(funcStartStack, lc)
 					// Register method in its receiver type's method table.
 					if parts := strings.SplitN(t.Str, ".", 2); len(parts) == 2 {
 						typeName := strings.TrimPrefix(parts[0], "*")
@@ -1423,7 +1427,14 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						// Exit function: restore caller stack and function name tracking.
 						l := popflen()
 						stack = stack[:l]
-						funcStack = funcStack[:len(funcStack)-1]
+						top := len(funcStack) - 1
+						c.FuncRanges = append(c.FuncRanges, vm.FuncRange{
+							Start: funcStartStack[top],
+							End:   lc,
+							Name:  funcStack[top],
+						})
+						funcStack = funcStack[:top]
+						funcStartStack = funcStartStack[:top]
 					}
 				}
 				c.SymSet(t.Str, &symbol.Symbol{Kind: symbol.Label, Value: vm.ValueOf(lc)})
@@ -2365,6 +2376,7 @@ func (c *Compiler) BuildDebugInfo() *vm.DebugInfo {
 			di.Globals[idx] = e.name
 		}
 	}
+	di.Funcs = c.FuncRanges
 	return di
 }
 

@@ -144,13 +144,25 @@ func mvmFuncForPC(pc uintptr) *runtime.Func {
 // qualifyFuncName turns a debug-info label such as "TestFormatNew" into
 // "github.com/pkg/errors.TestFormatNew" using the import-path prefix of
 // the function's source file. file has the form "<pkgPath>/<filename>"
-// (set by goparser's source registry). Labels that are already qualified
-// (containing '.') are returned unchanged.
+// (set by goparser's source registry).
+//
+// Three input shapes are handled:
+//   - "TypeName.Method" (already contains '.', no leading '#'): treated
+//     as already qualified and returned unchanged.
+//   - "#OuterFunc.funcN" (anonymous closure with outer-function scope):
+//     '#' is stripped and the package path is prepended, so the result
+//     matches Go's "<pkg>.<outer>.funcN" stack-trace convention.
+//   - "#f0", "#init0", or any short identifier (no '.'): the package
+//     path is prepended after stripping any leading '#'.
 func qualifyFuncName(label, file string) string {
 	if label == "" {
 		return "?"
 	}
-	if strings.ContainsRune(label, '.') {
+	hashed := strings.HasPrefix(label, "#")
+	if hashed {
+		label = label[1:]
+	}
+	if !hashed && strings.ContainsRune(label, '.') {
 		return label
 	}
 	short := label
@@ -159,7 +171,7 @@ func qualifyFuncName(label, file string) string {
 	}
 	pkgPath, _ := splitPathFile(file)
 	if pkgPath == "" {
-		return label
+		return short
 	}
 	return pkgPath + "." + short
 }

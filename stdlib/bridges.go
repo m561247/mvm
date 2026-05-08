@@ -190,6 +190,29 @@ func (b *BridgeHeapInterface) Push(x any) { b.FnPush(x) }
 // Pop implements heap.Interface.
 func (b *BridgeHeapInterface) Pop() any { return b.FnPop() }
 
+// BridgeUnwrap bridges the `interface{ Unwrap() error }` capability used
+// by errors.Is / errors.As / errors.Unwrap chains.
+type BridgeUnwrap struct{ Fn func() error }
+
+// Unwrap implements the standard-library single-error unwrap protocol.
+func (b *BridgeUnwrap) Unwrap() error { return b.Fn() }
+
+// BridgeErrorUnwrap is the composite bridge for types that implement
+// both Error() string and Unwrap() error. Required so a value bridged
+// as `error` also satisfies the anonymous `interface{ Unwrap() error }`
+// assertion that errors.Is / errors.As / errors.Unwrap perform when
+// walking a chain.
+type BridgeErrorUnwrap struct {
+	FnError  func() string
+	FnUnwrap func() error
+}
+
+// Error implements the error interface.
+func (b *BridgeErrorUnwrap) Error() string { return b.FnError() }
+
+// Unwrap implements the standard-library single-error unwrap protocol.
+func (b *BridgeErrorUnwrap) Unwrap() error { return b.FnUnwrap() }
+
 // BridgeFlagValue bridges flag.Value (String, Set).
 type BridgeFlagValue struct {
 	FnString func() string
@@ -214,9 +237,12 @@ func init() {
 	vm.Bridges["Close"] = reflect.TypeOf((*BridgeClose)(nil))
 	vm.Bridges["WriteTo"] = reflect.TypeOf((*BridgeWriteTo)(nil))
 	vm.Bridges["ReadFrom"] = reflect.TypeOf((*BridgeReadFrom)(nil))
+	vm.Bridges["Unwrap"] = reflect.TypeOf((*BridgeUnwrap)(nil))
 
 	vm.CompositeBridges[[2]string{"Read", "WriteTo"}] = reflect.TypeOf((*BridgeReaderWriterTo)(nil))
 	vm.CompositeBridges[[2]string{"ReadFrom", "Write"}] = reflect.TypeOf((*BridgeWriterReaderFrom)(nil))
+	// Sorted alphabetically: Error < Unwrap.
+	vm.CompositeBridges[[2]string{"Error", "Unwrap"}] = reflect.TypeOf((*BridgeErrorUnwrap)(nil))
 
 	// Display bridges are used when the target is interface{}/any.
 	// MarshalJSON/UnmarshalJSON are deliberately omitted: they are not

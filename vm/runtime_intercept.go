@@ -51,9 +51,17 @@ var runtimeFuncPtrType = reflect.TypeOf((*runtime.Func)(nil))
 // struct (opaque{} field), and Go reuses a single pointer for all
 // zero-size allocations -- using it bare would collapse every
 // registered frame onto the same key.
+//
+// The padding is sized at 24 bytes (> 16) so allocations bypass Go's
+// tiny allocator. With a 1-byte struct the tiny allocator can pack
+// consecutive sentinels exactly 1 byte apart, which makes
+// mvmFuncForPC's `pc-1 / pc` two-step lookup alias adjacent sentinels:
+// pcs[i+1]-1 == sentinel_i, so frame i+1 prints frame i's metadata.
+// 24 bytes lands the struct in a regular 8-aligned size class, so
+// distinct sentinels are at least 8 bytes apart.
 type runtimeFuncSentinel struct {
 	rf runtime.Func
-	_  byte
+	_  [24]byte
 }
 
 // NewRuntimeFuncSentinel returns a fresh *runtime.Func whose address is
