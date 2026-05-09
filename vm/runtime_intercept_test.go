@@ -47,13 +47,16 @@ func TestRuntimeFuncSentinelLookupNoAlias(t *testing.T) {
 		RegisterRuntimeFunc(rfs[i], "fn"+string(rune('a'+i)), "f.go", i+1)
 	}
 	for i, rf := range rfs {
+		// pkg/errors stores PCs as Frame(sentinel+1); LookupRuntimeFuncByPC
+		// recovers the sentinel via pc-1 just like mvmFuncForPC.
 		pc := uintptr(unsafe.Pointer(rf)) + 1
-		// Mirror mvmFuncForPC's primary lookup: pc-1.
-		got := (*runtime.Func)(unsafe.Pointer(pc - 1)) //nolint:govet,gosec
-		info := LookupRuntimeFunc(got)
+		got, info := LookupRuntimeFuncByPC(pc)
 		if info == nil {
 			t.Errorf("frame %d: pc-1 lookup returned nil", i)
 			continue
+		}
+		if got != rf {
+			t.Errorf("frame %d: pc-1 lookup returned a different sentinel", i)
 		}
 		want := "fn" + string(rune('a'+i))
 		if info.Name != want {

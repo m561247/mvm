@@ -173,19 +173,8 @@ func internSentinel(di *vm.DebugInfo, f vm.StackFrame) *runtime.Func {
 // real host pc. For sentinels it returns the registered *runtime.Func;
 // otherwise it delegates to runtime.FuncForPC so non-mvm uses still work.
 func mvmFuncForPC(pc uintptr) *runtime.Func {
-	if pc == 0 {
-		return runtime.FuncForPC(pc)
-	}
-	// pkg/errors stores PCs as Frame(pc+1) and queries via Frame(pc).pc()
-	// which subtracts 1, so the sentinel is reachable at pc-1. Try pc as
-	// well in case a caller skipped the +1 convention.
-	candidate := (*runtime.Func)(unsafe.Pointer(pc - 1)) //nolint:govet,gosec
-	if vm.LookupRuntimeFunc(candidate) != nil {
-		return candidate
-	}
-	candidate = (*runtime.Func)(unsafe.Pointer(pc)) //nolint:govet,gosec
-	if vm.LookupRuntimeFunc(candidate) != nil {
-		return candidate
+	if rf, _ := vm.LookupRuntimeFuncByPC(pc); rf != nil {
+		return rf
 	}
 	return runtime.FuncForPC(pc)
 }

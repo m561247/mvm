@@ -19,7 +19,20 @@ type RuntimeFuncInfo struct {
 	Line int
 }
 
-var runtimeFuncMeta sync.Map // *runtime.Func -> *RuntimeFuncInfo
+// runtimeFuncEntry pairs a sentinel pointer with its metadata. The map
+// is keyed by sentinel address (uintptr) rather than *runtime.Func so
+// that PC-based lookups (mvmFuncForPC's pc-1 / pc probes) can be plain
+// map loads instead of `(*runtime.Func)(unsafe.Pointer(pc - 1))`. The
+// pointer-arithmetic form is rejected by checkptr under -race because
+// the resulting unsafe.Pointer expression carries no original to anchor
+// the conversion. Storing rf alongside info keeps the sentinel
+// allocation alive for the lifetime of the entry.
+type runtimeFuncEntry struct {
+	rf   *runtime.Func
+	info *RuntimeFuncInfo
+}
+
+var runtimeFuncMeta sync.Map // uintptr (sentinel addr) -> *runtimeFuncEntry
 
 // activeMachine tracks the currently running Machine so that native
 // bridges (e.g. the runtime.Callers replacement) can find it.
@@ -82,17 +95,48 @@ func RegisterRuntimeFunc(rf *runtime.Func, name, file string, line int) {
 	if rf == nil {
 		return
 	}
-	runtimeFuncMeta.Store(rf, &RuntimeFuncInfo{Name: name, File: file, Line: line})
+	addr := uintptr(unsafe.Pointer(rf))
+	runtimeFuncMeta.Store(addr, &runtimeFuncEntry{
+		rf:   rf,
+		info: &RuntimeFuncInfo{Name: name, File: file, Line: line},
+	})
 }
 
 // LookupRuntimeFunc returns the registered metadata for rf, or nil if rf
 // was not produced by the mvm bridge.
 func LookupRuntimeFunc(rf *runtime.Func) *RuntimeFuncInfo {
-	v, ok := runtimeFuncMeta.Load(rf)
+	if rf == nil {
+		return nil
+	}
+	v, ok := runtimeFuncMeta.Load(uintptr(unsafe.Pointer(rf)))
 	if !ok {
 		return nil
 	}
-	return v.(*RuntimeFuncInfo)
+	return v.(*runtimeFuncEntry).info
+}
+
+// LookupRuntimeFuncByPC resolves a host-style PC value to a registered
+// sentinel and its metadata. It tries pc-1 first (pkg/errors stores
+// PC = sentinel+1 and looks up via pc-1) and falls back to pc for
+// callers that skipped the +1 convention. Returns nil/nil when pc does
+// not name a virtualized frame.
+//
+// Compared to the previous (*runtime.Func)(unsafe.Pointer(pc - 1))
+// idiom, this form does no pointer arithmetic on a uintptr that came
+// from a host pointer, so it is safe under -race / checkptr.
+func LookupRuntimeFuncByPC(pc uintptr) (*runtime.Func, *RuntimeFuncInfo) {
+	if pc == 0 {
+		return nil, nil
+	}
+	if v, ok := runtimeFuncMeta.Load(pc - 1); ok {
+		e := v.(*runtimeFuncEntry)
+		return e.rf, e.info
+	}
+	if v, ok := runtimeFuncMeta.Load(pc); ok {
+		e := v.(*runtimeFuncEntry)
+		return e.rf, e.info
+	}
+	return nil, nil
 }
 
 // runtimeFuncShim returns a bound-method reflect.Value that satisfies
