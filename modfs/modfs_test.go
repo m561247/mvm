@@ -312,6 +312,50 @@ func TestEscapePath(t *testing.T) {
 	}
 }
 
+func TestInject(t *testing.T) {
+	zipBytes, err := buildZip("github.com/mvm-sh/std", "v0.1.0", map[string]string{
+		"go.mod":           "module github.com/mvm-sh/std\n",
+		"errors/errors.go": "package errors\nfunc New(s string) error { return nil }\n",
+	})
+	if err != nil {
+		t.Fatalf("buildZip: %v", err)
+	}
+	// Use Offline so any miss returns ErrNotExist instead of dialing the
+	// (unreachable) DefaultProxy.
+	f := New(Options{Offline: true})
+	if err := f.Inject("github.com/mvm-sh/std", "v0.1.0", zipBytes); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+
+	data, err := fs.ReadFile(f, "github.com/mvm-sh/std/errors/errors.go")
+	if err != nil {
+		t.Fatalf("read errors.go: %v", err)
+	}
+	if !strings.Contains(string(data), "package errors") {
+		t.Errorf("unexpected: %q", data)
+	}
+
+	// Non-injected lookup must fail fast in offline mode.
+	if _, err := fs.ReadFile(f, "github.com/other/mod/x.go"); err == nil {
+		t.Error("expected ErrNotExist for non-injected module in offline mode")
+	}
+}
+
+func TestOfflineNoFetch(t *testing.T) {
+	// Offline FS pointed at a counting proxy must never issue a request.
+	p := &fakeProxy{t: t, latest: map[string]string{}, modules: map[string]map[string]string{}}
+	srv := httptest.NewServer(http.HandlerFunc(p.handler))
+	t.Cleanup(srv.Close)
+	f := New(Options{Proxy: srv.URL, Offline: true})
+
+	if _, err := fs.ReadFile(f, "github.com/anything/at/all.go"); err == nil {
+		t.Error("expected error in offline mode")
+	}
+	if got := atomic.LoadInt64(&p.requests); got != 0 {
+		t.Errorf("offline FS made %d proxy requests, want 0", got)
+	}
+}
+
 func names(entries []fs.DirEntry) []string {
 	out := make([]string, len(entries))
 	for i, e := range entries {

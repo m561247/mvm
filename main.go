@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,16 +16,18 @@ import (
 	"github.com/mvm-sh/mvm/modfs"
 	"github.com/mvm-sh/mvm/stdlib"
 	_ "github.com/mvm-sh/mvm/stdlib/all"
+	"github.com/mvm-sh/mvm/stdlib/stdmod"
 )
 
-// newRemoteFS builds the parser's remote-FS fallback from the GOPROXY
-// environment variable, mirroring the Go toolchain's semantics:
+// buildModFS builds the modfs the parser uses for both stdlib redirects
+// and third-party imports, applying GOPROXY semantics from the Go
+// toolchain:
 //
 //   - unset / empty: use the default public proxy
-//   - "off":         disable network imports (returns nil)
+//   - "off":         disable network fetches (offline-only modfs)
 //   - any URL list:  use the first URL entry as the proxy; "direct"/"off"
-//     entries disable since modfs has no direct VCS path
-func newRemoteFS() fs.FS {
+//     entries fall back to offline since modfs has no direct VCS path
+func buildModFS() *modfs.FS {
 	p := os.Getenv("GOPROXY")
 	if p == "" {
 		return modfs.New(modfs.Options{})
@@ -36,12 +37,21 @@ func newRemoteFS() fs.FS {
 		case "":
 			continue
 		case "off", "direct":
-			return nil
+			return modfs.New(modfs.Options{Offline: true})
 		default:
 			return modfs.New(modfs.Options{Proxy: strings.TrimSpace(part)})
 		}
 	}
-	return nil
+	return modfs.New(modfs.Options{Offline: true})
+}
+
+func wireFS(i *interp.Interp) {
+	mfs := buildModFS()
+	if err := mfs.Inject(stdmod.ModulePath, stdmod.Version, stdlib.EmbeddedStd()); err != nil {
+		panic("modfs inject embedded std: " + err.Error())
+	}
+	i.SetStdlibFS(stdmod.FS(mfs))
+	i.SetRemoteFS(mfs)
 }
 
 // newlineTracker wraps a writer and tracks whether the last byte written was a newline.
@@ -100,24 +110,28 @@ func dispatch(args []string) error {
 	return runCmd(args)
 }
 
-func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "Usage: mvm <command> [arguments]")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "Commands:")
-	_, _ = fmt.Fprintln(w, "  run     run a Go source file, evaluate an expression, or start the REPL")
-	_, _ = fmt.Fprintln(w, "  test    run Go tests in a package directory")
-	_, _ = fmt.Fprintln(w, "  version print the mvm version, OS, and architecture")
-	_, _ = fmt.Fprintln(w, "  help    show this help")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, `Use "mvm <command> -h" for details on a command.`)
-}
+const usageText = `Usage: mvm <command> [arguments]
+
+Commands:
+  run     run a Go source file, evaluate an expression, or start the REPL
+  test    run Go tests in a package directory
+  version print the mvm version, OS, and architecture
+  help    show this help
+
+Use "mvm <command> -h" for details on a command.
+`
+
+func usage(w io.Writer) { _, _ = fmt.Fprint(w, usageText) }
+
+const runUsageText = `Usage: mvm run [options] [path] [args]
+Options:
+`
 
 func runCmd(arg []string) error {
 	var str string
 	rflag := flag.NewFlagSet("run", flag.ContinueOnError)
 	rflag.Usage = func() {
-		fmt.Println("Usage: mvm run [options] [path] [args]")
-		fmt.Println("Options:")
+		_, _ = fmt.Fprint(os.Stdout, runUsageText)
 		rflag.PrintDefaults()
 	}
 	rflag.StringVar(&str, "e", "", "string to eval")
@@ -128,7 +142,7 @@ func runCmd(arg []string) error {
 
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
-	i.SetRemoteFS(newRemoteFS())
+	wireFS(i)
 
 	out := &newlineTracker{w: os.Stdout}
 	i.SetIO(os.Stdin, out, os.Stderr)
@@ -196,7 +210,7 @@ func testCmd(arg []string) error {
 
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
-	i.SetRemoteFS(newRemoteFS())
+	wireFS(i)
 	i.AutoImportPackages()
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
 

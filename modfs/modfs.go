@@ -34,13 +34,19 @@ type Options struct {
 	// Client is the HTTP client used for proxy requests. Empty means
 	// http.DefaultClient.
 	Client *http.Client
+	// Offline disables proxy fetches. Only modules added via Inject are
+	// served; any other lookup returns fs.ErrNotExist. Useful for
+	// playground/WASM and GOPROXY=off, where the embedded stdlib zip is the
+	// sole source.
+	Offline bool
 }
 
 // FS is an in-memory filesystem that resolves Go import paths against a
 // module proxy. It implements fs.FS, fs.StatFS and fs.ReadDirFS.
 type FS struct {
-	proxy  string
-	client *http.Client
+	proxy   string
+	client  *http.Client
+	offline bool
 
 	mu      sync.Mutex
 	modules map[string]*module  // module path -> loaded module
@@ -67,9 +73,27 @@ func New(opts Options) *FS {
 	return &FS{
 		proxy:   proxy,
 		client:  client,
+		offline: opts.Offline,
 		modules: map[string]*module{},
 		missing: map[string]struct{}{},
 	}
+}
+
+// Inject installs a pre-fetched module into the in-memory cache. The
+// zipBytes must use the standard Go module proxy layout (entries rooted at
+// "<modPath>@<version>/"). After Inject, lookups under modPath are served
+// from memory without network access. Any prior negative cache entry for
+// modPath itself is cleared so locate() can find it.
+func (f *FS) Inject(modPath, version string, zipBytes []byte) error {
+	mod, err := newModule(modPath, version, zipBytes)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modules[modPath] = mod
+	delete(f.missing, modPath)
+	return nil
 }
 
 // Open implements fs.FS. The name is an import path or a path inside one
@@ -155,6 +179,9 @@ func (f *FS) locate(importPath string) (*module, string, error) {
 func (f *FS) fetchModulePath(modPath string) (*module, error) {
 	if mod, ok := f.modules[modPath]; ok {
 		return mod, nil
+	}
+	if f.offline {
+		return nil, fs.ErrNotExist
 	}
 	version, err := f.fetchLatest(modPath)
 	if err != nil {
