@@ -29,11 +29,14 @@ standard library. It has three responsibilities:
   Called from shadow packages' `init()`.
 - **`PackagePatchers() map[string][]PackagePatcher`** -- patcher list,
   consulted once by `Interp.patchStdlibOverrides` on the first `Eval`.
-- **`SrcFS() fs.FS`** -- filesystem rooted at the embedded `stdlib/src/`
-  tree. Installed as the parser's second-tier FS (after `pkgfs`, before
-  `remotefs`) so importing generics-first packages that cannot be
-  reflected through `cmd/extract -gen` resolves locally without going
-  to the network. See [modfs](modfs.md) for the third tier.
+- **`EmbeddedStd() []byte`** -- bytes of `stdlib/src.zip`, a
+  Go-proxy-format zip of the synthetic `github.com/mvm-sh/std` module
+  baked into the binary via `//go:embed`. Consumed by
+  [`stdmod`](stdmod.md) to seed the parser's stdlib FS without touching
+  the network. The zip contains only `*.go` implementation files plus
+  `go.mod` and `LICENSE` -- tests, examples, and repo scaffolding
+  (`Makefile`, `patches/`, `.git`) are stripped. See
+  [ADR-017](../decisions/ADR-017-std-module-redirect.md).
 
 ## Internal design
 
@@ -78,17 +81,37 @@ file header of `stdlib/gen.go`: `unsafe`, `plugin`, `runtime/race`,
 and `syscall` (handled per-platform by the Makefile loop, not by
 `go generate`).
 
-### Embedded generic-first packages (`stdlib/src/`)
+### Interpreted-source packages: the synthetic `std` module
 
-`cmp`, `iter`, `maps`, and `slices` cannot be extracted as `reflect.Value`
-entries because their generic functions never materialise until
-instantiation. Instead, their upstream source is embedded under
-`stdlib/src/<pkg>/<pkg>.go`. The interpreter sets `Parser.stdlibfs` to
-`stdlib.SrcFS()` at construction; `ParseAll` falls back to it when
-`pkgfs` does not contain the requested import path, and falls through
-again to `remotefs` (if installed) when neither has it. Interpreted
-code parses these packages through the normal generic-instantiation
-path.
+Generic-first stdlib packages (`cmp`, `iter`, `maps`, `slices`) cannot
+be extracted as `reflect.Value` entries because their generic functions
+never materialize until instantiation. A growing set of other pure-Go
+packages (`errors`, `path`, ...) is also better served by interpreting
+upstream source than by maintaining hand-written native bridges.
+
+These packages live in a separate Go module,
+`github.com/mvm-sh/std`, sourced from `$GOROOT/src` and patched
+locally where mvm cannot interpret upstream as-is (`iter.Pull`/`Pull2`
+needing runtime coroutines, etc.). At build time `stdlib/gen_stdzip.go`
+walks `../../std`, emits `stdlib/src.zip` in proxy layout, and that
+zip is `//go:embed`-ed by `stdlib/srcfs.go`.
+
+At runtime [`stdmod`](stdmod.md) wraps the embedded bytes (or a
+network-fetched override) in a redirecting `fs.FS` that the parser
+sees in its stdlibFS slot. Stdlib-shaped imports get rewritten to
+`github.com/mvm-sh/std/<pkg>` and resolved through `modfs`. Native
+bridges still take precedence -- the parser checks `Packages[importPath]`
+before any FS lookup -- so packages registered in `core`/`ext`
+continue to use their pre-compiled bindings even if the std module
+also publishes them.
+
+The std module is a deliberately partial mirror; performance-critical
+or hard-to-interpret packages (`fmt`, `runtime`, `reflect`, `sync`,
+`time`, `crypto/*` with assembly fast paths, ...) stay as bridges and
+are intentionally not added to the std module's package list.
+
+See [ADR-017](../decisions/ADR-017-std-module-redirect.md) for the
+complete design.
 
 ### Hand-written bindings
 

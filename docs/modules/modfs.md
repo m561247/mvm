@@ -24,15 +24,28 @@ Two non-negotiables shape the design:
 - **`FS`** -- implements `fs.FS`, `fs.StatFS`, and `fs.ReadDirFS`. Internal
   state is a per-process cache of loaded modules and a negative cache for
   module-path candidates that the proxy could not resolve.
-- **`Options`** -- proxy URL (default `https://proxy.golang.org`) and
-  HTTP client.
+- **`Options`** -- proxy URL (default `https://proxy.golang.org`), HTTP
+  client, and the `Offline` flag. `Offline=true` disables proxy
+  fetches entirely; only modules added via `Inject` are served, every
+  other lookup returns `fs.ErrNotExist`. Used by the playground/WASM
+  path and by `GOPROXY=off`, where the embedded stdlib zip is the sole
+  source.
 - **`New(opts Options) *FS`** -- constructor.
+- **`(*FS).Inject(modPath, version string, zipBytes []byte) error`** --
+  install a pre-fetched module into the in-memory cache. Bytes must
+  use the proxy zip layout (entries rooted at `<modPath>@<version>/`).
+  After Inject, lookups under `modPath` are served from memory without
+  network access. Used by `stdmod.DefaultFS` and `main.wireFS` to seed
+  the FS with the embedded `github.com/mvm-sh/std` zip at startup.
 - **`DefaultProxy`** (`"https://proxy.golang.org"`) -- the public Go
   module proxy.
 
 The integration point is `goparser.Parser.SetRemoteFS(fsys fs.FS)`, which
 lets any `fs.FS` (not just modfs) be installed; modfs is the canonical
-implementation.
+implementation. The same `*modfs.FS` is also handed to `stdmod.FS()`
+which wraps it as the parser's stdlibFS slot, so a single cache backs
+both stdlib redirect and third-party imports. See
+[ADR-017](../decisions/ADR-017-std-module-redirect.md).
 
 ## Internal design
 
@@ -108,6 +121,22 @@ Once a candidate module path returns 4xx from `@latest`, it is added to
 `f.missing` and skipped on subsequent probes. This means a single missing
 import incurs at most `len(parts) - 1` proxy round-trips on first
 encounter, then zero on retries.
+
+### Pre-injected modules and offline mode
+
+`Inject` parses the supplied zip via the same `newModule` used for
+proxy fetches, then takes `f.mu` only to insert into `f.modules` and
+clear any stale negative-cache entry for `modPath`. The zip parse runs
+outside the lock, so injection of a 30-50 KB stdlib zip does not
+serialize against concurrent `locate` calls.
+
+`Offline` short-circuits `fetchModulePath` immediately after the
+modules-cache hit: a cache miss in offline mode returns `fs.ErrNotExist`
+without any HTTP attempt. This makes injected modules the only
+resolvable source, which is what the WASM playground and `GOPROXY=off`
+both need. Modules pre-injected before flipping the flag stay
+resolvable; the flag is read on every fetch and not snapshotted at
+construction.
 
 ## Dependencies
 

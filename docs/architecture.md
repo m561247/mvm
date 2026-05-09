@@ -141,6 +141,18 @@ See [vm](modules/vm.md#call-frame) for details.
    then parses it through the normal path. No runtime type parameters,
    no new opcodes. See [ADR-011](decisions/ADR-011-generics-monomorphization.md).
 
+10. **Synthetic `std` module for interpreted stdlib** -- the subset of
+    Go's stdlib that mvm interprets from source (generic-first
+    packages and pure-Go packages where bridges would lose interpreted
+    methods) lives in a separate Go module
+    (`github.com/mvm-sh/std`). mvm embeds a Go-proxy-format zip of it
+    as an offline floor and resolves stdlib-shaped imports through
+    `modfs` via a redirecting `fs.FS` (`stdlib/stdmod`). One pipeline
+    serves both the embedded path and a network-fetched override.
+    Performance-critical and hard-to-interpret packages stay as
+    pre-compiled bridges in `stdlib/core`+`ext`. See
+    [ADR-017](decisions/ADR-017-std-module-redirect.md).
+
 ## Closure and interface dispatch
 
 Closures capture variables via heap cells (`Closure{Code, Heap}`). Opcodes

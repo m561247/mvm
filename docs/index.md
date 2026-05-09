@@ -16,6 +16,7 @@ Mvm is an experimental Go interpreter built from a pipeline of composable packag
 - [vm](modules/vm.md) -- stack-based bytecode virtual machine
 - [interp](modules/interp.md) -- integration layer and REPL
 - [stdlib](modules/stdlib.md) -- standard library wrappers for native Go imports
+- [stdmod](modules/stdmod.md) -- redirect FS that routes stdlib imports through the synthetic `github.com/mvm-sh/std` module
 - [modfs](modules/modfs.md) -- in-memory `fs.FS` over the Go module proxy for dynamic network imports
 - [cmd/extract](modules/extract.md) -- generator for stdlib binding files
 
@@ -37,3 +38,4 @@ Mvm is an experimental Go interpreter built from a pipeline of composable packag
 - [ADR-014: Dynamic network imports via Go module proxy](decisions/ADR-014-dynamic-network-imports.md)
 - [ADR-015: Absolute token positions throughout the pipeline](decisions/ADR-015-absolute-token-positions.md)
 - [ADR-016: Runtime introspection via *runtime.Func sentinels](decisions/ADR-016-runtime-introspection-bridge.md)
+- [ADR-017: Synthetic `std` module + stdlib redirect FS](decisions/ADR-017-std-module-redirect.md)

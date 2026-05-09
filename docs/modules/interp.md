@@ -107,13 +107,23 @@ shebang-style scripts (`#!/usr/bin/env mvm`) work after `chmod +x`.
 `stdlib/jsonx` is imported for side effects so its `init()` registers the
 json patcher and arg proxies before any interpreter is constructed.
 
-Both `run` and `test` install a `modfs.FS` as the parser's remote
-filesystem so imports can be fetched from a Go module proxy on demand.
-The proxy URL follows `GOPROXY` semantics: unset uses the default
-public proxy, `GOPROXY=off` disables network imports, otherwise the
-first URL entry of the (comma- or pipe-separated) list is used.
-`direct` entries are treated as disable since modfs has no direct VCS
-fetch path.
+Both `run` and `test` call `wireFS(i)` after constructing the
+interpreter. `wireFS` builds a single `*modfs.FS` honoring `GOPROXY`
+semantics, injects the embedded `github.com/mvm-sh/std` zip
+(`stdlib.EmbeddedStd()`) so stdlib lookups never need the network, and
+wires that one FS into both slots: the parser's stdlibFS via
+`stdmod.FS(mfs)` (which redirects stdlib-shaped imports to
+`github.com/mvm-sh/std/<pkg>`) and the parser's remoteFS for
+third-party imports. One cache backs both. See
+[ADR-017](../decisions/ADR-017-std-module-redirect.md).
+
+`buildModFS` resolves `GOPROXY`: unset/empty uses the default public
+proxy, `off` and `direct` produce an offline-only modfs (the embedded
+zip stays resolvable), otherwise the first URL entry of the comma- or
+pipe-separated list becomes the proxy. `NewInterpreter` itself
+installs `stdmod.DefaultFS()` (offline-only, embedded zip) so embedders
+and tests that don't go through `wireFS` still have a working stdlib;
+`wireFS` overrides the slot when network imports are wanted.
 
 Top-level errors are written to stderr verbatim (no `log.Lshortfile`
 prefix), so a parser/compiler `file:line:col: msg` reaches the user
@@ -166,5 +176,7 @@ behavior.
 - `comp/` -- compiler (embedded).
 - `vm/` -- virtual machine (embedded).
 - `lang/` -- language spec.
-- `stdlib/` -- for `SrcFS()` (generics-first package fallback) and
-  `PackagePatchers()` (shadow-package overlays).
+- `stdlib/stdmod/` -- `DefaultFS()` for the offline embedded stdlib FS
+  installed by `NewInterpreter`.
+- `stdlib/` -- `PackagePatchers()` (shadow-package overlays) and (in
+  `main.go` only) `EmbeddedStd()` for `wireFS`.
