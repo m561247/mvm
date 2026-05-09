@@ -19,8 +19,6 @@ func init() {
 		"NewWriter":          reflect.ValueOf(gzip.NewWriter),
 		"NewWriterLevel":     reflect.ValueOf(gzip.NewWriterLevel),
 		"NoCompression":      reflect.ValueOf(gzip.NoCompression),
-		"ErrChecksum":        reflect.ValueOf(&gzip.ErrChecksum),
-		"ErrHeader":          reflect.ValueOf(&gzip.ErrHeader),
 		"Header":             reflect.ValueOf((*gzip.Header)(nil)),
 		"Reader":             reflect.ValueOf((*gzip.Reader)(nil)),
 		"Writer":             reflect.ValueOf((*gzip.Writer)(nil)),

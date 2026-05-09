@@ -37,9 +37,16 @@ func init() {
 		"ParseFiles":           reflect.ValueOf(template.ParseFiles),
 		"ParseGlob":            reflect.ValueOf(template.ParseGlob),
 		"URLQueryEscaper":      reflect.ValueOf(template.URLQueryEscaper),
+		"CSS":                  reflect.ValueOf((*template.CSS)(nil)),
 		"Error":                reflect.ValueOf((*template.Error)(nil)),
 		"ErrorCode":            reflect.ValueOf((*template.ErrorCode)(nil)),
 		"FuncMap":              reflect.ValueOf((*template.FuncMap)(nil)),
+		"HTML":                 reflect.ValueOf((*template.HTML)(nil)),
+		"HTMLAttr":             reflect.ValueOf((*template.HTMLAttr)(nil)),
+		"JS":                   reflect.ValueOf((*template.JS)(nil)),
+		"JSStr":                reflect.ValueOf((*template.JSStr)(nil)),
+		"Srcset":               reflect.ValueOf((*template.Srcset)(nil)),
 		"Template":             reflect.ValueOf((*template.Template)(nil)),
+		"URL":                  reflect.ValueOf((*template.URL)(nil)),
 	}
 }
