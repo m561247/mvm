@@ -387,8 +387,12 @@ type Machine struct {
 	debugInfoFn func() *DebugInfo // builds DebugInfo on demand (breaks vm->comp cycle)
 	debugIn     io.Reader         // debug command input (nil = os.Stdin)
 	debugOut    io.Writer         // debug output (nil = os.Stderr)
-	stepping    bool              //nolint:unused // when true, trap after every instruction (planned)
 	trapOrig    int               // ip to resume after Trap
+
+	tracing       bool   // when true, emit a trace line every time the source line changes
+	traceLastPos  Pos    // last instruction Pos seen by traceStep (fast-path dedup)
+	traceLastFile string // last source file emitted (slow-path dedup across distinct Pos on same line)
+	traceLastLine int    // last source line emitted
 }
 
 // NewMachine returns a pointer on a new Machine.
@@ -416,6 +420,40 @@ func (m *Machine) DebugInfo() *DebugInfo {
 func (m *Machine) SetDebugIO(in io.Reader, out io.Writer) {
 	m.debugIn = in
 	m.debugOut = out
+}
+
+// SetTracing enables or disables `set -x`-style line tracing. When enabled,
+// the VM emits one line per distinct source line executed to m.err, formatted
+// as "+ file:line: <source line>". Costs one branch per instruction when off.
+func (m *Machine) SetTracing(on bool) { m.tracing = on }
+
+// Tracing reports whether line tracing is enabled.
+func (m *Machine) Tracing() bool { return m.tracing }
+
+// traceStep emits a trace entry when pos lies on a source line that differs
+// from the last one already emitted. Dedups in two stages: a fast-path Pos
+// comparison and a slow-path (file, line) comparison that absorbs the common
+// case of multiple instructions sharing a Pos within one statement, plus
+// distinct Pos values that happen to map to the same line.
+func (m *Machine) traceStep(pos Pos) {
+	if pos == 0 || pos == m.traceLastPos {
+		return
+	}
+	m.traceLastPos = pos
+	di := m.DebugInfo()
+	if di == nil || len(di.Sources) == 0 {
+		return
+	}
+	file, line, _ := di.Sources.Resolve(int(pos))
+	if file == "" {
+		return
+	}
+	if file == m.traceLastFile && line == m.traceLastLine {
+		return
+	}
+	m.traceLastFile, m.traceLastLine = file, line
+	text := di.Sources.LineText(int(pos))
+	_, _ = fmt.Fprintf(m.err, "+ %s:%d: %s\n", file, line, text)
 }
 
 // posPrefix returns a "file:line:col: " string for the given source position,
@@ -475,6 +513,9 @@ func (m *Machine) Run() (err error) {
 		c := m.code[ip] // current instruction
 		if debug {
 			log.Printf("ip:%-3d sp:%-3d fp:%-3d op:[%-20v] mem:%v\n", ip, sp, fp, c, Vstring(mem[:sp+1]))
+		}
+		if m.tracing {
+			m.traceStep(c.Pos)
 		}
 		switch c.Op {
 		case Addr:

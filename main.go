@@ -128,13 +128,17 @@ Options:
 `
 
 func runCmd(arg []string) error {
-	var str string
+	var (
+		str   string
+		trace bool
+	)
 	rflag := flag.NewFlagSet("run", flag.ContinueOnError)
 	rflag.Usage = func() {
 		_, _ = fmt.Fprint(os.Stdout, runUsageText)
 		rflag.PrintDefaults()
 	}
 	rflag.StringVar(&str, "e", "", "string to eval")
+	rflag.BoolVar(&trace, "x", false, "trace each visited source line on stderr")
 	if err := rflag.Parse(arg); err != nil {
 		return err
 	}
@@ -143,6 +147,9 @@ func runCmd(arg []string) error {
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
 	wireFS(i)
+	if trace {
+		i.SetTracing(true)
+	}
 
 	out := &newlineTracker{w: os.Stdout}
 	i.SetIO(os.Stdin, out, os.Stderr)
@@ -192,8 +199,13 @@ Flags after [target] are forwarded to testing.Main; use the -test. prefix
 // import path resolved through the FS chain incl. modfs (loaded as one
 // package via dir-mode ParseAll so cross-file refs resolve).
 func testCmd(arg []string) error {
+	var trace bool
 	tflag := flag.NewFlagSet("test", flag.ContinueOnError)
-	tflag.Usage = func() { _, _ = fmt.Fprint(os.Stdout, testUsageText) }
+	tflag.Usage = func() {
+		_, _ = fmt.Fprint(os.Stdout, testUsageText)
+		tflag.PrintDefaults()
+	}
+	tflag.BoolVar(&trace, "x", false, "trace each visited source line on stderr")
 	if err := tflag.Parse(arg); err != nil {
 		return err
 	}
@@ -212,6 +224,9 @@ func testCmd(arg []string) error {
 	i.ImportPackageValues(stdlib.Values)
 	wireFS(i)
 	i.AutoImportPackages()
+	if trace {
+		i.SetTracing(true)
+	}
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
 
 	// Try target as a local directory first; fall back to import-path

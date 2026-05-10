@@ -55,6 +55,29 @@ func (ss Sources) FormatPos(pos int) string {
 	return fmt.Sprintf("%s:%d:%d", name, line, col)
 }
 
+// LineText returns the source line containing pos, without the trailing
+// newline. Returns "" if pos is out of range.
+func (ss Sources) LineText(pos int) string {
+	if len(ss) == 0 || pos < 0 {
+		return ""
+	}
+	i := len(ss) - 1
+	for i > 0 && ss[i].Base > pos {
+		i--
+	}
+	s := &ss[i]
+	local := pos - s.Base
+	if local < 0 || local > s.Len {
+		return ""
+	}
+	start := strings.LastIndexByte(s.content[:local], '\n') + 1
+	end := len(s.content)
+	if nl := strings.IndexByte(s.content[local:], '\n'); nl >= 0 {
+		end = local + nl
+	}
+	return strings.TrimRight(s.content[start:end], " \t\r")
+}
+
 func lineCol(src string, offset int) (line, col int) {
 	offset = min(offset, len(src))
 	prefix := src[:offset]

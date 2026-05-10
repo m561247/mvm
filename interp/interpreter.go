@@ -17,7 +17,10 @@ import (
 	"github.com/mvm-sh/mvm/vm"
 )
 
-var debug = os.Getenv("MVM_DEBUG") != ""
+var (
+	debug = os.Getenv("MVM_DEBUG") != ""
+	trace = os.Getenv("MVM_TRACE") != ""
+)
 
 // Interp represents the state of an interpreter.
 type Interp struct {
@@ -75,6 +78,9 @@ func (i *Interp) Eval(name, src string) (res reflect.Value, err error) {
 	if debug {
 		i.PrintData()
 		i.PrintCode()
+	}
+	if trace {
+		i.SetTracing(true)
 	}
 	err = i.Run()
 	return i.Top().Reflect(), err
