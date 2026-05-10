@@ -54,6 +54,39 @@ func wireFS(i *interp.Interp) {
 	i.SetRemoteFS(mfs)
 }
 
+// traceFlag is a flag.Value for -x that doubles as a bool flag (bare -x =
+// line trace) and a string-valued flag (-x=op, -x=all, -x=line,op). It
+// delegates value parsing to interp.ParseTraceModes so MVM_TRACE and -x
+// share the same syntax.
+type traceFlag struct{ line, op bool }
+
+func (t *traceFlag) IsBoolFlag() bool { return true }
+
+func (t *traceFlag) String() string {
+	switch {
+	case t.line && t.op:
+		return "all"
+	case t.line:
+		return "line"
+	case t.op:
+		return "op"
+	}
+	return ""
+}
+
+func (t *traceFlag) Set(s string) error {
+	if s == "true" { // bare -x
+		t.line = true
+		return nil
+	}
+	line, op := interp.ParseTraceModes(s)
+	if !line && !op {
+		return fmt.Errorf("unknown trace mode %q (want line, op, all, or comma list)", s)
+	}
+	t.line, t.op = line, op
+	return nil
+}
+
 // newlineTracker wraps a writer and tracks whether the last byte written was a newline.
 type newlineTracker struct {
 	w       io.Writer
@@ -130,7 +163,7 @@ Options:
 func runCmd(arg []string) error {
 	var (
 		str   string
-		trace bool
+		trace traceFlag
 	)
 	rflag := flag.NewFlagSet("run", flag.ContinueOnError)
 	rflag.Usage = func() {
@@ -138,7 +171,7 @@ func runCmd(arg []string) error {
 		rflag.PrintDefaults()
 	}
 	rflag.StringVar(&str, "e", "", "string to eval")
-	rflag.BoolVar(&trace, "x", false, "trace each visited source line on stderr")
+	rflag.Var(&trace, "x", "trace mode (bare -x = line; -x=op, -x=all, -x=line,op)")
 	if err := rflag.Parse(arg); err != nil {
 		return err
 	}
@@ -147,8 +180,11 @@ func runCmd(arg []string) error {
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
 	wireFS(i)
-	if trace {
+	if trace.line {
 		i.SetTracing(true)
+	}
+	if trace.op {
+		i.SetTraceOps(true)
 	}
 
 	out := &newlineTracker{w: os.Stdout}
@@ -199,13 +235,13 @@ Flags after [target] are forwarded to testing.Main; use the -test. prefix
 // import path resolved through the FS chain incl. modfs (loaded as one
 // package via dir-mode ParseAll so cross-file refs resolve).
 func testCmd(arg []string) error {
-	var trace bool
+	var trace traceFlag
 	tflag := flag.NewFlagSet("test", flag.ContinueOnError)
 	tflag.Usage = func() {
 		_, _ = fmt.Fprint(os.Stdout, testUsageText)
 		tflag.PrintDefaults()
 	}
-	tflag.BoolVar(&trace, "x", false, "trace each visited source line on stderr")
+	tflag.Var(&trace, "x", "trace mode (bare -x = line; -x=op, -x=all, -x=line,op)")
 	if err := tflag.Parse(arg); err != nil {
 		return err
 	}
@@ -224,8 +260,11 @@ func testCmd(arg []string) error {
 	i.ImportPackageValues(stdlib.Values)
 	wireFS(i)
 	i.AutoImportPackages()
-	if trace {
+	if trace.line {
 		i.SetTracing(true)
+	}
+	if trace.op {
+		i.SetTraceOps(true)
 	}
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
 

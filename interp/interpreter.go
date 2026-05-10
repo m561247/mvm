@@ -18,9 +18,27 @@ import (
 )
 
 var (
-	debug = os.Getenv("MVM_DEBUG") != ""
-	trace = os.Getenv("MVM_TRACE") != ""
+	debug              = os.Getenv("MVM_DEBUG") != ""
+	traceLine, traceOp = ParseTraceModes(os.Getenv("MVM_TRACE"))
 )
+
+// ParseTraceModes parses a comma-separated trace-mode value (used by both
+// MVM_TRACE and the -x CLI flag). Recognized tokens: "1" or "line" enable
+// line tracing; "op" or "bytecode" enable bytecode tracing; "all" enables
+// both. Unknown or empty tokens are ignored.
+func ParseTraceModes(s string) (line, op bool) {
+	for _, t := range strings.Split(s, ",") {
+		switch strings.TrimSpace(t) {
+		case "1", "line":
+			line = true
+		case "op", "bytecode":
+			op = true
+		case "all":
+			line, op = true, true
+		}
+	}
+	return
+}
 
 // Interp represents the state of an interpreter.
 type Interp struct {
@@ -79,8 +97,11 @@ func (i *Interp) Eval(name, src string) (res reflect.Value, err error) {
 		i.PrintData()
 		i.PrintCode()
 	}
-	if trace {
+	if traceLine {
 		i.SetTracing(true)
+	}
+	if traceOp {
+		i.SetTraceOps(true)
 	}
 	err = i.Run()
 	return i.Top().Reflect(), err

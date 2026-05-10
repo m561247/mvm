@@ -5,7 +5,6 @@ import (
 	"fmt" // for tracing only
 	"io"
 	"iter"
-	"log"  // for tracing only
 	"math" // for float arithmetic
 	"math/bits"
 	"os"
@@ -13,8 +12,6 @@ import (
 	"strings"
 	"unsafe" // to allow setting unexported struct fields //nolint:depguard
 )
-
-const debug = false
 
 // Op is a VM opcode (bytecode instruction).
 type Op int32
@@ -389,11 +386,19 @@ type Machine struct {
 	debugOut    io.Writer         // debug output (nil = os.Stderr)
 	trapOrig    int               // ip to resume after Trap
 
-	tracing       bool   // when true, emit a trace line every time the source line changes
-	traceLastPos  Pos    // last instruction Pos seen by traceStep (fast-path dedup)
-	traceLastFile string // last source file emitted (slow-path dedup across distinct Pos on same line)
-	traceLastLine int    // last source line emitted
+	traceFlags    uint8      // bitmask of traceFlag* values; checked in the hot loop via a single load
+	traceLastPos  Pos        // last instruction Pos seen by traceStep (fast-path dedup)
+	traceLastFile string     // last source file emitted (slow-path dedup across distinct Pos on same line)
+	traceLastLine int        // last source line emitted
+	traceDI       *DebugInfo // lazy cache for traceStep; invalidated by SetDebugInfo
 }
+
+// traceFlag* are bits stored in Machine.traceFlags. Combined into a single
+// byte so the hot-loop check is one load + compare against zero.
+const (
+	traceFlagLine uint8 = 1 << iota // emit one line per distinct source line
+	traceFlagOp                     // emit one line per executed bytecode instruction
+)
 
 // NewMachine returns a pointer on a new Machine.
 func NewMachine() *Machine { return &Machine{in: os.Stdin, out: os.Stdout, err: os.Stderr} }
@@ -404,8 +409,12 @@ func (m *Machine) SetIO(in io.Reader, out, err io.Writer) { m.in = in; m.out = o
 // Out returns the machine's standard output writer.
 func (m *Machine) Out() io.Writer { return m.out }
 
-// SetDebugInfo registers a function that builds DebugInfo on demand.
-func (m *Machine) SetDebugInfo(fn func() *DebugInfo) { m.debugInfoFn = fn }
+// SetDebugInfo registers a function that builds DebugInfo on demand and
+// invalidates the trace-step cache so the next traceStep call rebuilds.
+func (m *Machine) SetDebugInfo(fn func() *DebugInfo) {
+	m.debugInfoFn = fn
+	m.traceDI = nil
+}
 
 // DebugInfo returns the current DebugInfo, or nil if no builder was
 // registered with SetDebugInfo.
@@ -422,27 +431,74 @@ func (m *Machine) SetDebugIO(in io.Reader, out io.Writer) {
 	m.debugOut = out
 }
 
-// SetTracing enables or disables `set -x`-style line tracing. When enabled,
-// the VM emits one line per distinct source line executed to m.err, formatted
-// as "+ file:line: <source line>". Costs one branch per instruction when off.
-func (m *Machine) SetTracing(on bool) { m.tracing = on }
+// SetTracing enables or disables `set -x`-style line tracing. Run hoists
+// traceFlags into a register-resident local, so toggles take effect at the
+// next Run() entry, not mid-run.
+func (m *Machine) SetTracing(on bool) { m.setTraceFlag(traceFlagLine, on) }
 
 // Tracing reports whether line tracing is enabled.
-func (m *Machine) Tracing() bool { return m.tracing }
+func (m *Machine) Tracing() bool { return m.traceFlags&traceFlagLine != 0 }
 
-// traceStep emits a trace entry when pos lies on a source line that differs
-// from the last one already emitted. Dedups in two stages: a fast-path Pos
-// comparison and a slow-path (file, line) comparison that absorbs the common
-// case of multiple instructions sharing a Pos within one statement, plus
-// distinct Pos values that happen to map to the same line.
+// SetTraceOps enables or disables bytecode-level tracing. See SetTracing for
+// the toggle-takes-effect-next-Run caveat.
+func (m *Machine) SetTraceOps(on bool) { m.setTraceFlag(traceFlagOp, on) }
+
+// TraceOps reports whether bytecode-level tracing is enabled.
+func (m *Machine) TraceOps() bool { return m.traceFlags&traceFlagOp != 0 }
+
+func (m *Machine) setTraceFlag(bit uint8, on bool) {
+	if on {
+		m.traceFlags |= bit
+	} else {
+		m.traceFlags &^= bit
+	}
+}
+
+// traceTopDepth is the operand-stack window size emitted by traceOp.
+const traceTopDepth = 3
+
+func (m *Machine) traceOp(ip, fp int, c Instruction, mem []Value, sp int) {
+	_, _ = fmt.Fprintf(m.err, "+ op  ip:%-4d sp:%-3d fp:%-3d op:[%-20v]  top:%s\n",
+		ip, sp, fp, c, stackTop(mem, sp, traceTopDepth))
+}
+
+// stackTop renders the last n values of the operand stack as a bracketed
+// list, prefixed with "..." when truncated.
+func stackTop(mem []Value, sp, n int) string {
+	if sp < 0 {
+		return "[]"
+	}
+	start := sp + 1 - n
+	truncated := start > 0
+	if start < 0 {
+		start = 0
+	}
+	var sb strings.Builder
+	sb.WriteByte('[')
+	if truncated {
+		sb.WriteString("... ")
+	}
+	appendValues(&sb, mem[start:sp+1])
+	sb.WriteByte(']')
+	return sb.String()
+}
+
+// traceStep emits a line-trace entry when pos lies on a source line distinct
+// from the last one emitted. Dedups in two stages: a fast-path Pos compare
+// (collapses repeated Pos within one statement) and a slow-path (file, line)
+// compare (collapses distinct Pos that map to the same line).
 func (m *Machine) traceStep(pos Pos) {
 	if pos == 0 || pos == m.traceLastPos {
 		return
 	}
 	m.traceLastPos = pos
-	di := m.DebugInfo()
-	if di == nil || len(di.Sources) == 0 {
-		return
+	di := m.traceDI
+	if di == nil {
+		di = m.DebugInfo()
+		if di == nil {
+			return
+		}
+		m.traceDI = di
 	}
 	file, line, _ := di.Sources.Resolve(int(pos))
 	if file == "" {
@@ -452,8 +508,7 @@ func (m *Machine) traceStep(pos Pos) {
 		return
 	}
 	m.traceLastFile, m.traceLastLine = file, line
-	text := di.Sources.LineText(int(pos))
-	_, _ = fmt.Fprintf(m.err, "+ %s:%d: %s\n", file, line, text)
+	_, _ = fmt.Fprintf(m.err, "+ %s:%d: %s\n", file, line, di.Sources.LineText(int(pos)))
 }
 
 // posPrefix returns a "file:line:col: " string for the given source position,
@@ -504,6 +559,11 @@ func (m *Machine) Run() (err error) {
 	// Extend mem to full capacity so all writes up to cap are in bounds.
 	mem = mem[:cap(mem)]
 
+	// Hoist trace flags into a register-resident local so the hot-loop check
+	// is a single compare-against-zero on a register. Toggles via
+	// SetTracing/SetTraceOps don't take effect until the next Run() entry.
+	traceFlags := m.traceFlags
+
 	defer func() {
 		m.mem, m.ip, m.fp = mem[:sp+1], ip, fp
 		m.code = m.code[:sentBase]
@@ -511,11 +571,13 @@ func (m *Machine) Run() (err error) {
 
 	for {
 		c := m.code[ip] // current instruction
-		if debug {
-			log.Printf("ip:%-3d sp:%-3d fp:%-3d op:[%-20v] mem:%v\n", ip, sp, fp, c, Vstring(mem[:sp+1]))
-		}
-		if m.tracing {
-			m.traceStep(c.Pos)
+		if traceFlags != 0 {
+			if traceFlags&traceFlagLine != 0 {
+				m.traceStep(c.Pos)
+			}
+			if traceFlags&traceFlagOp != 0 {
+				m.traceOp(ip, fp, c, mem, sp)
+			}
 		}
 		switch c.Op {
 		case Addr:
@@ -3020,18 +3082,24 @@ func (m *Machine) PopExit() {
 func Vstring(lv []Value) string {
 	var sb strings.Builder
 	sb.WriteByte('[')
+	appendValues(&sb, lv)
+	sb.WriteByte(']')
+	return sb.String()
+}
+
+// appendValues writes lv as space-separated value renderings into sb, with
+// no surrounding brackets. Invalid Values are rendered as <num>.
+func appendValues(sb *strings.Builder, lv []Value) {
 	for i, v := range lv {
 		if i > 0 {
 			sb.WriteByte(' ')
 		}
 		if !v.ref.IsValid() {
-			fmt.Fprintf(&sb, "<%d>", v.num)
+			fmt.Fprintf(sb, "<%d>", v.num)
 		} else {
-			fmt.Fprintf(&sb, "%v", v.Interface())
+			fmt.Fprintf(sb, "%v", v.Interface())
 		}
 	}
-	sb.WriteByte(']')
-	return sb.String()
 }
 
 func funcValuePtr(fv reflect.Value) uintptr {
