@@ -412,8 +412,6 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 			// Unary channel receive: <-ch
 			addop(t)
 
-		case lang.Comment:
-
 		case lang.Ellipsis:
 
 		default:
@@ -467,7 +465,6 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 	var result Tokens
 	var sliceLen int
 	for i, sub := range tokens.Split(lang.Comma) {
-		sub = sub.TrimComments()
 		if len(sub) == 0 {
 			continue
 		}

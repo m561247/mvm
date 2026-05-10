@@ -58,7 +58,6 @@ func (p *Parser) splitAndSortVarDecls(decls []Tokens) []Tokens {
 	var expanded []Tokens
 	var varSlots []slot
 	for _, decl := range decls {
-		decl = decl.TrimComments()
 		if len(decl) == 0 {
 			continue
 		}
@@ -112,7 +111,6 @@ func (p *Parser) splitVarBlock(decl Tokens) []Tokens {
 	}
 	result := make([]Tokens, 0, len(lines))
 	for _, line := range lines {
-		line = line.TrimComments()
 		if len(line) > 0 {
 			d := make(Tokens, 1, 1+len(line))
 			d[0] = decl[0]
@@ -439,7 +437,6 @@ func (p *Parser) parseVarDecl(toks Tokens) (handled bool, err error) {
 }
 
 func (p *Parser) parseStmt(in Tokens) (out Tokens, err error) {
-	in = in.TrimComments()
 	if len(in) == 0 {
 		return nil, nil
 	}

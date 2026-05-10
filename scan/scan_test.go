@@ -63,9 +63,9 @@ def"`, err: "1:1: block not terminated"},
 	{n: "#14", src: "2* (3+4", err: "1:4: block not terminated"},
 	{n: "#15", src: `("fo)o")+1`, tok: `ParenBlock"(\"fo)o\")" Add Int"1" Semicolon `},
 	{n: "#16", src: `"foo""bar"`, tok: `String"\"foo\"" String"\"bar\"" Semicolon `},
-	{n: "#17", src: "/* a comment */ a = 2", tok: `Comment"/* a comment */" Ident"a" Assign Int"2" Semicolon `},
-	{n: "#18", src: "return // quit\nbegin", tok: `Return Comment"// quit" Semicolon Ident"begin" Semicolon `},
-	{n: "#19", src: "return // quit", tok: `Return Comment"// quit" Semicolon `},
+	{n: "#17", src: "/* a comment */ a = 2", tok: `Ident"a" Assign Int"2" Semicolon `},
+	{n: "#18", src: "return // quit\nbegin", tok: `Return Semicolon Ident"begin" Semicolon `},
+	{n: "#19", src: "return // quit", tok: `Return Semicolon `},
 	{n: "#20", src: "println(3 /* argh ) */)", tok: `Ident"println" ParenBlock"(3 /* argh ) */)" Semicolon `},
 	{n: "#21", src: `println("in f")`, tok: `Ident"println" ParenBlock"(\"in f\")" Semicolon `},
 	{n: "#22", src: "a, b = 1, 2", tok: `Ident"a" Comma Ident"b" Assign Int"1" Comma Int"2" Semicolon `},
@@ -115,9 +115,10 @@ def"`, err: "1:1: block not terminated"},
 	{n: "#48", src: "café + 1", tok: `Ident"café" Add Int"1" Semicolon `},
 	{n: "#49", src: "日本語", tok: `Ident"日本語" Semicolon `},
 
-	// Comments are transparent to auto-semicolon insertion (Go spec).
-	{n: "#50", src: "// foo\nx := 1", tok: `Comment"// foo" Ident"x" Define Int"1" Semicolon `},
-	{n: "#51", src: "// a\n// b\nx := 1", tok: `Comment"// a" Comment"// b" Ident"x" Define Int"1" Semicolon `},
-	{n: "#52", src: "a,\n// c\nb", tok: `Ident"a" Comma Comment"// c" Ident"b" Semicolon `},
-	{n: "#53", src: "x := 1 // foo\ny := 2", tok: `Ident"x" Define Int"1" Comment"// foo" Semicolon Ident"y" Define Int"2" Semicolon `},
+	// Comments are dropped at scan time (after their newline-bookkeeping role)
+	// so the parser never sees them. ASI rules are driven by the last real token.
+	{n: "#50", src: "// foo\nx := 1", tok: `Ident"x" Define Int"1" Semicolon `},
+	{n: "#51", src: "// a\n// b\nx := 1", tok: `Ident"x" Define Int"1" Semicolon `},
+	{n: "#52", src: "a,\n// c\nb", tok: `Ident"a" Comma Ident"b" Semicolon `},
+	{n: "#53", src: "x := 1 // foo\ny := 2", tok: `Ident"x" Define Int"1" Semicolon Ident"y" Define Int"2" Semicolon `},
 }

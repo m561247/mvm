@@ -136,25 +136,26 @@ func (sc *Scanner) Scan(src string, semiEOF bool) (tokens []Token, err error) {
 			break
 		}
 		skip := false
-		if len(tokens) > 0 && t.Str == "\n" {
+		switch {
+		case t.Tok == lang.Comment:
+			// Comments are recognised so their bytes are consumed, but
+			// dropped here so the parser never sees them. ASI rules are
+			// thus driven by the last real token (Go spec: comments are
+			// transparent to auto-semicolon insertion).
+			skip = true
+		case t.Str == "\n" && len(tokens) == 0:
+			// A newline before any real token (e.g. after a leading file
+			// comment that was just dropped) has nothing to terminate.
+			skip = true
+		case t.Str == "\n":
 			// Check for automatic semi-colon insertion after newline.
-			// Comments are transparent to the rule (Go spec): walk back
-			// past Comment tokens to inspect the last non-comment token.
-			j := len(tokens) - 1
-			for j > 0 && tokens[j].Tok == lang.Comment {
-				j--
-			}
-			last := tokens[j]
-			switch {
-			case last.Tok == lang.Comment:
-				// Only comments precede this newline: nothing to terminate.
+			last := tokens[len(tokens)-1]
+			if last.Tok.IsKeyword() && sc.TokenProps[last.Tok].SkipSemi ||
+				last.Tok.IsOperator() && !sc.TokenProps[last.Tok].SkipSemi ||
+				last.Tok == lang.Comma ||
+				last.Tok == lang.Semicolon {
 				skip = true
-			case last.Tok.IsKeyword() && sc.TokenProps[last.Tok].SkipSemi,
-				last.Tok.IsOperator() && !sc.TokenProps[last.Tok].SkipSemi,
-				last.Tok == lang.Comma,
-				last.Tok == lang.Semicolon:
-				skip = true
-			default:
+			} else {
 				t.Tok = lang.Semicolon
 				t.Str = ";"
 			}

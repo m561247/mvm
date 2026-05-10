@@ -181,14 +181,7 @@ func (p *Parser) stmtEnd(toks Tokens) (int, error) {
 		firstTok = toks[2].Tok
 	}
 	if p.TokenProps[firstTok].HasInit {
-		for {
-			last := end - 1
-			for last >= 0 && toks[last].Tok == lang.Comment {
-				last--
-			}
-			if toks[last].Tok == lang.BraceBlock {
-				break
-			}
+		for toks[end-1].Tok != lang.BraceBlock {
 			e2 := toks[end+1:].Index(lang.Semicolon)
 			if e2 == -1 {
 				return -1, scan.ErrBlock
@@ -251,7 +244,6 @@ func (p *Parser) drainPendingMethods(out *Tokens) {
 // ParseDecl resolves a declaration's symbols (Phase 1) without emitting code.
 // Returns handled=true if fully resolved, false if code generation is needed.
 func (p *Parser) ParseDecl(toks Tokens) (handled bool, err error) {
-	toks = toks.TrimComments()
 	if len(toks) == 0 {
 		return true, nil
 	}

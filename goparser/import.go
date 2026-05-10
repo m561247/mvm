@@ -308,7 +308,6 @@ func (p *Parser) preRegisterTypes(decls []Tokens) {
 				continue
 			}
 			for _, lt := range inner.Split(lang.Semicolon) {
-				lt = lt.TrimComments()
 				if len(lt) >= 2 && lt[0].Tok == lang.Ident {
 					n := lt[0].Str
 					switch lt[1].Tok {
