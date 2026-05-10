@@ -258,6 +258,7 @@ func TestFunc(t *testing.T) {
 		{n: "#23", src: `import "fmt"; fn := func(a int) string { return "" }; fmt.Sprintf("%T", fn)`, res: "func(int) string"},
 		{n: "#24", src: `import "fmt"; x := 1; fn := func() int { return x }; fmt.Sprintf("%T", fn)`, res: "func() int"},
 		{n: "#25", src: `import "fmt"; fn := func() {}; fmt.Sprintf("%T", fn)`, res: "func()"},
+		{n: "#26", src: "func f(\n\tx int,\n\t// comment\n\ty string,\n) string { return y }; f(1, \"a\")", res: "a"},
 	})
 }
 

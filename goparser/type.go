@@ -107,6 +107,20 @@ func (p *Parser) resolvePkgType(s *symbol.Symbol, name string) (*vm.Type, error)
 }
 
 func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
+	// Comment tokens may appear before a type expression after the scanner
+	// stopped inserting auto-semicolons around comment-only lines (see commit
+	// 9f04527). Strip them and account for the skipped count in n so callers'
+	// in[n:] slicing stays correct.
+	skipped := 0
+	for len(in) > 0 && in[0].Tok == lang.Comment {
+		in = in[1:]
+		skipped++
+	}
+	typ, n, err = p.parseTypeExprBody(in)
+	return typ, n + skipped, err
+}
+
+func (p *Parser) parseTypeExprBody(in Tokens) (typ *vm.Type, n int, err error) {
 	if len(in) == 0 {
 		return nil, 0, ErrMissingType
 	}
@@ -400,6 +414,12 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 		if len(t) == 0 {
 			continue
 		}
+		for len(t) > 0 && t[0].Tok == lang.Comment {
+			t = t[1:]
+		}
+		if len(t) == 0 {
+			continue
+		}
 		param := ""
 		if p.hasFirstParam(t) {
 			origName := t[0].Str
@@ -660,6 +680,12 @@ func (p *Parser) parseStructType(in Tokens) (*vm.Type, error) {
 	var tags []string
 	var embedded []vm.EmbeddedField
 	for _, lt := range fieldToks.Split(lang.Semicolon) {
+		if len(lt) == 0 {
+			continue
+		}
+		for len(lt) > 0 && lt[0].Tok == lang.Comment {
+			lt = lt[1:]
+		}
 		if len(lt) == 0 {
 			continue
 		}

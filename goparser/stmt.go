@@ -58,6 +58,7 @@ func (p *Parser) splitAndSortVarDecls(decls []Tokens) []Tokens {
 	var expanded []Tokens
 	var varSlots []slot
 	for _, decl := range decls {
+		decl = decl.TrimComments()
 		if len(decl) == 0 {
 			continue
 		}
