@@ -53,26 +53,33 @@ var Core = map[string]bool{
 	"weak":            true,
 }
 
-// BuildTags is an optional per-package //go:build expression to emit at the
-// top of the generated file. Used to keep cgo-only bindings out of builds
-// where cgo is disabled (notably GOOS=js GOARCH=wasm), and to gate bindings
-// for stdlib packages that only exist in newer Go releases.
+// BuildTags is an optional per-package //go:build expression.
+// Used to keep cgo-only bindings out of builds  where cgo is disabled
+// (notably GOOS=js GOARCH=wasm), and to gate bindings
+// for whole stdlib packages that only build on newer Go releases.
+// Per-symbol additions go in SymbolBuildTags instead.
 var BuildTags = map[string]string{
 	"runtime/cgo":        "cgo",
 	"crypto/hpke":        "go1.26",
 	"testing/cryptotest": "go1.26",
+	"testing/synctest":   "go1.25", // GA in go1.25; GOEXPERIMENT-gated in go1.24
 }
 
-// SymbolBuildTags lists individual symbols that exist only on certain Go
-// releases, keyed by import path then by build expression. Tagged symbols
-// are emitted in a supplement file <pkg>_<suffix>.go (e.g. crypto_go126.go)
-// guarded by //go:build <expr>; untagged symbols stay in the base file.
+// SymbolBuildTags lists individual exported symbols that were added in a newer
+// Go release, keyed by import path then by build expression.
+// Tagged symbols are emitted in a supplement file <pkg>_<suffix>.go (e.g. crypto_go126.go).
+//
+// This list is hand-maintained.
 var SymbolBuildTags = map[string]map[string][]string{
 	"crypto": {
+		"go1.25": {"MessageSigner", "SignMessage"},
 		"go1.26": {"Decapsulator", "Encapsulator"},
 	},
 	"crypto/ecdh": {
 		"go1.26": {"KeyExchanger"},
+	},
+	"crypto/ecdsa": {
+		"go1.25": {"ParseRawPrivateKey", "ParseUncompressedPublicKey"},
 	},
 	"crypto/fips140": {
 		"go1.26": {"Enforced", "Version", "WithoutEnforcement"},
@@ -87,6 +94,7 @@ var SymbolBuildTags = map[string]map[string][]string{
 		"go1.26": {"OIDFromASN1OID"},
 	},
 	"debug/elf": {
+		"go1.25": {"PT_RISCV_ATTRIBUTES", "SHT_RISCV_ATTRIBUTES"},
 		"go1.26": {
 			"R_LARCH_CALL36",
 			"R_LARCH_TLS_DESC32",
@@ -110,16 +118,43 @@ var SymbolBuildTags = map[string]map[string][]string{
 		},
 	},
 	"go/ast": {
+		"go1.25": {"PreorderStack"},
 		"go1.26": {"ParseDirective", "Directive", "DirectiveArg"},
 	},
+	"go/types": {
+		"go1.25": {
+			"FieldVar", "LocalVar", "PackageVar", "ParamVar", "RecvVar", "ResultVar",
+			"LookupSelection", "VarKind",
+		},
+	},
+	"hash": {
+		"go1.25": {"Cloner", "XOF"},
+	},
+	"io/fs": {
+		"go1.25": {"Lstat", "ReadLink", "ReadLinkFS"},
+	},
 	"log/slog": {
+		"go1.25": {"GroupAttrs"},
 		"go1.26": {"NewMultiHandler", "MultiHandler"},
 	},
+	"mime/multipart": {
+		"go1.25": {"FileContentDisposition"},
+	},
 	"net/http": {
+		"go1.25": {"CrossOriginProtection", "NewCrossOriginProtection"},
 		"go1.26": {"ClientConn"},
 	},
 	"os": {
 		"go1.26": {"ErrNoHandle"},
+	},
+	"runtime": {
+		"go1.25": {"SetDefaultGOMAXPROCS"},
+	},
+	"runtime/trace": {
+		"go1.25": {"FlightRecorder", "FlightRecorderConfig", "NewFlightRecorder"},
+	},
+	"unicode": {
+		"go1.25": {"CategoryAliases", "Cn", "LC"},
 	},
 }
 
@@ -127,6 +162,7 @@ var SymbolBuildTags = map[string]map[string][]string{
 // supplement files. Only expressions actually used in SymbolBuildTags need
 // to be listed.
 var tagFileSuffix = map[string]string{
+	"go1.25": "go125",
 	"go1.26": "go126",
 }
 

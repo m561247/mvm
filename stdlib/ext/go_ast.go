@@ -36,7 +36,6 @@ func init() {
 		"PackageExports":             reflect.ValueOf(ast.PackageExports),
 		"Pkg":                        reflect.ValueOf(ast.Pkg),
 		"Preorder":                   reflect.ValueOf(ast.Preorder),
-		"PreorderStack":              reflect.ValueOf(ast.PreorderStack),
 		"Print":                      reflect.ValueOf(ast.Print),
 		"RECV":                       reflect.ValueOf(ast.RECV),
 		"SEND":                       reflect.ValueOf(ast.SEND),

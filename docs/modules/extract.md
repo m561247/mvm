@@ -101,14 +101,22 @@ the package gains non-generic exports.
 
 ### `categories.go`
 
-Two top-level maps:
+Top-level maps:
 
 - **`Core`**: set of import paths routed to `stdlib/core/`. Everything
   not listed goes to `stdlib/ext/`. The criterion is "pure-compute and
   light on transitive deps" (see [ADR-013](../decisions/ADR-013-stdlib-core-ext-split.md)).
-- **`BuildTags`**: optional `//go:build` expression per package.
-  Currently used only to gate `runtime/cgo` behind the `cgo` tag so
-  cgo-disabled builds (notably `GOOS=js GOARCH=wasm`) still link.
+- **`BuildTags`**: optional whole-package `//go:build` expression. Gates
+  `runtime/cgo` behind `cgo` (so `GOOS=js GOARCH=wasm` still links) and
+  whole packages that only build on newer Go (`crypto/hpke`,
+  `testing/cryptotest` → `go1.26`; `testing/synctest` → `go1.25`).
+- **`SymbolBuildTags`**: per-symbol additions in newer Go releases,
+  keyed by import path then `//go:build` expression. Those symbols are
+  split out of the base file into a supplement `<pkg>_<suffix>.go`
+  (e.g. `crypto_go126.go`) guarded by the tag, so the base files build
+  on the oldest Go release named in `go.mod`'s `go` directive (1.24).
+  Hand-maintained from `$GOROOT/api/go1.<N>.txt`; revisit on every
+  toolchain bump. `tagFileSuffix` maps a tag to its filename suffix.
 
 ## Dependencies
 

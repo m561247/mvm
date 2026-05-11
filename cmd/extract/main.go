@@ -18,7 +18,6 @@ import (
 	"go/constant"
 	"go/format"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,7 +37,6 @@ var (
 )
 
 func main() {
-	log.SetFlags(log.Lshortfile)
 	flag.Parse()
 
 	if err := mainErr(); err != nil {

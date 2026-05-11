@@ -25,7 +25,6 @@ func init() {
 		"Float64":           reflect.ValueOf(slog.Float64),
 		"Float64Value":      reflect.ValueOf(slog.Float64Value),
 		"Group":             reflect.ValueOf(slog.Group),
-		"GroupAttrs":        reflect.ValueOf(slog.GroupAttrs),
 		"GroupValue":        reflect.ValueOf(slog.GroupValue),
 		"Info":              reflect.ValueOf(slog.Info),
 		"InfoContext":       reflect.ValueOf(slog.InfoContext),
