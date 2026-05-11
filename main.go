@@ -54,10 +54,8 @@ func wireFS(i *interp.Interp) {
 	i.SetRemoteFS(mfs)
 }
 
-// traceFlag is a flag.Value for -x that doubles as a bool flag (bare -x =
-// line trace) and a string-valued flag (-x=op, -x=all, -x=line,op). It
-// delegates value parsing to interp.ParseTraceModes so MVM_TRACE and -x
-// share the same syntax.
+// traceFlag is a flag.Value for -x that doubles as a bool flag (-x = line trace)
+// and a string-valued flag (-x=op, -x=all, -x=line,op).
 type traceFlag struct{ line, op bool }
 
 func (t *traceFlag) IsBoolFlag() bool { return true }
@@ -173,6 +171,9 @@ func runCmd(arg []string) error {
 	rflag.StringVar(&str, "e", "", "string to eval")
 	rflag.Var(&trace, "x", "trace mode (bare -x = line; -x=op, -x=all, -x=line,op)")
 	if err := rflag.Parse(arg); err != nil {
+		if err == flag.ErrHelp { // -h already printed usage
+			return nil
+		}
 		return err
 	}
 	args := rflag.Args()
@@ -222,18 +223,54 @@ func runCmd(arg []string) error {
 	return err
 }
 
-const testUsageText = `Usage: mvm test [target] [testing-flags]
-Runs Go tests found in *_test.go files of the given target. Target may be a
-local directory (default ".") or an import path (e.g. "github.com/google/uuid")
-fetched dynamically via the Go module proxy.
-Flags after [target] are forwarded to testing.Main; use the -test. prefix
-(e.g. -test.v, -test.run REGEX).
+const testUsageText = `Usage: mvm test [-x] [target] [test flags]
+Runs Go tests found in *_test.go files of the given target.
+Target may be a local directory (default ".") or an import path
+(e.g. "github.com/google/uuid") fetched dynamically via the Go module proxy.
+Test flags use the same names as "go test": -v for verbose output,
+-run REGEX to select tests, -count N, -short, etc.
 `
 
-// testCmd runs the tests of a Go package. The target is either a local
-// directory (existing files Eval'd individually, current behavior) or an
-// import path resolved through the FS chain incl. modfs (loaded as one
-// package via dir-mode ParseAll so cross-file refs resolve).
+func isMvmTestFlag(a string) bool {
+	switch a {
+	case "-x", "--x", "-h", "-help", "--help":
+		return true
+	}
+	return strings.HasPrefix(a, "-x=") || strings.HasPrefix(a, "--x=")
+}
+
+func splitTestArgs(arg []string) (mvmFlags []string, target string, testFlags []string) {
+	target = "."
+	n := 0
+	for n < len(arg) && isMvmTestFlag(arg[n]) {
+		n++
+	}
+	mvmFlags = arg[:n]
+	rest := arg[n:]
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		target = rest[0]
+		rest = rest[1:]
+	}
+	return mvmFlags, target, rest
+}
+
+func rewriteTestFlags(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		switch {
+		case a == "-" || a == "--":
+			out[i] = a
+		case strings.HasPrefix(a, "--"):
+			out[i] = "--test." + a[2:]
+		case strings.HasPrefix(a, "-"):
+			out[i] = "-test." + a[1:]
+		default:
+			out[i] = a
+		}
+	}
+	return out
+}
+
 func testCmd(arg []string) error {
 	var trace traceFlag
 	tflag := flag.NewFlagSet("test", flag.ContinueOnError)
@@ -242,19 +279,16 @@ func testCmd(arg []string) error {
 		tflag.PrintDefaults()
 	}
 	tflag.Var(&trace, "x", "trace mode (bare -x = line; -x=op, -x=all, -x=line,op)")
-	if err := tflag.Parse(arg); err != nil {
+
+	mvmFlags, target, testFlags := splitTestArgs(arg)
+	if err := tflag.Parse(mvmFlags); err != nil {
+		if err == flag.ErrHelp { // -h already printed usage
+			return nil
+		}
 		return err
 	}
-	args := tflag.Args()
 
-	target := "."
-	var pass []string
-	if len(args) > 0 {
-		target = args[0]
-		pass = args[1:]
-	}
-
-	os.Args = append([]string{"mvm-test"}, pass...)
+	os.Args = append([]string{"mvm-test"}, rewriteTestFlags(testFlags)...)
 
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
@@ -285,8 +319,6 @@ func testCmd(arg []string) error {
 	return runTestDriver(i)
 }
 
-// evalLocalDir Evals each .go file in a local directory in turn.
-// Mirrors mvm test's pre-dynamic-import behavior.
 func evalLocalDir(i *interp.Interp, absDir string, entries []os.DirEntry) error {
 	var paths []string
 	hasTest := false
@@ -314,8 +346,6 @@ func evalLocalDir(i *interp.Interp, absDir string, entries []os.DirEntry) error 
 	return nil
 }
 
-// runTestDriver synthesizes a testing.Main call over all Test* funcs
-// registered in the interpreter's symbol table and runs it.
 func runTestDriver(i *interp.Interp) error {
 	testNames := i.FuncNames("Test")
 	if len(testNames) == 0 {
@@ -324,7 +354,7 @@ func runTestDriver(i *interp.Interp) error {
 	}
 
 	var driver strings.Builder
-	driver.WriteString("testing.Main(func(p, s string) (bool, error) { return true, nil }, []testing.InternalTest{")
+	driver.WriteString("testing.Main(func(pat, name string) (bool, error) { return regexp.MatchString(pat, name) }, []testing.InternalTest{")
 	for _, name := range testNames {
 		fmt.Fprintf(&driver, "{Name: %q, F: %s},", name, name)
 	}

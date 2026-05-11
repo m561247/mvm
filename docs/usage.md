@@ -50,8 +50,9 @@ mvm run -x _samples/fib.go          # run with line tracing (see below)
 mvm test                            # run tests in the current directory
 mvm test ./pkg                      # run tests in a local package directory
 mvm test github.com/google/uuid     # fetch a remote module and run its tests
-mvm test ./pkg -test.v              # verbose output
-mvm test ./pkg -test.run TestFoo    # run only matching tests
+mvm test ./pkg -v                   # verbose output
+mvm test ./pkg -run TestFoo         # run only matching tests
+mvm test -v                         # current directory, verbose
 ```
 
 The target is either:
@@ -62,9 +63,12 @@ The target is either:
   through the Go module proxy and held in memory -- see [Remote imports](#remote-imports).
   Its package is loaded as a whole so cross-file references resolve.
 
-Anything after the target is forwarded to `testing.Main`, using the `-test.`
-prefix: `-test.v` for verbose output, `-test.run REGEX` to select tests, and so
-on. Tests run in source-declaration order, not alphabetical order.
+Test flags use the same names as `go test` (`-v`, `-run REGEX`, `-count N`,
+`-short`, ...); mvm adds the `-test.` prefix `testing.Main` expects before
+running. They follow the target (or stand alone when the target is omitted), so
+the target, when given, comes first: `mvm test ./pkg -run TestFoo`, not
+`mvm test -run TestFoo ./pkg`. Tests run in source-declaration order, not
+alphabetical order.
 
 `-x` enables execution tracing here too.
 

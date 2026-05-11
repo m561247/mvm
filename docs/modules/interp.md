@@ -131,9 +131,12 @@ unaltered.
 
 ### `mvm test`
 
-A lightweight `go test` analogue. The target may be a local directory
-(default `".") or a remote import path; both paths share a single
-synthesized `testing.Main` driver at the end.
+A lightweight `go test` analogue. Arguments are `mvm test [-x] [target]
+[test flags]`: `splitTestArgs` peels the mvm-owned leading flags (`-x`),
+takes the next non-flag token as the target, and treats the rest as test
+flags. The target may be a local directory (default `".") or a remote
+import path; both paths share a single synthesized `testing.Main` driver
+at the end.
 
 | Target | Loader |
 |--------|--------|
@@ -157,9 +160,11 @@ testing.Main(func(p, s string) (bool, error) { return true, nil },
     []testing.InternalTest{{Name: "TestX", F: TestX}, ...}, nil, nil)
 ```
 
-and Eval's it in a final round. `os.Args` is overwritten beforehand so
-`testing.Main`'s flag parsing sees only the `-test.*` flags that
-followed the target argument.
+and Eval's it in a final round. `os.Args` is overwritten beforehand with
+the test flags, run through `rewriteTestFlags` so the `go test` spellings
+(`-v`, `-run`, ...) become the `-test.*` names `testing.Main`'s flag
+parsing expects -- the same rewrite `go test` itself does in its CLI
+wrapper.
 
 The local-directory branch sequentially Eval's files, so cross-file
 references (e.g. a func in `a.go` referencing one in `b.go`) only
