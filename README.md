@@ -58,16 +58,20 @@ go run .                            # start the REPL
 go run . _samples/fib.go            # run a Go source file
 go run . run _samples/fib.go        # same. "run" is the default subcommand
 go run . run -e "fmt.Println(1+2)"  # evaluate an inline expression
+go run . run -x _samples/fib.go     # run with execution tracing
 go run . test ./pkg                 # run TestX functions in a package directory
+go run . test ./pkg -test.v         # ... verbose; -test.run REGEX selects tests
 go run . test github.com/google/uuid  # fetch a remote module and run its tests
 go run . help                       # list subcommands
 ```
 
-Remote import paths (run or test) are resolved through the Go module
-proxy and held in memory, so no module sources are written to disk.
+See [docs/usage.md](docs/usage.md) for the full command reference, the
+`-x` / `MVM_TRACE` tracing modes, and the `trap()` debugger.
 
-A `trap()` builtin drops the program into an interactive debug REPL
-where you can inspect the call stack and memory.
+Remote import paths (run or test) are resolved through the Go module
+proxy and held in memory, so no module sources are written to disk. A
+`trap()` builtin drops the program into an interactive debug REPL where
+you can inspect the call stack and memory.
 
 The repository contains two example trees: [`examples/`](examples/) for
 embedding mvm in Go and C host programs, and [`_samples/`](_samples/)
@@ -82,6 +86,7 @@ mvm -e 'http.ListenAndServe(":8080", http.FileServer(http.Dir(".")))'
 ## Documentation
 
 - [docs/index.md](docs/index.md): documentation entry point
+- [docs/usage.md](docs/usage.md): CLI reference, tracing, the trap() debugger, remote imports
 - [docs/architecture.md](docs/architecture.md): pipeline, memory model, key design decisions
 - [docs/modules/](docs/modules/): per-package reference
 - [docs/decisions/](docs/decisions/): architecture decision records (ADRs)
@@ -100,6 +105,5 @@ See the [Contributing Guide](CONTRIBUTING.md)
 ## License
 
 Mvm is distributed under the BSD-3-Clause license. See [LICENSE](LICENSE)
-for the full text. The vendored Go standard library packages under
-`stdlib/src/` remain under their original BSD-3-Clause license (see
-[stdlib/src/LICENSE](stdlib/src/LICENSE)).
+for the full text. The bundled Go standard library sources retain their
+original BSD-3-Clause license.

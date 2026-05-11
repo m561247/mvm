@@ -17,7 +17,7 @@ on:
       - 'stdlib/gen.go'
       - 'Makefile'
   schedule:
-    - cron: '0 6 * * 1'  # Mondays 06:00 UTC — catches Go toolchain and std-src updates
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC: catches Go toolchain and std-src updates
   workflow_dispatch:
 
 jobs:

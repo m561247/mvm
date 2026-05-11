@@ -816,9 +816,7 @@ func (m *Machine) Run() (err error) {
 			prevHeap := m.heap
 			var nip int
 			// fval.ref may be non-addressable AND read-only (method value
-			// taken off an unexported struct field). In that case .Interface()
-			// panics, so guard the Closure/int checks with CanInterface — such
-			// values are plain func values and fall through to the func path.
+			// taken off an unexported struct field, which make .Interface() panics).
 			canCallInterface := fval.ref.IsValid() && fval.ref.CanInterface()
 			var clo Closure
 			var isClosure, isInt bool

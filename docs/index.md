@@ -1,10 +1,12 @@
 # Mvm Documentation
 
-Mvm is an experimental Go interpreter built from a pipeline of composable packages.
+Mvm is an experimental Go interpreter built from a pipeline of composable
+packages.
 
-## Architecture
+## Guides
 
-- [Architecture Overview](architecture.md) -- pipeline design, data flow, and key design decisions
+- [Usage Guide](usage.md) -- CLI commands, execution tracing, the trap()
+  debugger, remote imports, environment variables
 
 ## Module Reference
 
@@ -16,11 +18,17 @@ Mvm is an experimental Go interpreter built from a pipeline of composable packag
 - [vm](modules/vm.md) -- stack-based bytecode virtual machine
 - [interp](modules/interp.md) -- integration layer and REPL
 - [stdlib](modules/stdlib.md) -- standard library wrappers for native Go imports
-- [stdmod](modules/stdmod.md) -- redirect FS that routes stdlib imports through the synthetic `github.com/mvm-sh/std` module
+- [stdmod](modules/stdmod.md) -- redirect FS that routes stdlib imports through the
+  synthetic `github.com/mvm-sh/std` module
 - [modfs](modules/modfs.md) -- in-memory `fs.FS` over the Go module proxy for dynamic network imports
 - [cmd/extract](modules/extract.md) -- generator for stdlib binding files
 
-## Architecture Decision Records
+## Architecture
+
+- [Architecture Overview](architecture.md) -- pipeline design, data flow, and
+  key design decisions
+
+Architecture Decision Records:
 
 - [ADR-001: Flat token stream instead of AST](decisions/ADR-001-flat-token-stream.md)
 - [ADR-002: Hybrid Value type](decisions/ADR-002-hybrid-value.md)

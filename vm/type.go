@@ -154,10 +154,7 @@ func (t *Type) Implements(iface *Type) bool {
 	return true
 }
 
-// ResolveMethodType returns the Type whose Methods[id] holds the resolved
-// entry — t itself, or t.ElemType when t is a pointer that doesn't carry
-// its own Methods slice (mvm registers pointer-receiver methods on the
-// value type's vm.Type). Returns nil when no resolved entry is found.
+// ResolveMethodType returns the Type whose Methods[id] holds the resolved entry.
 func (t *Type) ResolveMethodType(id int) *Type {
 	if id < 0 {
 		return nil

@@ -258,3 +258,25 @@ reuse `WalkCallStack` and `DebugInfo` symbolization end-to-end.
 See [vm](modules/vm.md#trap-and-interactive-debug-mode) for implementation
 details and [vm](modules/vm.md#runtime-virtualization-bridges) for the
 runtime bridge.
+
+## Tracing
+
+The VM can print a per-instruction trace in two modes, independently or
+together:
+
+- **line tracing** -- one entry per executed source line: the source position
+  and the line text, indented by call depth, with consecutive hits at the same
+  position deduplicated.
+- **op tracing** -- one entry per executed instruction: `ip`/`sp`/`fp`, the
+  opcode and its immediate operand, and a snapshot of the top stack slots.
+
+Both reuse the lazily built `DebugInfo` (`PosToLine` and the source text map) --
+the same machinery the `trap` debugger uses, so there is no extra bookkeeping in
+the common path. Before the `Run` loop the Machine hoists the trace state into a
+register, so when tracing is off the per-instruction cost is a single
+compare-against-zero; the per-instruction work itself lives in `traceStep` and
+`traceOp` in `vm/vm.go`.
+
+The user-facing surface -- the `-x` flag and the `MVM_TRACE` environment
+variable -- is parsed by `interp.ParseTraceModes`, which both share. See
+[usage.md](usage.md#execution-tracing) for the mode syntax and sample output.
