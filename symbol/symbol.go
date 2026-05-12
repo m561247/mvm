@@ -47,6 +47,7 @@ type Symbol struct {
 	CellSlot   bool           // true if the local frame slot holds a heap cell pointer (promoted)
 	FreeVars   []string       // closure: scoped names of captured outer-scope locals, in Heap order
 	RecvName   string         // for methods: raw receiver variable name
+	RecvType   *vm.Type       // for methods: receiver base type resolved at signature time (Phase 1), used to bind the receiver local in Phase 2 without re-resolving the (possibly now-shadowed) bare type name. TODO(qualified-symbols): drop once receiver types resolve via package-qualified keys.
 	InNames    []string       // raw input param names, cached from Phase 1 for Phase 2
 	OutNames   []string       // raw output param names, cached from Phase 1 for Phase 2
 	MethodExpr bool           // true if this is a method expression (Type.Method)
@@ -144,7 +145,9 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 			}
 		}
 		return sm.promotedMethod(sym.Type, name, nil)
-	case Var, LocalVar, Value:
+	case Var, LocalVar, Value, Const:
+		// A typed constant has the method set of its named type, just like a
+		// variable (e.g. `const idx tag.Index = "..."; idx.Index(key)`).
 		if sym.Type == nil {
 			return nil, nil
 		}

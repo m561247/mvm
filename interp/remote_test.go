@@ -216,6 +216,90 @@ var Zero Code
 	}
 }
 
+// TestRemoteTypedConstMethod checks that a typed string/basic constant keeps
+// its named type's method set across a package boundary (x/text's
+// internal/language does `const lang tag.Index = "..."; lang.Index(key)` where
+// tag.Index is `type Index string`). mvm previously reported "undefined: Index"
+// because symbol.MethodByName had no case for symbol.Const.
+func TestRemoteTypedConstMethod(t *testing.T) {
+	url, _ := startFakeProxy(t, remoteModule{
+		path:    "example.com/x/idx",
+		version: "v1.0.0",
+		files: map[string]string{
+			"go.mod": "module example.com/x/idx\n",
+			"idx.go": `package idx
+
+type Index string
+
+func (s Index) Elem(i int) byte { return s[i] }
+
+const Tab Index = "abc"
+
+func Get() byte { return Tab.Elem(1) }
+`,
+		},
+	})
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+
+	if _, err := i.Eval("test", `import "example.com/x/idx"; println(idx.Get())`); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "98\n"; got != want { // 'b'
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
+// TestRemoteMethodReceiverTypeCollision checks that a method body binds its
+// receiver to the type it was declared against, even when a sibling import
+// later shadows the bare type name. Here "inner" declares `type Tag struct{ N
+// int }` with method Get; "shadow" also declares `type Tag struct{ S string }`.
+// main imports inner then shadow, so by the time inner.Get's deferred body is
+// compiled the bare name "Tag" points at shadow's struct. mvm previously bound
+// inner.Get's receiver to that wrong Tag and failed with "undefined: N".
+func TestRemoteMethodReceiverTypeCollision(t *testing.T) {
+	url, _ := startFakeProxy(t,
+		remoteModule{
+			path:    "example.com/x/inner",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod":   "module example.com/x/inner\n",
+				"inner.go": "package inner\n\ntype Tag struct{ N int }\n\nfunc (t Tag) Get() int { return t.N }\n",
+			},
+		},
+		remoteModule{
+			path:    "example.com/x/shadow",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod":    "module example.com/x/shadow\n",
+				"shadow.go": "package shadow\n\ntype Tag struct{ S string }\n",
+			},
+		},
+	)
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+
+	// Importing shadow shadows the bare "Tag"; without the Phase-1 receiver-type
+	// cache, inner.Get's body would bind t to shadow.Tag and fail "undefined: N".
+	// (Note: `inner.Tag{N: 7}.Get()` would also work here for the receiver-type
+	// fix but trips a separate composite-literal/shadowing bug, so use a var.)
+	src := `import "example.com/x/inner"; import "example.com/x/shadow"; var _ = shadow.Tag{}; var x inner.Tag; x.N = 7; println(x.Get())`
+	if _, err := i.Eval("test", src); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "7\n"; got != want {
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
 // TestRemoteXTextCrash imports golang.org/x/text/language over the live proxy.
 // It used to fault inside vm.patchRtype (a read-only static rtype was patched
 // when the bare type names "Script"/"Region" collided between
