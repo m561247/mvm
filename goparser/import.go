@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"reflect"
 	"strings"
 	"unicode"
 
@@ -334,7 +335,17 @@ func (p *Parser) preRegisterTypes(decls []Tokens) {
 }
 
 func (p *Parser) registerStructPlaceholder(key, short string) *vm.Type {
-	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type {
+	// Only reuse an existing binding if it is genuinely a struct placeholder
+	// awaiting SetFields. Bare type names are not package-qualified while a
+	// package's source is parsed, so `key` may currently hold an unrelated type
+	// from another import (e.g. a `type X uint16` whose Rtype is the shared,
+	// read-only reflect.TypeOf(uint16(0))). Patching that in SetFields would
+	// memcpy onto read-only memory and crash; shadow it with a fresh placeholder
+	// instead. (Same guard also avoids re-patching an already-finalized struct,
+	// which would corrupt the other package's type.)
+	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
+		s.Type != nil && s.Type.Rtype != nil &&
+		s.Type.Rtype.Kind() == reflect.Struct && s.Type.Placeholder {
 		return s.Type
 	}
 	ph := vm.NewStructType()

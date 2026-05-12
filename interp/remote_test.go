@@ -167,13 +167,65 @@ func main() {
 	}
 }
 
-// TestRemoteXTextCrash is a skipped repro: importing golang.org/x/text via the
-// live proxy faults inside vm.patchRtype on the go1.26 toolchain. See the
-// memory note "patchRtype faults on go1.26". Un-skip only on a build where
-// the fix is being verified -- the fault is a fatal SIGSEGV that takes down
-// the whole test binary, and the test needs network access.
+// TestRemoteTypeNameCollision exercises the bare-name type-collision path that
+// used to SIGSEGV inside vm.patchRtype: package "outer" declares `type Code
+// struct{...}` (pre-registered as a fresh struct placeholder) and imports
+// package "inner" which declares `type Code uint16` (whose Rtype is the shared,
+// read-only reflect.TypeOf(uint16(0))). Parsing inner overwrites the bare
+// "Code" symbol with the static rtype; finalizing outer's struct then memcpy'd
+// onto read-only memory. With the fix, outer's struct gets a fresh placeholder.
+func TestRemoteTypeNameCollision(t *testing.T) {
+	url, _ := startFakeProxy(t,
+		remoteModule{
+			path:    "example.com/x/inner",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod":   "module example.com/x/inner\n",
+				"inner.go": "package inner\n\ntype Code uint16\n\nconst English Code = 1\n",
+			},
+		},
+		remoteModule{
+			path:    "example.com/x/outer",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/outer\n",
+				"outer.go": `package outer
+
+import "example.com/x/inner"
+
+type Code struct {
+	c inner.Code
+}
+
+var Zero Code
+`,
+			},
+		},
+	)
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+
+	// Pre-fix this Eval faulted with SIGSEGV inside vm.patchRtype, taking down
+	// the test binary; the fix makes it return cleanly.
+	if _, err := i.Eval("test", `import "example.com/x/outer"; _ = outer.Zero`); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+}
+
+// TestRemoteXTextCrash imports golang.org/x/text/language over the live proxy.
+// It used to fault inside vm.patchRtype (a read-only static rtype was patched
+// when the bare type names "Script"/"Region" collided between
+// internal/language's `type Script uint16` and language's `type Script
+// struct`); that crash is fixed -- see TestRemoteTypeNameCollision for a
+// hermetic regression test. This case still fails on other unimplemented
+// parser features in x/text (currently "undefined: LangID"), so it stays
+// skipped; it also needs network access. Un-skip if/when x/text parses cleanly.
 func TestRemoteXTextCrash(t *testing.T) {
-	t.Skip("known crash: vm.patchRtype faults on go1.26 when importing golang.org/x/text/...; needs network")
+	t.Skip("vm.patchRtype crash fixed; x/text still hits other parser limits and the test needs network")
 
 	var stdout bytes.Buffer
 	i := NewInterpreter(golang.GoSpec)

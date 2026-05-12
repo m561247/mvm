@@ -85,6 +85,17 @@ func NewStructType() *Type {
 // It patches the internal reflect.Type in place so that any derived types
 // (e.g., pointer types created via PointerTo) automatically see the real layout.
 func (t *Type) SetFields(src *Type) {
+	if t.Rtype == nil || t.Rtype.Kind() != reflect.Struct || !t.Placeholder {
+		// Not a fresh reflect.StructOf placeholder: a bare-name type collision
+		// (e.g. another package's `type X uint16`) may have left a shared,
+		// read-only static rtype here. patchRtype would memcpy onto read-only
+		// memory and crash; adopt src's layout by reference instead.
+		t.Rtype = src.Rtype
+		t.Fields = src.Fields
+		t.Embedded = src.Embedded
+		t.Placeholder = false
+		return
+	}
 	patchRtype(t.Rtype, src.Rtype)
 	t.Fields = src.Fields
 	t.Embedded = src.Embedded
