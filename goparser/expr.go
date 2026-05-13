@@ -151,6 +151,19 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 			s, sc, ok := p.Symbols.Get(t.Str, p.scope)
 			if ok && sc != "" {
 				t.Str = sc + "/" + t.Str
+			} else if p.CompilingPkg != "" {
+				// Phase-2 deferred body: prefer this pkg's qualified Pkg-alias /
+				// type / func / var. The bare key may have been overwritten by a
+				// sibling import that uses the same short name. Rewrite the
+				// token's Str to the canonical qualified key so downstream
+				// bare-key probes (parseComposite, pkg-qual composite path, the
+				// compiler's symAt) all reach the right Symbol.
+				qk := p.CompilingPkg + "." + t.Str
+				if qs, qok := p.Symbols[qk]; qok && (!ok || qs != s) {
+					s = qs
+					ok = true
+					t.Str = qk
+				}
 			}
 			// Free variable detection: defined in an enclosing function scope.
 			// Exclude variables defined in sub-scopes of the current function (e.g. for loops).
@@ -264,8 +277,14 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				if s := p.Symbols[pkgTok.Str]; pkgTok.Tok == lang.Ident && s != nil && s.Kind == symbol.Pkg {
 					typeName := ops[len(ops)-1].Str[1:] // Strip leading ".".
 					if typ, err := p.resolvePkgType(s, typeName); err == nil {
-						ctype = typ.String()
-						if p.Symbols[ctype] == nil {
+						// Use the FULL-path-qualified key (matches the alias
+						// importSrc set up). typ.String() uses the SHORT pkgName
+						// in vm.Type.PkgPath which collides when two packages
+						// share a directory name (e.g. `language` and
+						// `internal/language`) -- the bare ctype Symbol would
+						// then point at whichever pkg's Type was SymAdded last.
+						ctype = s.PkgPath + "." + typeName
+						if _, ok := p.Symbols[ctype]; !ok {
 							p.SymAdd(symbol.UnsetAddr, ctype, vm.NewValue(typ.Rtype), symbol.Type, typ)
 						}
 						out[len(out)-1] = newIdent(ctype, pkgTok.Pos)
@@ -432,11 +451,37 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 
 // registerType registers typ in the symbol table and appends an Ident token to out.
 // It returns the type name for use as composite type context.
+//
+// During Phase-2 deferred parsing of an imported pkg, prefer this pkg's
+// qualified key when one already exists -- otherwise the SymAdd would overwrite
+// a sibling import's same-named Type at the bare key (e.g. internal/language's
+// `Tag{...}` composite literal would re-register bare `Tag` with the uint16/
+// P2-style placeholder rtype, displacing the language pkg's `type Tag
+// compact.Tag` clone that previous Phase-1 work had left there). The Ident
+// token then references the qualified key directly so the compiler resolves
+// the right Type without a bare-key probe.
 func (p *Parser) registerType(typ *vm.Type, pos int, out *Tokens) string {
 	ctype := typ.String()
-	p.SymAdd(symbol.UnsetAddr, ctype, vm.NewValue(typ.Rtype), symbol.Type, typ)
-	*out = append(*out, newIdent(ctype, pos))
-	return ctype
+	key := ctype
+	// Probe this pkg's qualified key. typ.String() uses vm.Type.PkgPath which is
+	// the SHORT pkg name -- two distinct packages with the same directory name
+	// (`language` and `internal/language`) collide on ctype. Build the probe
+	// from the full CompilingPkg path + the type's short name instead.
+	if p.CompilingPkg != "" {
+		short := typ.Name
+		if short == "" {
+			short = ctype
+		}
+		qk := p.CompilingPkg + "." + short
+		if existing, ok := p.Symbols[qk]; ok && existing.Type == typ {
+			key = qk
+		}
+	}
+	if existing, ok := p.Symbols[key]; !ok || existing.Type != typ {
+		p.SymAdd(symbol.UnsetAddr, key, vm.NewValue(typ.Rtype), symbol.Type, typ)
+	}
+	*out = append(*out, newIdent(key, pos))
+	return key
 }
 
 // addTypeExpr parses a type expression, registers it in the symbol table,

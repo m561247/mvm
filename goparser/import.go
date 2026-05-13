@@ -260,6 +260,28 @@ func (p *Parser) ParseAll(name, src string) (out []DeferredDecl, err error) {
 		}
 	}
 
+	// Resolve `import` decls in a first pass, before preRegisterTypes runs for
+	// this pkg's own types. Otherwise a transitive sub-import (e.g. language ->
+	// internal/language) would call SymAdd at bare key `Script` for its own
+	// `type Script uint16`, clobbering the struct placeholder this pkg's
+	// preRegisterTypes had just put there. Phase 1 sig parsing further down the
+	// decl list (e.g. `func (t Tag) Script() (Script, Confidence)`) would then
+	// capture the sibling's uint16 Type in this method's Returns -- and the
+	// pointer-into-vm.Type would never get rewritten by the late re-placeholder,
+	// so `script.scriptID` later fails "undefined: scriptID". Doing imports
+	// first leaves the bare key free for our preRegisterTypes to populate last.
+	var nonImports []Tokens
+	for _, decl := range decls {
+		if len(decl) > 0 && decl[0].Tok == lang.Import {
+			if _, err := p.parseImports(decl); err != nil {
+				return out, err
+			}
+			continue
+		}
+		nonImports = append(nonImports, decl)
+	}
+	decls = nonImports
+
 	// Pre-register struct and interface type placeholders so that forward,
 	// mutual, and self-references can resolve during parsing.
 	// Placeholders are untracked: they survive the retry loop cleanup.

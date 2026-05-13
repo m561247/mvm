@@ -479,6 +479,147 @@ func Make() (tag Tag) {
 	}
 }
 
+// TestRemoteTransitiveImportBareKeyClobber: outer.Foo is a wrapper struct
+// referencing inner.Foo (a uint16-underlying type with the same bare name).
+// Outer also has a method whose return type list mentions the BARE name `Foo`
+// (the outer struct). Pre-fix, importSrc ran preRegisterTypes first (setting
+// bare `Foo` to a fresh struct placeholder), then the ParseDecl loop hit
+// `import "inner"` and synchronously parsed inner's `type Foo uint16` -- whose
+// parseTypeLine SymAdd-overwrote bare `Foo` with uint16. Outer's method
+// signature parsed next captured the uint16 Type in its Returns slice. Phase-2
+// field access on the returned value then failed `undefined: <field>` because
+// the receiver's Type was uint16, not the struct. Fixed by processing imports
+// in a pre-pass before preRegisterTypes (goparser/import.go:importSrc).
+func TestRemoteTransitiveImportBareKeyClobber(t *testing.T) {
+	url, _ := startFakeProxy(t,
+		remoteModule{
+			path:    "example.com/x/inner",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod":   "module example.com/x/inner\n",
+				"inner.go": "package inner\n\ntype Foo uint16\n",
+			},
+		},
+		remoteModule{
+			path:    "example.com/x/outer",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/outer\n",
+				// Order matters: the method declaration that returns the bare
+				// name `Foo` must come BEFORE the `type Foo struct` in source
+				// order, so Phase-1 signature parsing captures whatever bare
+				// `Foo` is at that moment. (With the pre-fix bare-key clobber,
+				// imports ran in-loop and clobbered before the method's sig
+				// parse; with the fix, imports run first, then preRegisterTypes
+				// re-establishes the struct placeholder for outer.Foo.)
+				"a_method.go": `package outer
+
+type Bar struct{}
+
+func (b Bar) Make() (Foo, int) { return Foo{val: 7}, 0 }
+`,
+				"b_type.go": `package outer
+
+import "example.com/x/inner"
+
+type Foo struct {
+	dummy inner.Foo
+	val   int
+}
+
+func Use() int {
+	var b Bar
+	f, _ := b.Make()
+	return f.val
+}
+`,
+			},
+		},
+	)
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	if _, err := i.Eval("test", `import "example.com/x/outer"; println(outer.Use())`); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "7\n"; got != want {
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
+// TestRemotePkgAliasCollision: two imported packages with the same directory
+// name (-> same default short alias `lang`) live at different paths. Main
+// imports both; the LAST main import to be processed SymSets bare `lang` to its
+// own Pkg Symbol. The OUTER pkg has its own `import "<inner>"` (same default
+// alias `lang`) and a Phase-2 deferred body that uses `lang.X{}`. Without the
+// per-pkg Pkg-alias fix, Phase-2 lookup of `lang` finds whichever Pkg was last
+// SymSet at the bare key (the wrong one), so `lang.X` resolves to the wrong
+// type and `x.<field>` later fails "undefined: <field>". Fixed by also
+// registering Pkg aliases at `<importingPkg>.<localAlias>` and routing Ident
+// rewrites through that qualified key in Phase 2 (goparser/{decl.go,expr.go}).
+func TestRemotePkgAliasCollision(t *testing.T) {
+	url, _ := startFakeProxy(t,
+		remoteModule{
+			path:    "example.com/x/lang", // outer "lang" pkg.
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/lang\n",
+				"lang.go": `package lang
+
+import "example.com/x/inner/lang"
+
+// X here is the OUTER lang.X (a wrapper).
+type X struct {
+	inner lang.X
+}
+
+// Use the inner lang's X composite literal inside a method body so the
+// resolution happens in Phase 2 (deferred body), after main has finished
+// running its own imports and overwritten the bare ` + "`lang`" + ` key.
+func Wrap(v int) X { return X{inner: lang.X{V: v}} }
+
+func (x X) Get() int { return x.inner.V }
+`,
+			},
+		},
+		remoteModule{
+			path:    "example.com/x/inner/lang", // inner "lang" pkg (same short name as outer).
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/inner/lang\n",
+				"lang.go": `package lang
+
+type X struct{ V int }
+`,
+			},
+		},
+	)
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	// Main imports both outer and inner. Both have short name `lang`; the
+	// LAST SymSet wins for the bare key. Without the per-pkg alias fix, Phase-2
+	// deferred body of outer.Wrap would resolve `lang.X` via the wrong Pkg
+	// (whichever main imported last). Use a renamed alias for the inner here so
+	// main resolves outer.lang.Wrap unambiguously; the bug we're testing is
+	// about main's `import "example.com/x/inner/lang"` SymSet, which uses the
+	// default short name `lang` and thus overwrites bare `lang` after outer's
+	// own parseSrc finished.
+	src := `import inner "example.com/x/inner/lang"; import "example.com/x/lang"; println(lang.Wrap(42).Get(), inner.X{V: 3}.V)`
+	if _, err := i.Eval("test", src); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "42 3\n"; got != want {
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
 // TestRemoteXTextCrash imports golang.org/x/text/language over the live proxy.
 // It used to fault inside vm.patchRtype (a read-only static rtype was patched
 // when the bare type names "Script"/"Region" collided between
