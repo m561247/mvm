@@ -188,23 +188,34 @@ func (p *Parser) importSrc(pkgPath string) (err error) {
 		if s.Kind != symbol.Generic && IsExported(k) {
 			pkg.Values[k] = s.Value
 		}
-		// A package-level var's symbol is re-registered (and mutated in place,
-		// e.g. its type inferred from the initializer) when its initializer is
-		// compiled in Phase 2. If another import later declares the same bare
-		// name, that Phase-2 mutation would clobber this package's symbol -- and
-		// the package-qualified alias would then point at the clobbered object.
-		// Drop the bare key so each package's var symbol stays distinct; Phase 2
-		// resolves the name via CompilingPkg (Compiler.symAt) and `pkg.Member`
-		// accesses via the qualified alias. (Consts are kept: they're resolved
-		// in Phase 1 and may appear in type expressions, e.g. array lengths,
-		// which are looked up by bare name.)
+		// A package-level var's symbol is mutated in place when its initializer
+		// is compiled in Phase 2 (its type is inferred from the initializer). If
+		// another import later declares the same bare name, that mutation would
+		// clobber this package's symbol -- and the package-qualified alias would
+		// then point at the clobbered object. Drop the bare key so each package's
+		// var symbol stays distinct; Phase 2 resolves the name via CompilingPkg
+		// (symGet / comp.symAt) and `pkg.Member` accesses via the qualified
+		// alias. (Consts are kept: resolved in Phase 1, never mutated, and
+		// appear in type expressions like array lengths that are looked up by
+		// bare name.)
 		if s.Kind == symbol.Var && existing[k] == nil {
 			demoteKeys = append(demoteKeys, k)
 		}
 	}
 	// Create qualified aliases after the loop to avoid mutating p.Symbols during iteration.
 	for _, k := range newKeys {
-		p.Symbols[pkgPath+"."+k] = p.Symbols[k]
+		s := p.Symbols[k]
+		// A type's Symbol is mutated in place when a sibling import re-declares
+		// the same bare name (parseTypeLine reuses the existing symbol and resets
+		// its .Type). Alias to a shallow copy so this package's qualified entry
+		// keeps pointing at the right *vm.Type; everything else can share the
+		// live symbol. (Demoting the bare type key like we do for vars is not an
+		// option: many sites still look types up by bare name.)
+		if s.Kind == symbol.Type {
+			cp := *s
+			s = &cp
+		}
+		p.Symbols[pkgPath+"."+k] = s
 	}
 	for _, k := range demoteKeys {
 		delete(p.Symbols, k)
@@ -384,10 +395,21 @@ func (p *Parser) registerStructPlaceholder(key, short string) *vm.Type {
 }
 
 func (p *Parser) registerInterfacePlaceholder(key, short string) *vm.Type {
-	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type {
+	// Only reuse an existing binding if it is genuinely an interface placeholder
+	// awaiting finalization (parseTypeLine fills in IfaceMethods/TypeElems and
+	// clears Placeholder). Otherwise the bare name may currently hold either an
+	// unrelated kind from a sibling package (e.g. internal/language's `type
+	// ValueError struct{...}` while parsing language's `type ValueError
+	// interface{...}`) or that sibling's already-finalized interface; reusing
+	// either would flip its kind / overwrite its method set and corrupt the
+	// other package's qualified alias. Shadow the bare key with a fresh
+	// placeholder instead.
+	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
+		s.Type != nil && s.Type.Rtype != nil &&
+		s.Type.Rtype.Kind() == reflect.Interface && s.Type.Placeholder {
 		return s.Type
 	}
-	ph := &vm.Type{Rtype: vm.AnyRtype, Name: short}
+	ph := &vm.Type{Rtype: vm.AnyRtype, Name: short, Placeholder: true}
 	p.SymAdd(symbol.UnsetAddr, key, vm.NewValue(ph.Rtype), symbol.Type, ph)
 	return ph
 }

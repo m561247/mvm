@@ -359,6 +359,69 @@ func Len() int { return len(data) }
 	}
 }
 
+// TestRemoteTypeNameStructInterfaceCollision: package "inner" declares `type
+// Foo struct{ v [8]byte }` and "shadow" declares `type Foo interface{...}`.
+// Both keys arrive bare in the symbol table; preRegisterTypes for shadow used
+// to call registerInterfacePlaceholder, see inner's already-finalized struct
+// symbol, and return it as the "interface placeholder". parseTypeLine then
+// adopted shadow's interface Rtype into inner's *vm.Type, flipping the struct
+// to an interface. Phase 2 compilation of inner.Make's body (which reads f.v)
+// then failed "undefined: v" because the qualified alias
+// `example.com/x/inner.Foo` pointed at the flipped type. The fix tightens
+// registerInterfacePlaceholder to only reuse a genuine pending interface
+// placeholder; otherwise it shadows the bare key with a fresh placeholder.
+func TestRemoteTypeNameStructInterfaceCollision(t *testing.T) {
+	url, _ := startFakeProxy(t,
+		remoteModule{
+			path:    "example.com/x/inner",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/inner\n",
+				"inner.go": `package inner
+
+type Foo struct{ v [8]byte }
+
+func Make() Foo {
+	var f Foo
+	f.v[0] = 'x'
+	return f
+}
+
+func First(f Foo) byte { return f.v[0] }
+`,
+			},
+		},
+		remoteModule{
+			path:    "example.com/x/shadow",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/shadow\n",
+				"shadow.go": `package shadow
+
+type Foo interface {
+	Subtag() string
+}
+`,
+			},
+		},
+	)
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	// Importing shadow after inner used to flip inner.Foo from struct to
+	// interface; inner.Make's body would then fail "undefined: v".
+	src := `import "example.com/x/inner"; import _ "example.com/x/shadow"; println(inner.First(inner.Make()))`
+	if _, err := i.Eval("test", src); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "120\n"; got != want { // 'x'
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
 // TestRemoteXTextCrash imports golang.org/x/text/language over the live proxy.
 // It used to fault inside vm.patchRtype (a read-only static rtype was patched
 // when the bare type names "Script"/"Region" collided between

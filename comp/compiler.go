@@ -40,8 +40,6 @@ type Compiler struct {
 	methodIDs map[string]int                  // global method ID by method name
 	typeIdxs  map[*vm.Type]int                // dedup cache for typeIndex, keyed by mvm type pointer
 	typeSyms  map[reflect.Type]*symbol.Symbol // dedup cache for typeSym, keyed by reflect.Type
-
-	compilingPkg string // import path of the package whose deferred decl is being compiled ("" = main/REPL); see symAt
 }
 
 // NewCompiler returns a new compiler state for a given scanner.
@@ -87,8 +85,8 @@ func (c *Compiler) Compile(name, src string) error {
 // package for the duration so that unqualified identifier lookups in the body
 // resolve against that package's symbols (see DeferredDecl, symAt).
 func (c *Compiler) compileDeferred(dd goparser.DeferredDecl) error {
-	c.compilingPkg = dd.PkgPath
-	defer func() { c.compilingPkg = "" }()
+	c.CompilingPkg = dd.PkgPath
+	defer func() { c.CompilingPkg = "" }()
 	return c.compileDecl(dd.Toks)
 }
 
@@ -332,13 +330,14 @@ func (c *Compiler) errUndef(t goparser.Token, name string) error {
 }
 
 // symAt resolves a top-level name, preferring the symbol of the package whose
-// deferred declaration is currently being compiled (compilingPkg) over a bare
+// deferred declaration is currently being compiled (CompilingPkg) over a bare
 // key that a sibling import may have left pointing at a different package's
 // same-named symbol. Scoped (local) names contain '/' (and the package
-// qualifier joins with '.'), so they never match the qualified probe.
+// qualifier joins with '.'), so they never match the qualified probe. The
+// parser-side counterpart is goparser.Parser.symGet.
 func (c *Compiler) symAt(name string) (*symbol.Symbol, bool) {
-	if c.compilingPkg != "" {
-		if s, ok := c.Symbols[c.compilingPkg+"."+name]; ok {
+	if c.CompilingPkg != "" {
+		if s, ok := c.Symbols[c.CompilingPkg+"."+name]; ok {
 			return s, true
 		}
 	}

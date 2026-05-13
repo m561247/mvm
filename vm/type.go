@@ -33,7 +33,7 @@ type Type struct {
 	PkgPath      string
 	Name         string
 	Rtype        reflect.Type
-	Placeholder  bool            // true for forward-declared struct placeholders until SetFields is called
+	Placeholder  bool            // true for forward-declared struct/interface placeholders until finalized (SetFields, or IfaceMethods assignment in parseTypeLine)
 	IfaceMethods []IfaceMethod   // non-nil for interface types: required method signatures
 	TypeElems    []TypeElem      // non-nil for constraint interfaces: union members (e.g. cmp.Ordered)
 	Methods      []Method        // concrete types: methods[methodID] = code location + receiver path

@@ -31,6 +31,7 @@ type Parser struct {
 	remotefs        fs.FS          // last-resort filesystem (e.g. network module proxy)
 	includeTests    bool           // include _test.go files when loading package sources
 	importRemaining []DeferredDecl // code-gen declarations from imported source packages, tagged with their origin package
+	CompilingPkg    string         // while a deferred decl is being parsed/compiled in Phase 2: its origin package's import path ("" = main/REPL); makes unqualified type/name lookups prefer that package's symbols (see symGet, comp.Compiler.symAt)
 
 	funcScope         string
 	framelen          map[string]int // length of function frames indexed by funcScope
@@ -69,6 +70,25 @@ func (p *Parser) SymAdd(i int, name string, v vm.Value, k symbol.Kind, t *vm.Typ
 		p.symTracker = append(p.symTracker, name)
 	}
 	p.Symbols[name] = &symbol.Symbol{Kind: k, Name: name, Index: i, Value: v, Type: t}
+}
+
+// symGet resolves an unqualified name like Symbols.Get(name, p.scope), except
+// that -- while a deferred declaration is being parsed in Phase 2 (CompilingPkg
+// set) -- a top-level name resolves to that package's symbol (key
+// "CompilingPkg.name") rather than to a bare key that a sibling import may have
+// left pointing at a different package's same-named symbol. A lexical local
+// (returned scope != "") still shadows it, matching Go scoping.
+func (p *Parser) symGet(name string) (*symbol.Symbol, string, bool) {
+	s, sc, ok := p.Symbols.Get(name, p.scope)
+	if ok && sc != "" {
+		return s, sc, true
+	}
+	if p.CompilingPkg != "" {
+		if qs, qok := p.Symbols[p.CompilingPkg+"."+name]; qok {
+			return qs, "", true
+		}
+	}
+	return s, sc, ok
 }
 
 // ImportPackageValues populates packages with values.

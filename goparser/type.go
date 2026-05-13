@@ -201,7 +201,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 		return typ, 1 + indexArgs + nRet, nil
 
 	case lang.Ident:
-		s, _, ok := p.Symbols.Get(in[0].Str, p.scope)
+		s, _, ok := p.symGet(in[0].Str)
 		if !ok {
 			return nil, 0, ErrUndefined{Name: in[0].Str}
 		}
