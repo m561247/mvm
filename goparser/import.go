@@ -177,7 +177,7 @@ func (p *Parser) importSrc(pkgPath string) (err error) {
 		Path:   pkgPath,
 		Values: map[string]vm.Value{},
 	}
-	var newKeys, demoteKeys []string
+	var newKeys []string
 	qualifiedPrefix := pkgPath + "."
 	for k, s := range p.Symbols {
 		if existing[k] == s {
@@ -211,19 +211,6 @@ func (p *Parser) importSrc(pkgPath string) (err error) {
 		if s.Kind != symbol.Generic && IsExported(k) {
 			pkg.Values[k] = s.Value
 		}
-		// A package-level var's symbol is mutated in place when its initializer
-		// is compiled in Phase 2 (its type is inferred from the initializer). If
-		// another import later declares the same bare name, that mutation would
-		// clobber this package's symbol -- and the package-qualified alias would
-		// then point at the clobbered object. Drop the bare key so each package's
-		// var symbol stays distinct; Phase 2 resolves the name via CompilingPkg
-		// (symGet / comp.symAt) and `pkg.Member` accesses via the qualified
-		// alias. (Consts are kept: resolved in Phase 1, never mutated, and
-		// appear in type expressions like array lengths that are looked up by
-		// bare name.)
-		if s.Kind == symbol.Var && existing[k] == nil {
-			demoteKeys = append(demoteKeys, k)
-		}
 	}
 	// Create qualified aliases after the loop to avoid mutating p.Symbols during iteration.
 	for _, k := range newKeys {
@@ -232,16 +219,12 @@ func (p *Parser) importSrc(pkgPath string) (err error) {
 		// the same bare name (parseTypeLine reuses the existing symbol and resets
 		// its .Type). Alias to a shallow copy so this package's qualified entry
 		// keeps pointing at the right *vm.Type; everything else can share the
-		// live symbol. (Demoting the bare type key like we do for vars is not an
-		// option: many sites still look types up by bare name.)
+		// live symbol.
 		if s.Kind == symbol.Type {
 			cp := *s
 			s = &cp
 		}
-		p.Symbols[pkgPath+"."+k] = s
-	}
-	for _, k := range demoteKeys {
-		delete(p.Symbols, k)
+		p.Symbols[QualifyName(pkgPath, k)] = s
 	}
 	p.Packages[pkgPath] = pkg
 

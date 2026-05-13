@@ -109,7 +109,7 @@ Top-level maps:
 - **`BuildTags`**: optional whole-package `//go:build` expression. Gates
   `runtime/cgo` behind `cgo` (so `GOOS=js GOARCH=wasm` still links) and
   whole packages that only build on newer Go (`crypto/hpke`,
-  `testing/cryptotest` → `go1.26`; `testing/synctest` → `go1.25`).
+  `testing/cryptotest` on `go1.26`; `testing/synctest` on `go1.25`).
 - **`SymbolBuildTags`**: per-symbol additions in newer Go releases,
   keyed by import path then `//go:build` expression. Those symbols are
   split out of the base file into a supplement `<pkg>_<suffix>.go`

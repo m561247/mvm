@@ -403,7 +403,13 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 		param := ""
 		if p.hasFirstParam(t) {
 			origName := t[0].Str
-			param = p.scopedName(origName)
+			if flag == parseTypeVar {
+				// Top-level vars want the canonical pkgKey; pkgKey itself
+				// falls through to scopedName for nested (in-function) vars.
+				param = p.pkgKey(origName)
+			} else {
+				param = p.scopedName(origName)
+			}
 			t = t[1:]
 			if len(t) == 0 {
 				if len(types) == 0 {

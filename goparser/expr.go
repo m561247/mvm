@@ -152,22 +152,13 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 			if ok && sc != "" {
 				t.Str = sc + "/" + t.Str
 			} else {
-				// Phase 1 of an imported pkg (importingPkg set) and Phase-2
-				// deferred body (CompilingPkg set) both want this pkg's
-				// qualified Symbol to win over a sibling import's bare-key
-				// shadow. Rewrite t.Str to the canonical qualified key so
-				// downstream bare-key probes (parseComposite, the BraceBlock
-				// pkg-qual composite path, the compiler's symAt) all reach
-				// the right Symbol. After Path B step 1, top-level Type
-				// symbols inside an imported pkg ONLY live at the qualified
-				// key (bare-key probe above returns ok=false); the rewrite
-				// makes the Type ident token carry that canonical key.
+				// Rewrite Ident.Str to the pkg-qualified canonical key.
 				pkg := p.importingPkg
 				if pkg == "" {
 					pkg = p.CompilingPkg
 				}
 				if pkg != "" {
-					qk := pkg + "." + t.Str
+					qk := QualifyName(pkg, t.Str)
 					if qs, qok := p.Symbols[qk]; qok && (!ok || qs != s) {
 						s = qs
 						ok = true
@@ -190,11 +181,11 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				ctype = t.Str
 				// Non-composite uses of a Type ident: T(x) (conversion),
 				// T.Method (method expression), and struct-field-key
-				// shadows (T:value inside a composite). For these, the
-				// speculative Fnew the compiler would otherwise emit is
-				// pure noise; tag the token so the comp Ident handler
-				// skips it. T{...} is the only composite use, so absence
-				// of the tag still drives Fnew emission for that path.
+				// shadows (T:value inside a composite).
+				// For these, the speculative Fnew the compiler would otherwise emit is
+				// pure noise; tag the token so the comp Ident handler skips it.
+				// T{...} is the only composite use, so absence of the tag still drives
+				// Fnew emission for that path.
 				if i+1 < lin {
 					switch in[i+1].Tok {
 					case lang.ParenBlock, lang.Period, lang.Colon:
@@ -287,12 +278,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				if s := p.Symbols[pkgTok.Str]; pkgTok.Tok == lang.Ident && s != nil && s.Kind == symbol.Pkg {
 					typeName := ops[len(ops)-1].Str[1:] // Strip leading ".".
 					if typ, err := p.resolvePkgType(s, typeName); err == nil {
-						// Use the FULL-path-qualified key (matches the alias
-						// importSrc set up). typ.String() uses the SHORT pkgName
-						// in vm.Type.PkgPath which collides when two packages
-						// share a directory name (e.g. `language` and
-						// `internal/language`) -- the bare ctype Symbol would
-						// then point at whichever pkg's Type was SymAdded last.
+						// Use the FULL-path-qualified key to avoid package name collisions.
 						ctype = s.PkgPath + "." + typeName
 						if _, ok := p.Symbols[ctype]; !ok {
 							p.SymAdd(symbol.UnsetAddr, ctype, vm.NewValue(typ.Rtype), symbol.Type, typ)
@@ -459,17 +445,6 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 	return out, err
 }
 
-// registerType registers typ in the symbol table and appends an Ident token to out.
-// It returns the type name for use as composite type context.
-//
-// Named types get a package-qualified canonical key from definition time:
-// `<currentPkg>.<typ.Name>`. The current pkg is `importingPkg` (Phase 1 of an
-// imported pkg) or `CompilingPkg` (Phase 2 deferred body); never both at once.
-// Anonymous composite types (slice/map/struct{...}/etc., typ.Name == "") stay
-// at their structural typ.String() key -- they're shape-keyed and shared
-// cross-pkg by design. Without this, two distinct packages with the same dir
-// name (`language` and `internal/language`) would both produce ctype
-// `"language.<Name>"` and clobber each other at the bare key.
 func (p *Parser) registerType(typ *vm.Type, pos int, out *Tokens) string {
 	ctype := typ.String()
 	key := ctype
@@ -488,8 +463,6 @@ func (p *Parser) registerType(typ *vm.Type, pos int, out *Tokens) string {
 	return key
 }
 
-// addTypeExpr parses a type expression, registers it in the symbol table,
-// and appends the corresponding Ident token to out.
 func (p *Parser) addTypeExpr(in Tokens, out *Tokens) (string, int, error) {
 	typ, n, err := p.parseTypeExpr(in)
 	if err != nil {
@@ -505,14 +478,11 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 	}
 
 	noColon := len(tokens) > 0 && tokens.Index(lang.Colon) == -1
-	// For struct composite literals, the LHS of `field: value` is always a
-	// field NAME (not a value reference). Detect this case here and stash
-	// the name on the Colon token's Arg so the compiler never sees the key
-	// as an Ident -- avoiding a speculative load that would later have to
-	// be nop'd, and which could clash with a same-named outer local.
 	isStruct := false
 	if !noColon {
 		if sym := p.Symbols[typ]; sym != nil && sym.Type.IsStruct() {
+			// For struct composite literals, the LHS of `field: value`
+			// is always a field NAME (not a value reference).
 			isStruct = true
 		}
 	}
@@ -557,13 +527,6 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 	return result, sliceLen, nil
 }
 
-// emitGenericFunc registers and parses an instantiated generic function,
-// appending the function definition and identifier to out.
-// If instToks is nil (already instantiated), it appends the mangled name.
-// tmpl is the template being instantiated (its pkgPath sets the parser's
-// pkg context so unqualified references in the body -- e.g. another
-// generic helper in the same pkg -- resolve against the owning pkg's
-// canonical keys, not against whatever pkg is currently parsing).
 func (p *Parser) emitGenericFunc(tmpl *genericTemplate, instToks Tokens, mname string, pos int, out *Tokens) error {
 	if instToks == nil {
 		*out = append(*out, newIdent(mname, pos))

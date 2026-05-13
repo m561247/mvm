@@ -23,12 +23,6 @@ func moveDefaultLast(clauses []Tokens) {
 	}
 }
 
-// caseClauses splits body at the lang.Case keyword, drops any leading or
-// trailing segment that doesn't start with Case or Default (e.g. a stray
-// comment between '{' and the first 'case'), and moves the default clause
-// to the last position. Such dropped segments cannot be valid clauses on
-// their own and would crash downstream indexing in parseCaseClause /
-// parseSelectCase / parseTypeSwitchClause.
 func (p *Parser) caseClauses(body Tokens) []Tokens {
 	sc := body.SplitStart(lang.Case)
 	out := sc[:0]
@@ -45,13 +39,7 @@ func (p *Parser) caseClauses(body Tokens) []Tokens {
 	return out
 }
 
-// splitAndSortVarDecls splits var(...) blocks into individual declarations,
-// topologically sorts them by dependency, and returns the reordered list.
-// Funcs and other statements keep their original relative positions; only
-// var declarations are extracted, sorted, and placed back into var slots.
-// Each declaration keeps its DeferredDecl.PkgPath tag through the reorder.
 func (p *Parser) splitAndSortVarDecls(decls []DeferredDecl) []DeferredDecl {
-	// Expand var blocks and identify var slot positions.
 	type slot struct {
 		pos  int          // position in expanded list
 		decl DeferredDecl // the var declaration
@@ -62,6 +50,7 @@ func (p *Parser) splitAndSortVarDecls(decls []DeferredDecl) []DeferredDecl {
 		if len(decl.Toks) == 0 {
 			continue
 		}
+		// Expand var blocks and identify var slot positions.
 		switch decl.Toks[0].Tok {
 		case lang.Var:
 			for _, vd := range p.splitVarBlock(decl.Toks) {
@@ -126,10 +115,11 @@ func (p *Parser) sortByDeps(decls []DeferredDecl) []DeferredDecl {
 	if len(decls) <= 1 {
 		return decls
 	}
+	// Key nameSet by the canonical Symbol key so it matches sym.Name from walkRefs.
 	nameSet := map[string]int{}
 	for i, decl := range decls {
 		if len(decl.Toks) >= 2 && decl.Toks[1].Tok == lang.Ident {
-			nameSet[decl.Toks[1].Str] = i
+			nameSet[p.pkgKey(decl.Toks[1].Str)] = i
 		}
 	}
 	if len(nameSet) == 0 {
@@ -176,10 +166,6 @@ func (p *Parser) sortByDeps(decls []DeferredDecl) []DeferredDecl {
 	return result
 }
 
-// collectIdents records sibling-var deps for toks. Free-function and
-// concrete-method calls pull in the callee's precomputed Symbol.Reads;
-// qualified pkg refs (`pkg.X`) are dropped because imported pkgs init
-// before us.
 func (p *Parser) collectIdents(toks Tokens, nameSet map[string]int, out map[int]bool) {
 	p.walkRefs(toks, "", func(sym *symbol.Symbol) {
 		switch sym.Kind {
@@ -197,10 +183,6 @@ func (p *Parser) collectIdents(toks Tokens, nameSet map[string]int, out map[int]
 	})
 }
 
-// collectFuncReads computes Symbol.Reads for every Func/method as the
-// transitive set of package-level Vars its body reads. Interface
-// dispatch and runtime-fetched func values stay opaque (see
-// _samples/init_iface.go, init_indirect_call.go).
 func (p *Parser) collectFuncReads(decls []DeferredDecl) {
 	// calls is keyed only by the funcs we actually walk, not the entire
 	// symbol table; the fixed-point below iterates this small set.
@@ -252,9 +234,6 @@ func (p *Parser) collectFuncReads(decls []DeferredDecl) {
 	}
 }
 
-// registerParamPlaceholders inserts LocalVar stubs at `scope/name` so
-// the walker's scope-aware lookup sees params and the receiver as
-// locals. Phase-2 `parseFunc` overwrites them via addSymVar.
 func (p *Parser) registerParamPlaceholders(sym *symbol.Symbol, scope string) {
 	if scope == "" {
 		return
@@ -278,9 +257,6 @@ func (p *Parser) registerParamPlaceholders(sym *symbol.Symbol, scope string) {
 	add(sym.RecvName)
 }
 
-// funcSymBodyScope returns the Symbol, parsed body, and parseFunc-style
-// scope path for a func/method decl (zero values if body-less or
-// unregistered). The scope matches `parseFunc`'s `pushScope(fname)`.
 func (p *Parser) funcSymBodyScope(decl Tokens) (*symbol.Symbol, Tokens, string) {
 	bi := decl.LastIndex(lang.BraceBlock)
 	if bi < 0 {
@@ -306,7 +282,7 @@ func (p *Parser) funcSymBodyScope(decl Tokens) (*symbol.Symbol, Tokens, string) 
 	default:
 		return nil, nil, ""
 	}
-	sym, ok := p.Symbols[name]
+	sym, _, ok := p.symGet(name)
 	if !ok {
 		return nil, nil, ""
 	}
@@ -317,11 +293,10 @@ func (p *Parser) funcSymBodyScope(decl Tokens) (*symbol.Symbol, Tokens, string) 
 	return sym, body, name
 }
 
-// walkRefs invokes visit for every package-scope Var/Func Ident, or
-// method symbol via Period dispatch. Pkg/Func receivers are dropped
-// (qualified pkg refs init first; MethodByName on a func value is
-// meaningless).
 func (p *Parser) walkRefs(toks Tokens, scope string, visit func(*symbol.Symbol)) {
+	savedScope := p.scope
+	p.scope = scope
+	defer func() { p.scope = savedScope }()
 	for i, t := range toks {
 		if t.Tok != lang.Ident {
 			if t.Tok.IsBlock() {
@@ -337,7 +312,7 @@ func (p *Parser) walkRefs(toks Tokens, scope string, visit func(*symbol.Symbol))
 			if j < 0 {
 				continue
 			}
-			recv, _, ok := p.Symbols.Get(toks[j].Str, scope)
+			recv, _, ok := p.symGet(toks[j].Str)
 			if !ok || recv.Kind == symbol.Pkg || recv.Kind == symbol.Func {
 				continue
 			}
@@ -346,7 +321,7 @@ func (p *Parser) walkRefs(toks Tokens, scope string, visit func(*symbol.Symbol))
 			}
 			continue
 		}
-		sym, sc, ok := p.Symbols.Get(t.Str, scope)
+		sym, sc, ok := p.symGet(t.Str)
 		if !ok || sc != "" {
 			continue
 		}
@@ -356,8 +331,6 @@ func (p *Parser) walkRefs(toks Tokens, scope string, visit func(*symbol.Symbol))
 	}
 }
 
-// prevIdentBeforePeriod returns the index of the receiver Ident at the
-// head of an `expr.Method` chain at idx, or -1 if not found.
 func prevIdentBeforePeriod(toks Tokens, idx int) int {
 	j := idx - 2
 	for j >= 0 && (toks[j].Tok == lang.BraceBlock || toks[j].Tok == lang.ParenBlock || toks[j].Tok == lang.BracketBlock) {
@@ -414,8 +387,8 @@ func (p *Parser) parseVarDecl(toks Tokens) (handled bool, err error) {
 				if rawName == "_" {
 					rawName = p.blankName()
 				}
-				name := p.scopedName(rawName)
-				if _, _, ok := p.Symbols.Get(rawName, p.scope); !ok {
+				name := p.pkgKey(rawName)
+				if _, _, ok := p.symGet(rawName); !ok {
 					p.SymAdd(symbol.UnsetAddr, name, nilValue, symbol.Var, nil)
 				}
 				if len(ct) > 1 {

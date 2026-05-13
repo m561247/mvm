@@ -81,20 +81,12 @@ func (c *Compiler) Compile(name, src string) error {
 	return nil
 }
 
-// compileDeferred compiles one deferred declaration, recording its originating
-// package for the duration so that unqualified identifier lookups in the body
-// resolve against that package's symbols (see DeferredDecl, symAt).
 func (c *Compiler) compileDeferred(dd goparser.DeferredDecl) error {
 	c.CompilingPkg = dd.PkgPath
 	defer func() { c.CompilingPkg = "" }()
 	return c.compileDecl(dd.Toks)
 }
 
-// propagateEmbeddedMethods fills each struct type's Methods slice with entries
-// promoted through its embedded fields, so that interface assertions and
-// dispatch see the full method set inherited via embedding. Without this,
-// a concrete type assertion against `interface{ M() }` on a value whose M
-// comes from an embedded field would fail at runtime.
 func (c *Compiler) propagateEmbeddedMethods() {
 	seen := map[*vm.Type]bool{}
 	var visit func(t *vm.Type)
@@ -329,12 +321,6 @@ func (c *Compiler) errUndef(t goparser.Token, name string) error {
 	return goparser.ErrUndefined{Name: name, Loc: c.Sources.FormatPos(t.Pos)}
 }
 
-// symAt resolves a top-level name, preferring the symbol of the package whose
-// deferred declaration is currently being compiled (CompilingPkg) over a bare
-// key that a sibling import may have left pointing at a different package's
-// same-named symbol. Scoped (local) names contain '/' (and the package
-// qualifier joins with '.'), so they never match the qualified probe. The
-// parser-side counterpart is goparser.Parser.symGet.
 func (c *Compiler) symAt(name string) (*symbol.Symbol, bool) {
 	if c.CompilingPkg != "" {
 		if s, ok := c.Symbols[goparser.QualifyName(c.CompilingPkg, name)]; ok {
@@ -1022,11 +1008,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.Call, narg, callNret)
 
 		case lang.Colon:
-			// Struct field key: parseComposite stashed the field name in
-			// Arg[0], so the key never entered the Ident handler and only
-			// the value is on the stack. This avoids the speculative key
-			// load that would otherwise need patching when the field name
-			// shadows a same-named outer local.
+			// Struct field key: field name is in Arg[0], only the value is on the stack.
 			if fieldName, ok := t.FieldKeyName(); ok {
 				vs := pop()
 				ts := top()
@@ -1055,12 +1037,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				// Resolve index on the element type
 				ts = &symbol.Symbol{Kind: symbol.Value, Type: &vm.Type{Rtype: ts.Type.Rtype.Elem()}}
 			}
-			// `key: value` in a map composite literal. The key may be any kind of
-			// expression (a constant, a var, an [N]T{...} composite, ...), so this
-			// must come before the ks.Kind switch -- a composite-literal key has
-			// Kind symbol.Type, which the struct-field-key cases below would
-			// otherwise mishandle (dropping the MapSet, leaving the key and value
-			// stranded on the stack).
+			// `key: value` in a map composite literal.
+			// The key may be any kind of expression, so this must come before the ks.Kind switch.
 			if ts.Type != nil && ts.Type.Rtype.Kind() == reflect.Map {
 				elemTyp := ts.Type.Elem()
 				if elemTyp.IsPtr() && vs.Kind == symbol.Type {
@@ -1295,11 +1273,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						}
 					}
 				}
-				// Param slots alias the caller's pushed Value, so SetLocal would
-				// write through dst.ref to the caller. New detaches the slot, but
-				// the Used optimization skips it on later compile-emitted assigns;
-				// re-emit per branch since runtime may take a branch the optimizer
-				// didn't pick first.
+				// Param slots alias the caller's pushed Value, so SetLocal would write through dst.ref to the caller.
+				// New detaches the slot, but the Used optimization skips it on later compile-emitted assigns;
+				// re-emit per branch since runtime may take a branch the optimizer didn't pick first.
 				if !lhs.Used || lhs.IsParam() {
 					if !lhs.NeedsCell() {
 						typeIdx := c.typeSym(lhs.Type).Index
@@ -1458,12 +1434,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						c.Data = append(c.Data, s.Value)
 					}
 				}
-				// Type idents tagged by the parser as non-composite (T(x),
-				// T.M, or struct-field-key shadow) skip the speculative
-				// Fnew. Mark the stack entry so consumer ops (Period
-				// method-expr, Call type-conversion, Colon Type) know not
-				// to scan back for a matching Fnew -- which would otherwise
-				// find an unrelated earlier Fnew of the same type.
+				// Type idents tagged by the parser as non-composite skip the speculative Fnew.
+				// Mark the stack entry so consumer ops know not to scan back for a matching Fnew.
 				if s.Kind == symbol.Type && t.NoFnew() {
 					sc := *s
 					sc.NoFnew = true
@@ -1478,14 +1450,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return fmt.Errorf("stack depth mismatch at label %s: got %d, want %d", t.Str, len(stack), expected)
 			}
 			lc := len(c.Code)
-			// In Phase-2 deferred bodies, label keys still use the bare func/method
-			// name (the parser doesn't qualify them). Prefer this pkg's qualified
-			// Symbol when both exist: each pkg's registerFunc now creates its own
-			// Symbol (per-pkg fix), and the bare key was overwritten by the most
-			// recently parsed sibling, so a bare lookup would update the wrong
-			// pkg's Symbol -- leaving this pkg's qualified Symbol at UnsetAddr
-			// and breaking cross-pkg calls. Methods use the same scheme: the bare
-			// key is `Recv.Method`, the qualified is `pkg.Recv.Method`.
+			// In Phase-2 deferred bodies, label keys still use the bare func/method name.
+			// Prefer this pkg's qualified Symbol when both exist.
 			labelKey := t.Str
 			if qk := c.qualifyLabel(t.Str); qk != t.Str {
 				if _, ok := c.Symbols[qk]; ok {
@@ -1506,11 +1472,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					flen = append(flen, len(stack))
 					funcStack = append(funcStack, t.Str)
 					funcStartStack = append(funcStartStack, lc)
-					// Register method in its receiver type's method table. The
-					// type symbol may live at "<pkgPath>.<typeName>" (Path B step 1
-					// type-key migration) -- prefer the qualified key via symAt
-					// so methods land on this pkg's *vm.Type, not on a sibling's
-					// bare-key Type.
+					// Register method in its receiver type's method table, prefer the qualified key.
 					if parts := strings.SplitN(t.Str, ".", 2); len(parts) == 2 {
 						typeName := strings.TrimPrefix(parts[0], "*")
 						if ts, ok := c.symAt(typeName); ok && ts.Kind == symbol.Type {
@@ -1560,12 +1522,6 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						funcStartStack = funcStartStack[:top]
 					}
 				}
-				// Register the label under a pkg-qualified key when compiling a
-				// deferred decl, so two pkgs that each declare `func Make` (and
-				// thus emit a `Make_end` label) don't share one bare-key Symbol
-				// and resolve each other's Goto Make_end to the wrong pc. The
-				// matching resolveLabel/qualifyLabel in this file does the same
-				// CompilingPkg-aware lookup.
 				c.SymSet(c.qualifyLabel(t.Str), &symbol.Symbol{Kind: symbol.Label, Value: vm.ValueOf(lc)})
 			}
 
@@ -1654,11 +1610,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						c.SymAdd(l, name, nv, symbol.Type, &vm.Type{Name: rtype.Name(), Rtype: rtype})
 					} else {
 						c.Data = append(c.Data, v)
-						// Use the reflect.Value's static type (v.Type()), not the dynamic
-						// type via v.Interface(). For interface-typed package vars (e.g.
-						// crypto/rand.Reader), the static type is io.Reader; going through
-						// .Interface() unboxes to the concrete dynamic type and breaks
-						// later assignments like `r := rand.Reader`.
+						// Use the reflect.Value's static type (v.Type()), not the dynamic type via v.Interface().
 						rt := v.Type()
 						c.SymAdd(l, name, v, symbol.Value, &vm.Type{Name: rt.Name(), Rtype: rt})
 					}
@@ -1807,7 +1759,6 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					if ft := c.findTypeSym(lr); ft != nil {
 						lookupTyp = ft
 					}
-					// Check for methods promoted from embedded interfaces.
 					if fieldPath, mt := findEmbeddedIfaceMethod(lookupTyp, methodName); fieldPath != nil {
 						c.emitField(t, fieldPath)
 						methodSym := c.findConcreteFuncSym(methodName)
@@ -1829,7 +1780,6 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					}
 				}
 				if ok {
-					// Extract embedded receiver if method is promoted through embedded fields.
 					if len(embFieldPath) > 0 {
 						c.emitField(t, embFieldPath)
 					}
@@ -1850,8 +1800,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						c.emit(t, vm.Addr)
 					}
 					// For named numeric types (e.g. time.Duration), the VM may lose
-					// the named type during arithmetic.  Pass the receiver type index+1
-					// in B so the VM can convert before method lookup (0 means unset).
+					// the named type during arithmetic.
+					// Pass the receiver type index+1 in B so the VM can convert before method lookup.
 					var recvTypeHint int
 					embRtype := rtype
 					if len(embFieldPath) > 0 {
@@ -1913,8 +1863,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			if vt != nil {
 				rangeKind = vt.Rtype.Kind()
 			}
-			// Go spec: range over an array iterates a copy; range over
-			// a pointer-to-array or a slice uses the original.
+			// Go spec: range over an array iterates a copy;
+			// range over a pointer-to-array or a slice uses the original.
 			var copyArray int
 			if rangeKind == reflect.Array {
 				copyArray = 1
@@ -2038,10 +1988,10 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			case symbol.Value:
 				isX = 1
 			case symbol.Builtin:
-				// Builtin functions (print, println, close, ...) have no VM-callable
-				// representation. Push the opcode number as funcVal (on top of
-				// already-emitted args), then use isX=2 so DeferPush rotates it into
-				// position and Return dispatches the opcode directly.
+				// Builtin functions have no VM-callable representation.
+				// Push the opcode number as funcVal then use isX=2 so
+				// DeferPush rotates it into position and Return dispatches
+				// the opcode directly.
 				op, ok := builtinDeferOp[s.Name]
 				if !ok {
 					return c.errAt(t, "cannot defer builtin %s", s.Name)
@@ -2175,9 +2125,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 		}
 	}
 
-	// Finally we fix unresolved labels for jump destinations. Prefer this
-	// pkg's qualified key so a sibling deferred decl's bare-key Label doesn't
-	// resolve the jump (see qualifyLabel).
+	// Finally we fix unresolved labels for jump destinations.
 	for _, t := range fixList {
 		s, ok := c.Symbols[c.qualifyLabel(t.Str)]
 		if !ok {
@@ -2388,19 +2336,10 @@ func (c *Compiler) resolveLabel(t goparser.Token, fixList *goparser.Tokens) int 
 	return 0
 }
 
-// qualifyLabel returns the symbol-table key under which the named Label is
-// registered while a deferred decl is being compiled. Two packages that each
-// declare `func Make` both emit a `Make_end` label; without per-pkg
-// qualification their Symbols collide on the bare key, breaking goto resolution.
-// Outside of Phase 2 (CompilingPkg empty) labels keep their bare key, matching
-// pre-fix behavior for the main pkg and the REPL.
 func (c *Compiler) qualifyLabel(name string) string {
 	if c.CompilingPkg == "" {
 		return name
 	}
-	// Mirror goparser's qualifyName / pkgKey, including the pointer-receiver
-	// "*Tag.M" -> "*<pkg>.Tag.M" rewrite that keeps the canonical method key
-	// composable as `*<pkgQualifiedType>.<method>` at call sites.
 	return goparser.QualifyName(c.CompilingPkg, name)
 }
 
@@ -2496,11 +2435,9 @@ func (c *Compiler) BuildDebugInfo() *vm.DebugInfo {
 				continue
 			}
 			addr := int(sym.Value.Int())
-			// Prefer qualified names (containing '.', which marks the
-			// goparser-generated `<pkgPath>.<short>` alias for imported
-			// symbols) so diagnostic output can show fully-qualified
-			// function names. Among same-class candidates, keep the
-			// shortest.
+			// Prefer qualified names so diagnostic output can show
+			// fully-qualified function names.
+			// Among same-class candidates, keep the shortest.
 			existing, ok := di.Labels[addr]
 			isQual := strings.Contains(name, ".")
 			existQual := strings.Contains(existing, ".")
@@ -2549,9 +2486,6 @@ func enclosingFunc(scopedName string, syms symbol.SymMap) string {
 	}
 }
 
-// fixPtrFnewE changes the most recent FnewE for the given pointer type to Fnew
-// when initializing a pointer-type variable. FnewE creates the element type
-// (T for *T), but variable declarations need the pointer zero value (nil).
 func (c *Compiler) fixPtrFnewE(typ *vm.Type, index int) {
 	if typ == nil || typ.Rtype.Kind() != reflect.Pointer {
 		return

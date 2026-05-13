@@ -90,7 +90,7 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 		if errors.Is(err, ErrMissingType) {
 			for _, lt := range decl.Split(lang.Comma) {
 				vars = append(vars, lt[0].Str)
-				name := p.scopedName(lt[0].Str)
+				name := p.pkgKey(lt[0].Str)
 				p.SymAdd(symbol.UnsetAddr, name, nilValue, symbol.Const, nil)
 			}
 		} else {
@@ -117,7 +117,7 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 			// binary package), register the const name so it is
 			// discoverable by tools like extract.
 			if i < len(vars) {
-				name := p.scopedName(vars[i])
+				name := p.pkgKey(vars[i])
 				var typ *vm.Type
 				if i < len(types) {
 					typ = types[i]
@@ -131,7 +131,7 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 			}
 			continue
 		}
-		name := p.scopedName(vars[i])
+		name := p.pkgKey(vars[i])
 		var typ *vm.Type
 		if i < len(types) {
 			typ = types[i]
@@ -292,6 +292,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 			}
 			return constant.MakeUint64(uint64(f.Offset)), p.Symbols["uintptr"].Type, 6, nil
 		}
+
 		// unsafe.Sizeof / unsafe.Alignof: the argument only contributes its
 		// type, so pre-detect common forms whose arg isn't const-evaluable
 		// (Var, composite literal, selector) before the generic args loop.
@@ -309,6 +310,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, consumed, nil
 			}
 		}
+
 		// len/cap of an array or *array variable (bare or field access) is constant per Go spec.
 		if narg == 1 {
 			var fname string
@@ -341,6 +343,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 				}
 			}
 		}
+
 		args := make([]constant.Value, narg)
 		var arg0Type *vm.Type // only set when i == 0, used by unsafe.Sizeof/Alignof below
 		rest := in[:l]
@@ -357,8 +360,8 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 			totalLen += al
 			rest = rest[:len(rest)-al]
 		}
-		// unsafe.Sizeof / unsafe.Alignof: constant when the argument's type is
-		// known at compile time (Go spec).
+
+		// unsafe.Sizeof / unsafe.Alignof: constant when the argument's type is known at compile time (Go spec).
 		if narg == 1 && len(rest) >= 2 &&
 			rest[len(rest)-1].Tok == lang.Period && rest[len(rest)-2].Tok == lang.Ident &&
 			rest[len(rest)-2].Str == "unsafe" {
@@ -437,7 +440,6 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 	}
 	op := in[opIdx].Str[1:] // strip leading "."
 
-	// symType resolves a symbol to its type or returns ErrUndefined.
 	symType := func(name string) (*vm.Type, error) {
 		s, _, ok := p.symGet(name)
 		if !ok || s.Type == nil || s.Type.Rtype == nil {
@@ -504,9 +506,6 @@ func constValue(c constant.Value) any {
 	return nil
 }
 
-// defaultConstType returns the default Go type for an untyped constant value
-// (int for Int, float64 for Float, string for String, bool for Bool). The
-// parser is consulted so canonical *vm.Type instances are returned.
 func defaultConstType(c constant.Value, p *Parser) *vm.Type {
 	if c == nil {
 		return nil
@@ -530,8 +529,6 @@ func defaultConstType(c constant.Value, p *Parser) *vm.Type {
 	return nil
 }
 
-// typedConstValue converts a constant value to a Go value with the given type.
-// If typ is nil, it falls back to constValue (untyped).
 func typedConstValue(c constant.Value, typ *vm.Type) any {
 	v := constValue(c)
 	if typ == nil || v == nil {
@@ -540,7 +537,6 @@ func typedConstValue(c constant.Value, typ *vm.Type) any {
 	return reflect.ValueOf(v).Convert(typ.Rtype).Interface()
 }
 
-// constConvert converts a constant value to the target type, as in Go type conversions.
 func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
 	rt := typ.Rtype
 	switch {
@@ -570,7 +566,6 @@ func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
 	return cv
 }
 
-// vmValueToConst converts a vm.Value to a constant.Value for compile-time evaluation.
 func vmValueToConst(v vm.Value) (constant.Value, error) {
 	k := v.Kind()
 	switch {
@@ -679,7 +674,9 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 			}
 		}
 	} else {
-		p.SymSet(n, &symbol.Symbol{Kind: symbol.Pkg, PkgPath: pp, Index: symbol.UnsetAddr, Name: n})
+		// pkgKey-qualify so two pkgs both `import "x/y"` keep distinct alias
+		// entries instead of clobbering the bare `y` key.
+		p.SymSet(p.pkgKey(n), &symbol.Symbol{Kind: symbol.Pkg, PkgPath: pp, Index: symbol.UnsetAddr, Name: n})
 	}
 	return out, err
 }
@@ -753,10 +750,8 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 	}
 
 	// For struct and interface types, use a forward-declared placeholder to
-	// enable self-references and mutual references between types. The key is
-	// the canonical pkgKey: at top-level inside an imported pkg this is
-	// "<pkgPath>.<name>" so cross-pkg sibling decls (e.g. another pkg's
-	// `type Tag struct{...}`) don't collide on the bare key.
+	// enable self-references and mutual references between types.
+	// The key is the canonical pkgKey: "<pkgPath>.<name>" (no cross-pkg collisions).
 	name := p.pkgKey(in[0].Str)
 	var placeholder *vm.Type
 	if !isAlias && len(toks) > 0 {
@@ -776,36 +771,25 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 	switch {
 	case placeholder != nil:
 		if placeholder.Rtype.Kind() == reflect.Interface {
-			// Finalize interface: copy method set and constraint elements onto the placeholder.
 			placeholder.IfaceMethods = typ.IfaceMethods
 			placeholder.TypeElems = typ.TypeElems
 			placeholder.Placeholder = false
 		} else {
-			// Finalize struct: patches the internal reflect type in place so
-			// derived types (e.g., *Node via PointerTo) see the real layout.
 			placeholder.SetFields(typ)
 		}
 		if s, ok := p.Symbols[name]; ok {
 			s.Value = vm.NewValue(placeholder.Rtype)
 		}
 	case isAlias:
-		// `type X = T` aliases share identity with T: register the symbol
-		// pointing at the source type unchanged.
+		// `type X = T` aliases share identity with T.
 		p.SymAdd(symbol.UnsetAddr, name, vm.NewValue(typ.Rtype), symbol.Type, typ)
 	default:
-		// `type X T` defines a new named type. Clone so we don't mutate the
-		// source type's Name/Methods (would break sibling decls like
-		// `type A byte; type B byte`, where both would otherwise share byte's
-		// vm.Type and clobber each other's method tables).
+		// `type X T` defines a new named type.
+		// Clone so we don't mutate the source type's Name/Methods.
 		nt := *typ
 		nt.Name = in[0].Str
 		nt.Methods = nil
 		nt.Placeholder = false
-		// Record the short package name so vm.Type.String() qualifies the
-		// type (e.g. "errors.Frame"); this matches what reflect-based fmt
-		// rendering would emit for the equivalent native type and is what
-		// the IfaceFallbackHook uses to label slices whose element kind
-		// alone (e.g. uintptr) would otherwise lose the user-level name.
 		if nt.PkgPath == "" {
 			nt.PkgPath = p.pkgName
 		}
@@ -833,8 +817,6 @@ func (p *Parser) parseVar(in Tokens) (out Tokens, err error) {
 	return out, err
 }
 
-// zeroInitLocals emits Assign tokens that zero-initialize typed local variables.
-// Each var gets [Ident(var), Ident(type), Assign(1)] so the compiler emits New+Set.
 func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 	for i, v := range vars {
 		typ := types[i]
@@ -842,14 +824,10 @@ func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 		if typName == "" {
 			typName = typ.Rtype.String()
 		}
-		// For pointer types, use a distinct name so we don't resolve
-		// to the element type symbol (e.g. T instead of *T).
 		if typ.Rtype.Kind() == reflect.Pointer {
-			typName = "*" + typName
+			typName = "*" + typName // Distinguish "*T" from "T".
 		}
-		// Resolve type symbol key, honouring scope (e.g. "f/T" vs global "T") and
-		// the per-pkg qualified key (e.g. "<pkgPath>.T" for top-level types
-		// inside an imported pkg's parseSrc, set by pkgKey).
+		// Resolve type symbol key, honouring scope and the per-pkg qualified key.
 		typKey := typName
 		if sym, sc, ok := p.symGet(typName); ok && sym.Kind == symbol.Type {
 			switch {
@@ -895,10 +873,10 @@ func (p *Parser) parseVarLine(in Tokens) (out Tokens, err error) {
 				if rawName == "_" {
 					rawName = p.blankName()
 				}
-				name := p.scopedName(rawName)
+				name := p.pkgKey(rawName)
 				vars = append(vars, name)
 				if p.funcScope == "" {
-					if s, _, ok := p.Symbols.Get(lt[0].Str, p.scope); !ok || s.Index == symbol.UnsetAddr {
+					if s, _, ok := p.symGet(lt[0].Str); !ok || s.Index == symbol.UnsetAddr {
 						p.SymAdd(symbol.UnsetAddr, name, nilValue, symbol.Var, nil)
 					}
 					continue
