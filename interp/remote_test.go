@@ -812,6 +812,54 @@ func TestReset(t *testing.T) {
 	}
 }
 
+// TestRemoteIfaceDispatchSignatureCollision: a user-defined Elem(int) string
+// must not shadow reflect.Type.Elem() reflect.Type during interface dispatch.
+// See [[project_iface_dispatch_signature_collision]].
+func TestRemoteIfaceDispatchSignatureCollision(t *testing.T) {
+	url, _ := startFakeProxy(t, remoteModule{
+		path:    "example.com/x/ifacecollide",
+		version: "v1.0.0",
+		files: map[string]string{
+			"go.mod": "module example.com/x/ifacecollide\n",
+			"ifacecollide.go": `package ifacecollide
+
+import "reflect"
+
+// Index is a string-typed defined type with its own Elem method whose
+// signature (func(int) string) differs from reflect.Type.Elem (func() reflect.Type).
+// Pre-fix, findConcreteFuncSym would pick Index.Elem when resolving
+// reflect.Type.Elem on an interface receiver.
+type Index string
+
+func (i Index) Elem(_ int) string { return string(i) }
+
+type S struct {
+	X *int
+}
+
+// Probe chains reflect.Type.Elem().Kind() -- the cldr-style chain that
+// breaks when Elem is signature-mismatched with Index.Elem.
+func Probe() reflect.Kind {
+	t := reflect.TypeOf(S{})
+	f := t.Field(0)
+	return f.Type.Elem().Kind()
+}
+
+var _ = Index("seed")
+`,
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	if _, err := i.Eval("example.com/x/ifacecollide", ""); err != nil {
+		t.Fatalf("loading ifacecollide: %v\nstderr: %s", err, stderr.String())
+	}
+}
+
 // TestRemotePromotedFieldAndMethodThroughAnon mirrors cldr's shape: a `rule`
 // type with methods embedded in an anonymous wrapper (with another field, so
 // reflect.StructOf can't set Anonymous because rule has methods), exposed via

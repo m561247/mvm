@@ -62,6 +62,57 @@ func looksLikePkgPath(name string) bool {
 	return strings.ContainsRune(name, '/') && !strings.HasSuffix(name, ".go")
 }
 
+func ifaceMethodSig(ifaceTyp *vm.Type, methodName string) reflect.Type {
+	if rm, ok := ifaceTyp.Rtype.MethodByName(methodName); ok {
+		return rm.Type
+	}
+	for _, im := range ifaceTyp.IfaceMethods {
+		if im.Name == methodName && im.Rtype != nil {
+			return im.Rtype
+		}
+	}
+	return nil
+}
+
+// resolveIfaceMethodSym builds a Symbol carrying the bound method signature
+// for an interface-dispatch site.
+func (c *Compiler) resolveIfaceMethodSym(ifaceTyp *vm.Type, methodName string) *symbol.Symbol {
+	ifaceSig := ifaceMethodSig(ifaceTyp, methodName)
+	methodSym := c.findConcreteFuncSym(methodName)
+	if methodSym != nil && ifaceSig != nil && !concreteMatchesIface(methodSym.Type, ifaceSig) {
+		methodSym = nil
+	}
+	if methodSym != nil {
+		return methodSym
+	}
+	if ifaceSig != nil {
+		return &symbol.Symbol{Kind: symbol.Value, Type: &vm.Type{Rtype: ifaceSig}}
+	}
+	return nil
+}
+
+// concreteMatchesIface reports whether concrete's signature matches ifaceSig.
+func concreteMatchesIface(concrete *vm.Type, ifaceSig reflect.Type) bool {
+	if ifaceSig == nil || concrete == nil || concrete.Rtype == nil || concrete.Rtype.Kind() != reflect.Func {
+		return false
+	}
+	rt := concrete.Rtype
+	if rt.NumIn() != ifaceSig.NumIn() || rt.NumOut() != ifaceSig.NumOut() {
+		return false
+	}
+	for i := range rt.NumIn() {
+		if rt.In(i) != ifaceSig.In(i) {
+			return false
+		}
+	}
+	for i := range rt.NumOut() {
+		if rt.Out(i) != ifaceSig.Out(i) {
+			return false
+		}
+	}
+	return true
+}
+
 // aliasTargetTopLevel adds bare-key aliases for the direct-target pkg's
 // canonical "<pkg>.<Name>" entries so the test driver (compiled in a separate
 // "_testmain" context with no CompilingPkg set) can resolve Test* by short
@@ -1682,27 +1733,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				// Dynamic dispatch for interface receiver.
 				if s.Type != nil && s.Type.IsInterface() {
 					methodName := t.Str[1:]
-					// Find the method signature from a concrete implementation.
-					methodSym := c.findConcreteFuncSym(methodName)
+					methodSym := c.resolveIfaceMethodSym(s.Type, methodName)
 					if methodSym == nil {
-						// For interface types, Method.Type does not include the receiver.
-						var rtype reflect.Type
-						if rm, ok := s.Type.Rtype.MethodByName(methodName); ok {
-							rtype = rm.Type
-						} else {
-							// User-defined interface: Rtype is any, so MethodByName fails.
-							// Fall back to IfaceMethods populated from embedded native interfaces.
-							for _, im := range s.Type.IfaceMethods {
-								if im.Name == methodName && im.Rtype != nil {
-									rtype = im.Rtype
-									break
-								}
-							}
-						}
-						if rtype == nil {
-							return c.errUndef(t, methodName)
-						}
-						methodSym = &symbol.Symbol{Kind: symbol.Value, Type: &vm.Type{Rtype: rtype}}
+						return c.errUndef(t, methodName)
 					}
 					push(methodSym)
 					c.emit(t, vm.IfaceCall, c.methodID(methodName))
@@ -1831,11 +1864,15 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					}
 					if fieldPath, mt := findEmbeddedIfaceMethod(lookupTyp, methodName); fieldPath != nil {
 						c.emitField(t, fieldPath)
+						// mt is the embedded interface's bound method type (no
+						// receiver). Validate findConcreteFuncSym against it so
+						// an unrelated `.M` Func can't hijack the dispatch.
 						methodSym := c.findConcreteFuncSym(methodName)
+						if methodSym != nil && mt != nil && mt.Kind() == reflect.Func && !concreteMatchesIface(methodSym.Type, mt) {
+							methodSym = nil
+						}
 						if methodSym == nil {
 							symType := &vm.Type{Rtype: vm.AnyRtype}
-							// Use the interface method signature directly as the bound-method type.
-							// For interface methods, reflect already excludes the receiver.
 							if mt != nil && mt.Kind() == reflect.Func {
 								symType = &vm.Type{Rtype: mt}
 							}
