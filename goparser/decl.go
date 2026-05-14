@@ -827,22 +827,44 @@ func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 		if typ.Rtype.Kind() == reflect.Pointer {
 			typName = "*" + typName // Distinguish "*T" from "T".
 		}
-		// Resolve type symbol key, honouring scope and the per-pkg qualified key.
-		typKey := typName
-		if sym, sc, ok := p.symGet(typName); ok && sym.Kind == symbol.Type {
-			switch {
-			case sc != "":
+		// Resolve a symbol-table key whose Type Symbol points at typ.Rtype.
+		// Pointer-identity matters: multiple pkgs can declare the same short
+		// name (e.g. internal/language.Tag vs language.Tag) with different
+		// rtypes; picking a sibling pkg's same-named type would emit Fnew of
+		// the wrong rtype and trip reflect.Set in the SetLocal below.
+		matches := func(s *symbol.Symbol) bool {
+			return s != nil && s.Kind == symbol.Type && s.Type != nil && s.Type.Rtype == typ.Rtype
+		}
+		typKey := ""
+		if sym, sc, ok := p.symGet(typName); ok && matches(sym) {
+			if sc != "" {
 				typKey = sc + "/" + typName
-			case p.importingPkg != "":
-				if _, found := p.Symbols[p.importingPkg+"."+typName]; found {
-					typKey = p.importingPkg + "." + typName
-				}
-			case p.CompilingPkg != "":
-				if _, found := p.Symbols[p.CompilingPkg+"."+typName]; found {
-					typKey = p.CompilingPkg + "." + typName
+			} else {
+				typKey = typName
+				for _, pfx := range [...]string{p.importingPkg, p.CompilingPkg} {
+					if pfx == "" {
+						continue
+					}
+					q := pfx + "." + typName
+					if matches(p.Symbols[q]) {
+						typKey = q
+					}
 				}
 			}
-		} else if !ok {
+		}
+		if typKey == "" {
+			// Fall back to any registered Type Symbol whose Rtype matches.
+			// Any matching key compiles to the same global slot (typeSym
+			// dedupes by Rtype pointer), so map-order non-determinism here
+			// does not affect emitted bytecode.
+			for k, s := range p.Symbols {
+				if matches(s) {
+					typKey = k
+					break
+				}
+			}
+		}
+		if typKey == "" {
 			// Type not yet in the symbol table; register it now at the
 			// canonical pkgKey (qualified for imported pkgs, bare for main/REPL).
 			typKey = p.pkgKey(typName)

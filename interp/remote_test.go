@@ -1017,6 +1017,63 @@ println(lang.Und.A, lang.Und.B, lang.Und.C, lang.Und.D, lang.Und.E, len(lang.Und
 	}
 }
 
+// TestRemoteZeroInitLocalShortNameCollision triggers the language.Matcher.Match
+// panic from project_matcher_match_placeholder_mismatch: `var v <pkg>.<Type>`
+// inside a function body used to zero-init v with a sibling pkg's same-named
+// type whose rtype differed from v's slot. zeroInitLocals resolved the type
+// by short name and re-qualified through CompilingPkg, finding the host pkg's
+// "Tag" instead of the imported pkg's "Tag" with the slot's actual rtype.
+// reflect.Set then panicked at SetLocal with mismatched struct rtypes.
+func TestRemoteZeroInitLocalShortNameCollision(t *testing.T) {
+	url, _ := startFakeProxy(t, remoteModule{
+		path:    "example.com/x/dual",
+		version: "v1.0.0",
+		files: map[string]string{
+			"go.mod": "module example.com/x/dual\n",
+			"inner/inner.go": `package inner
+
+type Tag struct {
+	A uint16
+	B uint16
+	C uint16
+	D byte
+	E uint16
+	S string
+}
+`,
+			"outer.go": `package dual
+
+import "example.com/x/dual/inner"
+
+type Tag struct {
+	X uint64
+	Y uint64
+}
+
+func F() inner.Tag {
+	var v inner.Tag
+	v.A = 7
+	return v
+}
+`,
+		},
+	})
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	src := `import "example.com/x/dual"
+println(dual.F().A)`
+	if _, err := i.Eval("test", src); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "7\n"; got != want {
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
 func TestRemoteXTextCrash(t *testing.T) {
 	t.Skip("vm.patchRtype crash fixed; x/text still hits other parser limits and the test needs network")
 
