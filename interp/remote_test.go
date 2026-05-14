@@ -916,6 +916,57 @@ func New() Holder {
 	}
 }
 
+// TestRemoteReflectTypeForCrossPkg covers reflect.TypeFor[T]() where T is a
+// type defined in a different (and still-being-compiled) package. The
+// interpreted-source generic shim registered by stdlib/reflect_shim.go has
+// pkgPath="reflect", so re-parsing its body sets CompilingPkg="reflect" --
+// under which the substituted bare type-arg name (here "MyKind") cannot be
+// resolved through symGet's CompilingPkg fallback. Without the temp
+// type-arg install in goparser/expr.go's emitGenericFunc, parseTypeExpr on
+// `*MyKind` fails and the parser mis-emits Deref instead of building a
+// pointer-type expression. Verifies the cross-pkg path that the in-process
+// etest cases (which use main-pkg types aliased to bare keys) cannot reach.
+func TestRemoteReflectTypeForCrossPkg(t *testing.T) {
+	url, _ := startFakeProxy(t, remoteModule{
+		path:    "example.com/x/typefortarget",
+		version: "v1.0.0",
+		files: map[string]string{
+			"go.mod": "module example.com/x/typefortarget\n",
+			"types.go": `package typefortarget
+
+import "reflect"
+
+type MyKind struct {
+	A uint64
+	B uint16
+}
+
+// Calling reflect.TypeFor[MyKind]() from a non-main package exercises the
+// substituted-T-in-shim-body resolution path: T -> "MyKind" with
+// CompilingPkg="reflect" while the actual type lives at
+// "example.com/x/typefortarget.MyKind".
+func Size() uintptr {
+	return reflect.TypeFor[MyKind]().Size()
+}
+`,
+		},
+	})
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	src := `import "example.com/x/typefortarget"; println(typefortarget.Size())`
+	if _, err := i.Eval("test", src); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	// MyKind layout: uint64 (8) + uint16 (2) + 6-byte tail padding = 16.
+	if got, want := stdout.String(), "16\n"; got != want {
+		t.Errorf("stdout: got %q, want %q", got, want)
+	}
+}
+
 func TestRemoteXTextCrash(t *testing.T) {
 	t.Skip("vm.patchRtype crash fixed; x/text still hits other parser limits and the test needs network")
 

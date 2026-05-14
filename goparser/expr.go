@@ -211,7 +211,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 							return out, err
 						}
 						out = out[:len(out)-1] // remove the generic name ident
-						if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out); err != nil {
+						if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, nil); err != nil {
 							return out, err
 						}
 					}
@@ -237,7 +237,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 								}
 								out = out[:len(out)-1] // remove the pkg ident
 								ops = ops[:len(ops)-1] // remove the Period operator
-								if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out); err != nil {
+								if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, nil); err != nil {
 									return out, err
 								}
 							}
@@ -343,7 +343,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 						if err != nil {
 							return out, err
 						}
-						if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out); err != nil {
+						if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, typeArgSources); err != nil {
 							return out, err
 						}
 					} else {
@@ -378,7 +378,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 								if err != nil {
 									return out, err
 								}
-								if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out); err != nil {
+								if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, typeArgSources); err != nil {
 									return out, err
 								}
 							} else {
@@ -547,7 +547,7 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 	return result, sliceLen, nil
 }
 
-func (p *Parser) emitGenericFunc(tmpl *genericTemplate, instToks Tokens, mname string, pos int, out *Tokens) error {
+func (p *Parser) emitGenericFunc(tmpl *genericTemplate, instToks Tokens, mname string, pos int, out *Tokens, typeArgs []*vm.Type, typeArgSources []string) error {
 	if instToks == nil {
 		*out = append(*out, newIdent(mname, pos))
 		return nil
@@ -558,12 +558,55 @@ func (p *Parser) emitGenericFunc(tmpl *genericTemplate, instToks Tokens, mname s
 	if tmpl != nil && tmpl.pkgPath != "" {
 		p.CompilingPkg = tmpl.pkgPath
 	}
+	// The instantiated body holds the source-form text of each type
+	// argument (e.g. "Elem" for `reflect.TypeFor[Elem]()` called from
+	// unicode/cldr). With CompilingPkg now pointing at the template's
+	// owning pkg, those bare idents do not resolve under symGet's
+	// fallback (e.g. "reflect.Elem" is not registered), so the body
+	// parser would mis-emit `*T` as Deref instead of building a pointer
+	// type. Install a temporary Type entry at the bare substituted name
+	// for each non-builtin arg, then remove it after parseFunc so the
+	// rest of the parser's symbol table is unchanged.
+	var tempKeys []string
+	if tmpl != nil {
+		for i := range tmpl.typeParams {
+			if i >= len(typeArgs) {
+				break
+			}
+			var src string
+			if i < len(typeArgSources) {
+				src = typeArgSources[i]
+			}
+			name := typeArgSubst(typeArgs[i], src)
+			if !isSimpleIdent(name) {
+				continue // compound forms (e.g. "*T", "[]X") re-scan via substituteTokens.
+			}
+			if _, _, ok := p.symGet(name); ok {
+				continue // already resolvable (e.g. a builtin or aliased target-pkg type).
+			}
+			p.SymSet(name, &symbol.Symbol{
+				Kind:  symbol.Type,
+				Name:  name,
+				Index: symbol.UnsetAddr,
+				Type:  typeArgs[i],
+				Value: vm.NewValue(typeArgs[i].Rtype),
+				Used:  true,
+			})
+			tempKeys = append(tempKeys, name)
+		}
+	}
 	if _, err := p.registerFunc(instToks); err != nil {
+		for _, k := range tempKeys {
+			delete(p.Symbols, k)
+		}
 		p.scope = savedScope
 		p.CompilingPkg = savedCompilingPkg
 		return err
 	}
 	fout, err := p.parseFunc(instToks)
+	for _, k := range tempKeys {
+		delete(p.Symbols, k)
+	}
 	p.scope = savedScope
 	p.CompilingPkg = savedCompilingPkg
 	if err != nil {

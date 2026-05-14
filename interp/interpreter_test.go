@@ -823,6 +823,17 @@ func TestStruct(t *testing.T) {
 
 		{n: "field_tag", src: `import "reflect"; type T struct { Name string ` + "`" + `json:"name"` + "`" + `}; f, _ := reflect.TypeOf(T{}).FieldByName("Name"); f.Tag.Get("json")`, res: "name"},
 
+		// reflect.TypeFor[T]() is a Go 1.22 generic native that mvm cannot
+		// bind via reflect.ValueOf; goparser.RegisterGenericShim installs an
+		// interpreted equivalent at parser setup. These cases exercise the
+		// pkg.Generic[T] lookup path, generic-instantiation pipeline, the
+		// (*T)(nil) typed-conversion idiom in the body, and method dispatch
+		// on the returned reflect.Type.
+		{n: "typefor_size", src: `import "reflect"; type Tag struct { a uint64; b uint16; c uint8 }; reflect.TypeFor[Tag]().Size()`, res: "16"},
+		{n: "typefor_numfield", src: `import "reflect"; type Tag struct { a uint64; b uint16 }; reflect.TypeFor[Tag]().NumField()`, res: "2"},
+		{n: "typefor_field_pkgpath", src: `import "reflect"; type Tag struct { a uint64 }; reflect.TypeFor[Tag]().Field(0).PkgPath != ""`, res: "true"},
+		{n: "typefor_primitive", src: `import "reflect"; reflect.TypeFor[int]().Kind().String()`, res: "int"},
+
 		// struct with embedded type that has methods and additional fields
 		// (reflect.StructOf panics if Anonymous=true on a type with methods in a multi-field struct)
 		{n: "embed_with_methods", src: `

@@ -122,6 +122,16 @@ func (p *Parser) ImportPackageValues(m map[string]map[string]reflect.Value) {
 	for k, v := range m {
 		p.Packages[k] = symbol.BinPkg(v, k)
 	}
+	// Install registered generic shims now that the target packages exist
+	// in p.Packages. Shims add interpreted-source generic templates for
+	// natives that cannot be wrapped as a single reflect.ValueOf binding
+	// (e.g. reflect.TypeFor). See generic_shim.go for the registry API.
+	if err := p.installGenericShims(); err != nil {
+		// Shim installation failures are programmer errors (bad shim
+		// source); panic so they surface in tests rather than silently
+		// leaving the target generic undefined.
+		panic(err)
+	}
 }
 
 // SetPkgfs sets the parser virtual filesystem for reading sources.
