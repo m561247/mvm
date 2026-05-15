@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"unsafe" // to allow setting unexported struct fields //nolint:depguard
 )
 
@@ -382,6 +383,12 @@ type Machine struct {
 
 	MethodNames     []string       // names by global method ID
 	MethodFuncTypes []reflect.Type // bound-method func type (no receiver) by global method ID
+
+	// runnerPool holds reusable runner Machines for native->mvm callbacks.
+	// Shared across all runnerStates rooted in this Machine so a high
+	// bridge-construction count doesn't multiply retained memory. sync.Pool
+	// is safe for concurrent Get/Put across goroutines.
+	runnerPool sync.Pool
 
 	debugInfoFn func() *DebugInfo // builds DebugInfo on demand (breaks vm->comp cycle)
 	debugIn     io.Reader         // debug command input (nil = os.Stdin)
@@ -2921,7 +2928,9 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 
 // runnerState captures the Machine fields needed to create lightweight runner
 // Machines for re-entrant execution (bridge callbacks, MakeFunc adapters).
-// Snapshot once, reuse across closures to avoid drift between call sites.
+// The pool itself lives on the parent Machine and is shared across all
+// runnerStates rooted there, so a high bridge-construction count doesn't
+// multiply retained memory.
 type runnerState struct {
 	globals         []Value
 	code            []Instruction
@@ -2931,10 +2940,11 @@ type runnerState struct {
 	methodFuncTypes []reflect.Type
 	typesByRtype    map[reflect.Type]*Type
 	debugInfoFn     func() *DebugInfo
+	pool            *sync.Pool // shared pool on the parent Machine
 }
 
-func (m *Machine) captureRunnerState() runnerState {
-	return runnerState{
+func (m *Machine) captureRunnerState() *runnerState {
+	return &runnerState{
 		globals:         m.globals,
 		code:            m.code[:m.baseCodeLen:m.baseCodeLen],
 		baseCodeLen:     m.baseCodeLen,
@@ -2944,30 +2954,58 @@ func (m *Machine) captureRunnerState() runnerState {
 		methodFuncTypes: m.MethodFuncTypes,
 		typesByRtype:    m.typesByRtype,
 		debugInfoFn:     m.debugInfoFn,
+		pool:            &m.runnerPool,
 	}
 }
 
-func (rs *runnerState) newRunner() *Machine {
-	return &Machine{
-		globals:         rs.globals,
-		code:            rs.code,
-		baseCodeLen:     rs.baseCodeLen,
-		out:             rs.out,
-		err:             rs.err,
-		MethodNames:     rs.methodNames,
-		MethodFuncTypes: rs.methodFuncTypes,
-		typesByRtype:    rs.typesByRtype,
-		debugInfoFn:     rs.debugInfoFn,
+// acquireRunner gets a runner Machine from the shared pool and applies rs
+// to it. The parent may have mutated shared state (globals, code) since the
+// runnerState was captured, so we re-sync on every acquire. Pair with
+// releaseRunner.
+func (rs *runnerState) acquireRunner() *Machine {
+	m, _ := rs.pool.Get().(*Machine)
+	if m == nil {
+		m = &Machine{}
 	}
+	m.globals = rs.globals
+	m.code = rs.code
+	m.baseCodeLen = rs.baseCodeLen
+	m.out = rs.out
+	m.err = rs.err
+	m.MethodNames = rs.methodNames
+	m.MethodFuncTypes = rs.methodFuncTypes
+	m.typesByRtype = rs.typesByRtype
+	m.debugInfoFn = rs.debugInfoFn
+	return m
+}
+
+// releaseRunner trims per-call execution state and returns the Machine to
+// the shared pool. Keeps the mem and code backing arrays so the next
+// acquire can reuse them.
+func (rs *runnerState) releaseRunner(m *Machine) {
+	m.mem = m.mem[:0]
+	m.code = m.code[:rs.baseCodeLen]
+	m.heap = nil
+	m.heapFrames = nil
+	m.ip = 0
+	m.fp = 0
+	m.panicking = false
+	m.panicVal = Value{}
+	rs.pool.Put(m)
 }
 
 // makeCallFunc wraps a mvm function value in a reflect.MakeFunc adapter
-// that creates a fresh Machine and calls CallFunc for re-entrant execution.
-// Captures VM state rather than m to avoid data races with goroutines.
+// that runs the function on a pooled runner Machine for re-entrant
+// execution. The pool amortizes the per-callback Machine allocation and
+// the mem/code backing-array reallocations across high-fanout native
+// callbacks (sort comparators, fmt formatters, iterator callbacks).
+// Captures rs (not m) to avoid data races with goroutines.
 func (m *Machine) makeCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 	rs := m.captureRunnerState()
 	return reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
-		out, err := rs.newRunner().CallFunc(fval, fnType, args)
+		runner := rs.acquireRunner()
+		defer rs.releaseRunner(runner)
+		out, err := runner.callPooled(fval, fnType, args)
 		if err != nil {
 			panic(err)
 		}
@@ -2982,11 +3020,13 @@ func (m *Machine) TrimStack() {
 }
 
 // CallFunc executes a mvm function value with the given arguments and returns the results.
-// It saves and restores all execution state so it can be called from native Go callbacks
-// (reflect.MakeFunc wrappers) even while Run is in progress (single-threaded re-entrancy).
+// It saves and restores per-frame execution state so it can be called from native Go
+// callbacks (reflect.MakeFunc wrappers) even while Run is in progress
+// (single-threaded re-entrancy). Globals are NOT isolated: a callback's package-var
+// write is visible to the outer Run, matching Go callback semantics and the
+// goroutine model documented in ADR-008.
 func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Value) ([]reflect.Value, error) {
-	// Save all volatile execution state.
-	savedGlobals := m.globals
+	// Save volatile per-frame state (globals are intentionally shared).
 	savedMem := m.mem
 	savedIP := m.ip
 	savedFP := m.fp
@@ -2997,7 +3037,6 @@ func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Val
 	savedCodeLen := len(m.code)
 
 	defer func() {
-		m.globals = savedGlobals
 		m.mem = savedMem
 		m.ip = savedIP
 		m.fp = savedFP
@@ -3013,10 +3052,6 @@ func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Val
 	m.heapFrames = nil
 	m.panicking = false
 	m.panicVal = Value{}
-
-	// Copy globals to a new backing array so the callback's global writes
-	// don't affect the outer Run's globals.
-	m.globals = append([]Value(nil), m.globals...)
 
 	// Fresh stack with func value and args.
 	m.mem = nil
@@ -3037,8 +3072,39 @@ func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Val
 	if err := m.Run(); err != nil {
 		return nil, err
 	}
+	return m.collectReturns(funcType, nret), nil
+}
 
-	// Return values land at m.mem[0:nret] after the call frame tears down.
+// callPooled runs a mvm function on a runner Machine that has just been
+// acquired from a pool. Skips the outer-state save/restore done by
+// CallFunc, which would be wasted on a clean Machine. Caller must release
+// the Machine back to the pool.
+func (m *Machine) callPooled(fval Value, funcType reflect.Type, args []reflect.Value) ([]reflect.Value, error) {
+	m.mem = append(m.mem, fval)
+	for _, a := range args {
+		m.mem = append(m.mem, FromReflect(a))
+	}
+	narg := funcType.NumIn()
+	nret := funcType.NumOut()
+	callIP := len(m.code)
+	m.code = append(m.code, Instruction{Op: Call, A: int32(narg), B: int32(nret)}) //nolint:gosec
+	m.code = append(m.code, Instruction{Op: Exit})
+	m.ip = callIP
+	m.fp = 0
+
+	if err := m.Run(); err != nil {
+		return nil, err
+	}
+	return m.collectReturns(funcType, nret), nil
+}
+
+// collectReturns coerces the top nret stack values to funcType's return
+// types for delivery to a reflect.MakeFunc caller. Shared by CallFunc and
+// callPooled.
+func (m *Machine) collectReturns(funcType reflect.Type, nret int) []reflect.Value {
+	if nret == 0 {
+		return nil
+	}
 	out := make([]reflect.Value, nret)
 	for i := range out {
 		rv := m.mem[i].Reflect()
@@ -3060,7 +3126,7 @@ func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Val
 		}
 		out[i] = rv
 	}
-	return out, nil
+	return out
 }
 
 func (m *Machine) newGoroutine(fval Value, args []Value) {
@@ -3756,7 +3822,9 @@ func (m *Machine) makeBridgeClosureImpl(ifc Iface, method Method, fnType reflect
 	rs := m.captureRunnerState()
 	return reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
 		*cell = FromReflect(reflect.Indirect(ptrVal.Reflect()))
-		out, err := rs.newRunner().CallFunc(fval, fnType, args)
+		runner := rs.acquireRunner()
+		defer rs.releaseRunner(runner)
+		out, err := runner.callPooled(fval, fnType, args)
 		if err != nil {
 			panic(err)
 		}

@@ -1510,6 +1510,19 @@ s := []int{3, 1, 4, 1, 5}
 sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 s[0]*10000 + s[1]*1000 + s[2]*100 + s[3]*10 + s[4]`, res: "11345"},
 
+		// Package-var writes from a native->mvm callback must propagate to the outer
+		// Run, matching Go semantics. Used to fail because CallFunc copied globals to
+		// a private backing array and discarded the callback's writes on return.
+		{n: "callback_global_write_visible", src: `
+import "strings"
+var counter int
+func bump(r rune) rune {
+	counter++
+	return r
+}
+strings.Map(bump, "abc")
+counter`, res: "3"},
+
 		// native interface conversion: wrap interpreted *T in native io.Reader
 		{n: "native_iface_conv", src: `
 import "io"

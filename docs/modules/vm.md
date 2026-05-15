@@ -396,10 +396,12 @@ This is safe for single-threaded synchronous callbacks (e.g. an HTTP
 handler calling back into the interpreter). Concurrent goroutines calling
 different wrapped functions on the same `Machine` are not safe.
 
-Note that `CallFunc` saves and restores `globals` as well: it copies the
-current `globals` slice to a fresh backing array so inner writes don't
-affect the outer run's globals. This differs from `newGoroutine`, which
-intentionally shares the same backing array.
+Note that `CallFunc` does NOT isolate `globals`: a callback's package-var
+write is visible to the outer `Run`, matching Go callback semantics
+(a native callback runs in the same address space as the surrounding
+program) and the goroutine model documented in ADR-008. Only per-frame
+state (`mem`, `ip`, `fp`, `heap`, `heapFrames`, `panicking`, `panicVal`,
+appended `code`) is saved and restored.
 
 `makeCallFunc` (the trampoline returned by `WrapFunc`) does not reuse
 `m`; it creates a fresh `Machine` per native callback via
