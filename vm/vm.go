@@ -370,13 +370,8 @@ type Machine struct {
 
 	baseCodeLen int // len(code) before Run() appends sentinel instructions
 
-	// funcFields maps the underlying Go func pointer of a wrapped
-	// reflect.MakeFunc value back to the mvm func Value it represents. Lookup
-	// is keyed by funcValuePtr (read live from the field's bytes), so a
-	// reflect.Set that overwrites the field bytes still resolves to the right
-	// closure on the next Call.
-	funcFields   map[uintptr]Value
-	typesByRtype map[reflect.Type]*Type // lazy: nil until first typeByRtype call
+	funcFields   *funcFieldsTable // see funcFieldsTable doc
+	typesByRtype *typesIndex      // see typesIndex doc
 
 	in       io.Reader // machine standard input (nil = os.Stdin)
 	out, err io.Writer // machine standard output and error
@@ -1708,8 +1703,9 @@ func (m *Machine) Run() (err error) {
 		case WrapFunc:
 			// Wrap the mvm func value on the stack in a reflect.MakeFunc for native Go callbacks.
 			// The original mvm func is preserved in MvmFunc.Val for fast in-VM dispatch.
-			// CallFunc is re-entrant for single-threaded synchronous callbacks; concurrent goroutine
-			// calls to different wrapped functions on the same Machine are NOT safe.
+			// The trampoline dispatches each invocation on a pooled runner with pointer-shared
+			// parent state, so concurrent native callers (e.g. parallel sort.Slice with an mvm
+			// less func) execute safely; user-visible package vars follow Go's memory model.
 			typ := m.globals[int(c.A)].ref.Interface().(*Type)
 			fval := mem[sp-int(c.B)]
 			mem[sp-int(c.B)] = Value{ref: reflect.ValueOf(MvmFunc{Val: fval, GF: m.wrapForFunc(fval, typ.Rtype)})}
@@ -2726,21 +2722,14 @@ func nativeMethodLookup(rv reflect.Value, name string) reflect.Value {
 
 var typePtrRtype = reflect.TypeOf((*Type)(nil))
 
-// typeByRtype returns the mvm *Type whose Rtype equals rt, building
-// a lazy index over globals on the first call.
+// typeByRtype returns the mvm *Type whose Rtype equals rt. Delegates to
+// the parent-owned typesIndex; once the underlying map is published the
+// hot path is one atomic load + one map read with no lock.
 func (m *Machine) typeByRtype(rt reflect.Type) *Type {
 	if m.typesByRtype == nil {
-		m.typesByRtype = map[reflect.Type]*Type{}
-		for _, g := range m.globals {
-			if g.ref.IsValid() && g.ref.Type() == typePtrRtype {
-				t := g.ref.Interface().(*Type)
-				if t != nil && t.Rtype != nil {
-					m.typesByRtype[t.Rtype] = t
-				}
-			}
-		}
+		m.typesByRtype = &typesIndex{}
 	}
-	return m.typesByRtype[rt]
+	return m.typesByRtype.lookup(m.globals, rt)
 }
 
 // ifaceMethodFuncType returns the reflect.Type (without receiver) for the named
@@ -2926,6 +2915,55 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 	return m.makeCallFunc(val, funcType)
 }
 
+// funcFieldsTable maps the underlying Go func pointer of a wrapped
+// reflect.MakeFunc value back to the mvm func Value it represents.
+// Owned by the parent Machine and pointer-shared with runner Machines and
+// spawned goroutines so a mutation on any one is visible to the others.
+type funcFieldsTable struct {
+	mu sync.RWMutex
+	m  map[uintptr]Value
+}
+
+func newFuncFieldsTable() *funcFieldsTable {
+	return &funcFieldsTable{m: make(map[uintptr]Value)}
+}
+
+func (t *funcFieldsTable) get(p uintptr) (Value, bool) {
+	t.mu.RLock()
+	v, ok := t.m[p]
+	t.mu.RUnlock()
+	return v, ok
+}
+
+func (t *funcFieldsTable) set(p uintptr, v Value) {
+	t.mu.Lock()
+	t.m[p] = v
+	t.mu.Unlock()
+}
+
+// typesIndex memoises a reflect.Type -> *Type lookup over a Machine's
+// globals. Populated once on first lookup under sync.Once (which provides
+// happens-before for all later readers) and immutable afterward, so the
+// steady-state lookup is a plain Go map read.
+type typesIndex struct {
+	once sync.Once
+	m    map[reflect.Type]*Type
+}
+
+func (t *typesIndex) lookup(globals []Value, rt reflect.Type) *Type {
+	t.once.Do(func() {
+		t.m = map[reflect.Type]*Type{}
+		for _, g := range globals {
+			if g.ref.IsValid() && g.ref.Type() == typePtrRtype {
+				if v, _ := g.ref.Interface().(*Type); v != nil && v.Rtype != nil {
+					t.m[v.Rtype] = v
+				}
+			}
+		}
+	})
+	return t.m[rt]
+}
+
 // runnerState captures the Machine fields needed to create lightweight runner
 // Machines for re-entrant execution (bridge callbacks, MakeFunc adapters).
 // The pool itself lives on the parent Machine and is shared across all
@@ -2938,12 +2976,27 @@ type runnerState struct {
 	out, err        io.Writer
 	methodNames     []string
 	methodFuncTypes []reflect.Type
-	typesByRtype    map[reflect.Type]*Type
+	funcFields      *funcFieldsTable // parent-owned; pointer-shared with runner
+	typesByRtype    *typesIndex      // parent-owned; pointer-shared with runner
 	debugInfoFn     func() *DebugInfo
 	pool            *sync.Pool // shared pool on the parent Machine
 }
 
+// ensureSharedTables lazy-allocates the parent-owned funcFields and
+// typesByRtype tables so they can be pointer-shared with runner Machines
+// and spawned goroutines. Callers run on the parent before any runner
+// exists, making the nil-check race-free.
+func (m *Machine) ensureSharedTables() {
+	if m.funcFields == nil {
+		m.funcFields = newFuncFieldsTable()
+	}
+	if m.typesByRtype == nil {
+		m.typesByRtype = &typesIndex{}
+	}
+}
+
 func (m *Machine) captureRunnerState() *runnerState {
+	m.ensureSharedTables()
 	return &runnerState{
 		globals:         m.globals,
 		code:            m.code[:m.baseCodeLen:m.baseCodeLen],
@@ -2952,6 +3005,7 @@ func (m *Machine) captureRunnerState() *runnerState {
 		err:             m.err,
 		methodNames:     m.MethodNames,
 		methodFuncTypes: m.MethodFuncTypes,
+		funcFields:      m.funcFields,
 		typesByRtype:    m.typesByRtype,
 		debugInfoFn:     m.debugInfoFn,
 		pool:            &m.runnerPool,
@@ -2974,6 +3028,7 @@ func (rs *runnerState) acquireRunner() *Machine {
 	m.err = rs.err
 	m.MethodNames = rs.methodNames
 	m.MethodFuncTypes = rs.methodFuncTypes
+	m.funcFields = rs.funcFields
 	m.typesByRtype = rs.typesByRtype
 	m.debugInfoFn = rs.debugInfoFn
 	return m
@@ -3175,6 +3230,7 @@ func (m *Machine) newGoroutine(fval Value, args []Value) {
 	mem[narg+2] = Value{num: packRetIP(exitAddr, 0, frameBase)}
 	mem[narg+3] = Value{num: 0} // prevFP = 0
 
+	m.ensureSharedTables()
 	child := &Machine{
 		globals:         m.globals,
 		code:            m.code[:m.baseCodeLen:m.baseCodeLen],
@@ -3190,6 +3246,7 @@ func (m *Machine) newGoroutine(fval Value, args []Value) {
 		debugOut:        m.debugOut,
 		MethodNames:     m.MethodNames,
 		MethodFuncTypes: m.MethodFuncTypes,
+		funcFields:      m.funcFields,
 		typesByRtype:    m.typesByRtype,
 	}
 	go func() { _ = child.Run() }()
@@ -3291,7 +3348,7 @@ func forceSettable(fv reflect.Value) reflect.Value {
 // closure currently living there.
 func (m *Machine) resolveFuncField(v Value) Value {
 	if v.ref.Kind() == reflect.Func && v.ref.CanAddr() && !v.ref.IsNil() && m.funcFields != nil {
-		if pf, ok := m.funcFields[funcValuePtr(v.ref)]; ok {
+		if pf, ok := m.funcFields.get(funcValuePtr(v.ref)); ok {
 			return pf
 		}
 	}
@@ -3302,9 +3359,9 @@ func (m *Machine) setGoFuncField(fv, gf reflect.Value, val Value) {
 	fv.Set(gf)
 	if ptr := funcValuePtr(fv); ptr != 0 {
 		if m.funcFields == nil {
-			m.funcFields = make(map[uintptr]Value)
+			m.funcFields = newFuncFieldsTable()
 		}
-		m.funcFields[ptr] = val
+		m.funcFields.set(ptr, val)
 	}
 }
 

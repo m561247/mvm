@@ -20,10 +20,10 @@ metadata).
   closure `heap`, a `heapFrames [][]*Value` stack (saved caller closure heaps,
   pushed only for closure calls where `heap != nil`), panic state
   (`panicking`, `panicVal`), goroutine state (`wg *sync.WaitGroup`,
-  `isGoroutine bool`), two func-field side-tables (`funcFields` keyed by
-  reflect.Value address, `funcFieldsByFuncPtr` keyed by the closure's
-  function pointer -- used as a stable fallback when a struct containing
-  func fields is copied e.g. via `append`), and debug state.
+  `isGoroutine bool`), a parent-owned `funcFields *funcFieldsTable` keyed
+  by the closure's function pointer read live from the field's bytes
+  (resolves the original mvm Value even after a struct-copy rewrites the
+  field), and debug state.
 - **`Run() error`** -- main execution loop. Dispatches on `Op` via a
   switch statement.
 - **`Push(vals ...Value)`** -- append values to `globals` (used before
@@ -366,17 +366,17 @@ Mvm functions are integers (code addresses) or `Closure` values at
 runtime. Neither can be stored directly in a typed Go `func` field via
 `reflect.Set`. Two mechanisms bridge this gap:
 
-1. **`funcFields` side-tables.** The VM maintains two `map[uintptr]Value`
-   tables for mvm funcs assigned to native struct func fields:
-   - `funcFields` -- keyed by the `reflect.Value` memory address of the
-     target field. Fast for direct access; invalidated when the struct is
-     copied (e.g. by `append`).
-   - `funcFieldsByFuncPtr` -- keyed by the closure's stable function
-     pointer (obtained by dereferencing the field address). Used as a
-     fallback when address-based lookup misses after a copy.
-   When the compiler detects assignment of a mvm func to a native
-   struct field, it emits an instruction that stores the mvm func into
-   both tables while writing a zero/stub into the actual field.
+1. **`funcFields` side-table.** A `funcFieldsTable` (a
+   `map[uintptr]Value` behind a `sync.RWMutex`) holds mvm funcs assigned
+   to native struct func fields. Lookup is keyed by the closure's
+   function pointer read live from the field's bytes (`funcValuePtr`),
+   so a `reflect.Set` that overwrites the field still resolves to the
+   right closure on the next `Call`. The table is parent-owned and
+   pointer-shared with runner Machines and spawned goroutines, so a
+   callback's write is observable to siblings and the parent.
+   When the compiler detects assignment of a mvm func to a native struct
+   field, it emits an instruction that stores the mvm func into the table
+   while writing a zero/stub into the actual field.
 
 2. **`WrapFunc` opcode.** Converts the mvm func on the stack into a
    `MvmFunc` by calling `reflect.MakeFunc` with a trampoline that
@@ -392,22 +392,34 @@ stack, pushes the function value and arguments, appends a temporary
 `Call` + `Exit` sequence, and runs the inner loop. On return (including
 via `defer`), all saved state is restored.
 
-This is safe for single-threaded synchronous callbacks (e.g. an HTTP
-handler calling back into the interpreter). Concurrent goroutines calling
-different wrapped functions on the same `Machine` are not safe.
+Native callbacks dispatched from multiple goroutines (e.g. `sort.Slice`
+on a wrapped mvm comparator, parallel `strings.Map`, fmt verb callbacks)
+are safe: each dispatch acquires its own runner Machine from the
+parent's `sync.Pool` and the user-invisible internal tables
+(`funcFields`, `typesByRtype`) are parent-owned and synchronised so a
+runner's mutation is visible to siblings and the parent.
+Direct invocation of `m.CallFunc` on the parent `Machine` itself remains
+single-goroutine entry (it mutates `m.mem`/`m.ip`/`m.fp` directly); the
+spec-safe public concurrent entry is `WrapFunc` -> trampoline -> pooled
+runner.
 
 Note that `CallFunc` does NOT isolate `globals`: a callback's package-var
 write is visible to the outer `Run`, matching Go callback semantics
 (a native callback runs in the same address space as the surrounding
 program) and the goroutine model documented in ADR-008. Only per-frame
 state (`mem`, `ip`, `fp`, `heap`, `heapFrames`, `panicking`, `panicVal`,
-appended `code`) is saved and restored.
+appended `code`) is saved and restored. Concurrent user-code writes to
+package-level vars follow the Go memory model exactly as in native Go;
+mvm does not layer extra locking over `globals`.
 
-`makeCallFunc` (the trampoline returned by `WrapFunc`) does not reuse
-`m`; it creates a fresh `Machine` per native callback via
-`runnerState.newRunner`. The captured `runnerState` therefore also
-carries `debugInfoFn`, so bridges that introspect the callback runner
-(e.g. the runtime.Callers replacement, see [Runtime virtualization
+`makeCallFunc` (the trampoline returned by `WrapFunc`) acquires a
+pooled runner Machine via `runnerState.acquireRunner`, runs the
+function with `callPooled`, and releases the runner back to the pool on
+return. The `runnerState` captured at WrapFunc time carries
+pointer-shared references to the parent's `funcFields`, `typesByRtype`,
+`code` / `globals` headers, the `sync.Pool` itself, and `debugInfoFn` --
+so bridges that introspect the callback runner (e.g. the
+runtime.Callers replacement, see [Runtime virtualization
 bridges](#runtime-virtualization-bridges)) can still resolve symbols
 through `m.DebugInfo()`.
 
