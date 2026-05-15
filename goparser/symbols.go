@@ -3,6 +3,7 @@ package goparser
 import (
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/mvm-sh/mvm/lang"
 	"github.com/mvm-sh/mvm/symbol"
@@ -26,6 +27,22 @@ func (p *Parser) addLocalVar(name string) string {
 	}
 	p.framelen[p.funcScope]++
 	return scoped
+}
+
+// clearDirectLocals removes LocalVar entries at scope's direct level (keys
+// "scope/<name>" with no further "/"). Used at parseFunc entry to drop leftovers
+// from a prior parse that wrote to the same funcScope key -- see the call site.
+func (p *Parser) clearDirectLocals(scope string) {
+	prefix := scope + "/"
+	for k, s := range p.Symbols {
+		if s.Kind != symbol.LocalVar || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if strings.IndexByte(k[len(prefix):], '/') >= 0 {
+			continue
+		}
+		delete(p.Symbols, k)
+	}
 }
 
 // addOrRebindLocalVar returns the scoped key for a `:=` LHS ident, preserving

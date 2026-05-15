@@ -317,6 +317,14 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	p.funcScope = p.scope
 	// Local variable indices start at 1; index 0 is the frame header (prevFP).
 	p.framelen[p.funcScope] = 1
+	// Two packages can both declare a top-level func of the same name, so
+	// p.funcScope (bare fname) collides cross-pkg. Without this purge, a
+	// stale LocalVar Symbol from the prior pkg's parse can be picked up by
+	// addOrRebindLocalVar as a valid `:=` rebind target -- aliasing the new
+	// pkg's local onto the wrong frame slot. Safe to drop: parse and compile
+	// run back-to-back per decl (ParseOneStmt then generate), so the prior
+	// decl's bytecode no longer needs its LocalVar entries.
+	p.clearDirectLocals(p.funcScope)
 
 	// For methods, register the receiver directly at the function scope
 	// using cached info from Phase 1.

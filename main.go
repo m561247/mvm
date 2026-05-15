@@ -354,7 +354,15 @@ func runTestDriver(i *interp.Interp) error {
 	}
 
 	var driver strings.Builder
-	driver.WriteString("testing.Main(func(pat, name string) (bool, error) { return regexp.MatchString(pat, name) }, []testing.InternalTest{")
+	// Pass regexp.MatchString directly rather than wrapping it in an interpreted
+	// closure: native testing.Main calls the matcher via reflect for each test
+	// (and per slash-separated sub-name) when -run/-skip is set, so wrapping it
+	// in `func(pat, name string) (bool, error) { return regexp.MatchString(...) }`
+	// makes every match a re-entrant mvm Machine spin-up that copies the host
+	// data segment. On large packages (e.g. golang.org/x/text/language) that
+	// snowballed into minutes-long hangs and gigabytes of allocations under
+	// `mvm test -run=X`. Passing the native func value avoids the bridge.
+	driver.WriteString("testing.Main(regexp.MatchString, []testing.InternalTest{")
 	for _, name := range testNames {
 		fmt.Fprintf(&driver, "{Name: %q, F: %s},", name, name)
 	}

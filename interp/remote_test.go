@@ -1167,6 +1167,73 @@ println(err == nil)`
 	}
 }
 
+// TestRemoteCrossPkgSameFuncLocalsCollision: two pkgs with the same top-level
+// func name share p.funcScope, so inner's named-return LocalVar at scoped key
+// `<name>/err` survives into outer's parse. Pre-fix, addOrRebindLocalVar rebound
+// outer's `err` to inner's Symbol, leaving outer's `l` and `err` aliased on
+// the same frame slot and reflect-Set'ing a wrongly-typed Value into the
+// composite's uint16 field. Mirrors x/text/language's `ParseBase` wrapping
+// `internal/language.ParseBase`.
+func TestRemoteCrossPkgSameFuncLocalsCollision(t *testing.T) {
+	url, _ := startFakeProxy(t,
+		remoteModule{
+			path:    "example.com/x/inner/diff",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/inner/diff\n",
+				"lang.go": `package diff
+
+type Language uint16
+
+func ParseBase(s string) (l Language, err error) {
+	if len(s) == 2 && s[0] == 'e' && s[1] == 'n' {
+		return Language(313), nil
+	}
+	return 0, nil
+}
+`,
+			},
+		},
+		remoteModule{
+			path:    "example.com/x/lang",
+			version: "v1.0.0",
+			files: map[string]string{
+				"go.mod": "module example.com/x/lang\n",
+				"lang.go": `package lang
+
+import "example.com/x/inner/diff"
+
+type Base struct {
+	langID diff.Language
+}
+
+func ParseBase(s string) (Base, error) {
+	l, err := diff.ParseBase(s)
+	return Base{l}, err
+}
+
+func (b Base) ID() uint16 { return uint16(b.langID) }
+`,
+			},
+		},
+	)
+
+	var stdout bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, os.Stderr)
+	i.SetRemoteFS(modfs.New(modfs.Options{Proxy: url}))
+	src := `import "example.com/x/lang"
+b, _ := lang.ParseBase("en")
+println(b.ID())`
+	if _, err := i.Eval("test", src); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "313\n"; got != want {
+		t.Errorf("stdout: got %q want %q", got, want)
+	}
+}
+
 func TestRemoteXTextCrash(t *testing.T) {
 	t.Skip("vm.patchRtype crash fixed; x/text still hits other parser limits and the test needs network")
 
