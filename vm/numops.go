@@ -1,6 +1,9 @@
 package vm
 
-import "math"
+import (
+	"math"
+	"reflect"
+)
 
 type integer interface {
 	~int | ~int8 | ~int16 | ~int32 | ~int64 |
@@ -41,3 +44,24 @@ func getf32(n uint64) float32 { return float32(math.Float64frombits(n)) }
 
 // putf32 stores a float32 into a Value's uint64 storage (float64-bits encoding).
 func putf32(f float32) uint64 { return math.Float64bits(float64(f)) }
+
+// truncToKind narrows n to k's value width, sign-extending for signed kinds.
+// Restores the invariant that Value.num holds the typed value in uint64 form
+// after ops (BitShl, BitComp) that operate on uint64 without respecting width.
+func truncToKind(n uint64, k reflect.Kind) uint64 {
+	switch k {
+	case reflect.Int8:
+		return uint64(int64(int8(n))) //nolint:gosec
+	case reflect.Int16:
+		return uint64(int64(int16(n))) //nolint:gosec
+	case reflect.Int32:
+		return uint64(int64(int32(n))) //nolint:gosec
+	case reflect.Uint8:
+		return uint64(uint8(n)) //nolint:gosec
+	case reflect.Uint16:
+		return uint64(uint16(n)) //nolint:gosec
+	case reflect.Uint32:
+		return uint64(uint32(n)) //nolint:gosec
+	}
+	return n
+}

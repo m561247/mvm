@@ -2377,6 +2377,22 @@ func TestBitwiseInt(t *testing.T) {
 		{n: "or_assign", src: "a := 0xf0; a |= 0x0f; a", res: "255"},
 		{n: "xor_assign", src: "a := 0xff; a ^= 0x0f; a", res: "240"},
 		{n: "andnot_assign", src: "a := 0xff; a &^= 0x0f; a", res: "240"},
+
+		// Typed-narrower bit ops must truncate .num to the operand's type width
+		// so .num stays in sync with the reflect-backed value. Reproduces an
+		// x/text/internal/language EncodeM49 corruption: shifted-uint16 .num
+		// leaked into comparisons via Lower/Equal, which read .num directly.
+		{n: "shl_uint16_truncate", src: "n := uint16(840); v := n << 9; w := uint16(0x9000); v == w", res: "true"},
+		{n: "shl_uint16_cmp", src: "n := uint16(840); v := n << 9; x := uint16(0x9136); x >= v", res: "true"},
+		{n: "comp_uint16", src: "v := ^uint16(0); v == 0xffff", res: "true"},
+		{n: "comp_int16", src: "v := ^int16(0); v == -1", res: "true"},
+		{n: "shr_int16_signed", src: "n := int16(-8); v := n >> 1; v == -4", res: "true"},
+
+		// AndNot must bind tighter than ==. Previously the token had no
+		// Precedence entry, defaulting to 0 (below ==), so `a &^ b == c`
+		// parsed as `a &^ (b == c)`.
+		{n: "andnot_prec_eq", src: "a := uint16(0x10); b := uint16(0x10); c := uint16(0x20); (a &^ b) == c == (a&^b == c)", res: "true"},
+		{n: "andnot_prec_neq", src: "a := uint16(0x7c20); b := uint16(0x1ff); c := uint16(0x600); a&^b == c", res: "false"},
 	})
 }
 

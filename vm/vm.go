@@ -1857,20 +1857,32 @@ func (m *Machine) Run() (err error) {
 			resetNumRef(&mem[sp-1])
 			sp--
 		case BitShl:
-			mem[sp-1].num <<= mem[sp].num
+			// Truncate to LHS width: Go's `<<` yields the LHS type. The uint64
+			// shift can overflow narrower types and leave .num out of sync with
+			// the value's reflect-backed representation, breaking subsequent
+			// comparisons and Equal which read .num directly.
+			k := mem[sp-1].ref.Kind()
+			mem[sp-1].num = truncToKind(mem[sp-1].num<<mem[sp].num, k)
 			resetNumRef(&mem[sp-1])
 			sp--
 		case BitShr:
 			k := mem[sp-1].ref.Kind()
-			if k >= reflect.Uint && k <= reflect.Uintptr {
-				mem[sp-1].num >>= mem[sp].num
-			} else {
+			switch {
+			case k >= reflect.Uint && k <= reflect.Uintptr:
+				mem[sp-1].num = truncToKind(mem[sp-1].num, k) >> mem[sp].num
+			case k == reflect.Int8:
+				mem[sp-1].num = uint64(int64(int8(mem[sp-1].num)) >> mem[sp].num) //nolint:gosec
+			case k == reflect.Int16:
+				mem[sp-1].num = uint64(int64(int16(mem[sp-1].num)) >> mem[sp].num) //nolint:gosec
+			case k == reflect.Int32:
+				mem[sp-1].num = uint64(int64(int32(mem[sp-1].num)) >> mem[sp].num) //nolint:gosec
+			default:
 				mem[sp-1].num = uint64(int64(mem[sp-1].num) >> mem[sp].num) //nolint:gosec
 			}
 			resetNumRef(&mem[sp-1])
 			sp--
 		case BitComp:
-			mem[sp].num = ^mem[sp].num
+			mem[sp].num = truncToKind(^mem[sp].num, mem[sp].ref.Kind())
 			resetNumRef(&mem[sp])
 
 		// Bit manipulation.

@@ -132,6 +132,7 @@ var GoSpec = &lang.Spec{
 	},
 	TokenProps: []lang.TokenProp{
 		lang.And:          {Precedence: 5},
+		lang.AndNot:       {Precedence: 5},
 		lang.Mul:          {Precedence: 5},
 		lang.Quo:          {Precedence: 5},
 		lang.Rem:          {Precedence: 5},
