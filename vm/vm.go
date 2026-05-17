@@ -1199,6 +1199,11 @@ func (m *Machine) Run() (err error) {
 				// Native interface value: use reflect to get the method.
 				methodName := m.MethodNames[methodID]
 				recvRV := mem[sp].Reflect()
+				if isNilReceiver(recvRV) {
+					m.raiseNilDeref()
+					ip = panicAddr
+					continue
+				}
 				rv := nativeMethodLookup(recvRV, methodName)
 				if !rv.IsValid() && c.B != 0 {
 					// Numeric value lost its named type (e.g. time.Duration stored as int64).
@@ -1222,12 +1227,26 @@ func (m *Machine) Run() (err error) {
 			if methodTyp == nil {
 				// Fall back to reflect-based dispatch when neither T nor *T
 				// has a compiled method entry (native type in mvm interface).
-				mem[sp] = Value{ref: nativeMethodLookup(ifc.Val.Reflect(), m.MethodNames[methodID])}
+				rv := ifc.Val.Reflect()
+				if !rv.IsValid() {
+					m.raiseNilDeref()
+					ip = panicAddr
+					continue
+				}
+				mem[sp] = Value{ref: nativeMethodLookup(rv, m.MethodNames[methodID])}
 				break
 			}
 			method := methodTyp.Methods[methodID]
-			// The concrete type inside an embedded interface field is only known at runtime.
-			nativeFallback := false
+			// Outcome of walking the embedded-interface chain at runtime:
+			// chain = keep going to compiled-method dispatch; native = chain
+			// terminated at a Go iface and was reflect-dispatched; nilRcv =
+			// chain hit a nil interface field (Go-style panic).
+			const (
+				outChain = iota
+				outNative
+				outNilRcv
+			)
+			outcome := outChain
 			for method.EmbedIface {
 				rv := ifc.Val.Reflect()
 				if rv.Kind() == reflect.Pointer {
@@ -1238,17 +1257,23 @@ func (m *Machine) Run() (err error) {
 				}
 				embedded := FromReflect(rv)
 				if !embedded.IsIface() {
-					// The embedded field holds a native interface (e.g. io.Writer
-					// containing *os.File), not a mvm Iface. Fall back to
-					// reflect-based dispatch.
-					mem[sp] = Value{ref: nativeMethodLookup(rv, m.MethodNames[methodID])}
-					nativeFallback = true
+					if isNilReceiver(rv) {
+						outcome = outNilRcv
+					} else {
+						mem[sp] = Value{ref: nativeMethodLookup(rv, m.MethodNames[methodID])}
+						outcome = outNative
+					}
 					break
 				}
 				ifc = embedded.IfaceVal()
 				method = ifc.Typ.Methods[methodID]
 			}
-			if nativeFallback {
+			if outcome == outNilRcv {
+				m.raiseNilDeref()
+				ip = panicAddr
+				continue
+			}
+			if outcome == outNative {
 				break
 			}
 			codeAddr := int(m.globals[method.Index].num) //nolint:gosec
@@ -2742,10 +2767,17 @@ func fieldByAB(v reflect.Value, a, b int) reflect.Value {
 	return v.FieldByIndex([]int{a, b})
 }
 
-// nativeMethodLookup resolves a method by name, unwrapping interface/pointer indirection.
+// nativeMethodLookup resolves a method by name, unwrapping interface/pointer
+// indirection. Returns invalid on miss; never reaches reflect's "method on
+// zero Value" panic path. Kind() on invalid returns Invalid so the Interface
+// branch is skipped naturally; only the post-Elem check is load-bearing
+// (a non-nil interface containing a typed-nil value Elem()s to invalid).
 func nativeMethodLookup(rv reflect.Value, name string) reflect.Value {
 	if rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return reflect.Value{}
 	}
 	if shim := runtimeFuncShim(rv, name); shim.IsValid() {
 		return shim
@@ -2757,6 +2789,31 @@ func nativeMethodLookup(rv reflect.Value, name string) reflect.Value {
 		return mv
 	}
 	return reflect.Indirect(rv).MethodByName(name)
+}
+
+// nilPointerPanicValue is captured from a real nil-pointer deref so its
+// dynamic type matches what native Go panics with -- interpreted recover()
+// gets the canonical runtime.Error, not a synthesized string.
+var nilPointerPanicValue = func() (out any) {
+	defer func() { out = recover() }()
+	var p *byte
+	_ = *p
+	return nil
+}()
+
+// isNilReceiver reports whether rv represents a nil interface receiver --
+// either an unset slot or an interface-typed slot whose dynamic value is nil.
+// A typed-nil pointer (rv.Kind() == Pointer && rv.IsNil()) is NOT considered
+// nil here: Go dispatches the method, the body panics if it dereferences.
+func isNilReceiver(rv reflect.Value) bool {
+	return !rv.IsValid() || (rv.Kind() == reflect.Interface && rv.IsNil())
+}
+
+// raiseNilDeref stages the canonical nil-pointer-deref runtime panic for the
+// next PanicUnwind cycle. Callers must follow with `ip = ...; continue`.
+func (m *Machine) raiseNilDeref() {
+	m.panicking = true
+	m.panicVal = Value{ref: reflect.ValueOf(nilPointerPanicValue)}
 }
 
 var typePtrRtype = reflect.TypeOf((*Type)(nil))

@@ -2759,6 +2759,28 @@ func TestPanic(t *testing.T) {
 			}
 			f()
 			s`, res: "cba"},
+		{n: "nil_iface_call", src: `
+			// Calling a method on a nil interface variable produces the same
+			// runtime.Error Go emits, recoverable via defer.
+			type Stringer interface { String() string }
+			s := ""
+			func f() {
+				defer func() {
+					r := recover()
+					if e, ok := r.(error); ok {
+						s = e.Error()
+					}
+				}()
+				var x Stringer
+				x.String()
+			}
+			f()
+			s`, res: "runtime error: invalid memory address or nil pointer dereference"},
+		{n: "nil_iface_call_unrecovered", src: `
+			// Same panic propagates as a Go error string when unrecovered.
+			type Stringer interface { String() string }
+			var x Stringer
+			x.String()`, err: "panic: runtime error: invalid memory address or nil pointer dereference"},
 	})
 }
 

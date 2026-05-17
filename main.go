@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -45,13 +46,14 @@ func buildModFS() *modfs.FS {
 	return modfs.New(modfs.Options{Offline: true})
 }
 
-func wireFS(i *interp.Interp) {
+func wireFS(i *interp.Interp) *modfs.FS {
 	mfs := buildModFS()
 	if err := mfs.Inject(stdmod.ModulePath, stdmod.Version, stdlib.EmbeddedStd()); err != nil {
 		panic("modfs inject embedded std: " + err.Error())
 	}
 	i.SetStdlibFS(stdmod.FS(mfs))
 	i.SetRemoteFS(mfs)
+	return mfs
 }
 
 // traceFlag is a flag.Value for -x that doubles as a bool flag (-x = line trace)
@@ -292,7 +294,7 @@ func testCmd(arg []string) error {
 
 	i := interp.NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
-	wireFS(i)
+	mfs := wireFS(i)
 	i.AutoImportPackages()
 	if trace.line {
 		i.SetTracing(true)
@@ -309,14 +311,99 @@ func testCmd(arg []string) error {
 			if err := evalLocalDir(i, absDir, entries); err != nil {
 				return err
 			}
-			return runTestDriver(i)
+			return runTestsInDir(i, absDir)
 		}
 	}
 	i.SetIncludeTests(true)
 	if _, err := i.Eval(target, ""); err != nil {
 		return fmt.Errorf("loading %q: %w", target, err)
 	}
+	// modfs serves the package from memory, so tests using testdata-relative
+	// paths see whatever cwd mvm was launched from. Spill the subtree to a
+	// temp dir and chdir there to mirror `go test`'s setup.
+	if mfs != nil {
+		dir, cleanup, err := materializePkgDir(mfs, target)
+		if err != nil {
+			return err
+		}
+		if dir != "" {
+			defer cleanup()
+			return runTestsInDir(i, dir)
+		}
+	}
 	return runTestDriver(i)
+}
+
+// runTestsInDir runs the test driver with cwd set to dir, restoring cwd on
+// return. Cwd matters because `go test` chdirs to the package source dir, and
+// any test using testdata-relative paths depends on that.
+func runTestsInDir(i *interp.Interp, dir string) error {
+	prev, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if err := os.Chdir(dir); err != nil {
+		return err
+	}
+	defer func() { _ = os.Chdir(prev) }()
+	return runTestDriver(i)
+}
+
+// materializePkgDir copies the import-path subtree of fsys into a fresh
+// temp directory so test code can resolve testdata-relative paths from cwd.
+// On stat-miss returns ("", nil, nil) -- the caller has nothing to chdir to
+// and falls through (e.g. targets outside the modfs reach).
+func materializePkgDir(fsys fs.FS, importPath string) (string, func(), error) {
+	fi, err := fs.Stat(fsys, importPath)
+	if err != nil {
+		return "", nil, nil //nolint:nilerr
+	}
+	if !fi.IsDir() {
+		return "", nil, fmt.Errorf("%s: not a package directory", importPath)
+	}
+	tmp, err := os.MkdirTemp("", "mvm-test-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	tmpRoot, _ := filepath.Abs(tmp)
+	walkErr := fs.WalkDir(fsys, importPath, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		rel, rerr := filepath.Rel(importPath, p)
+		if rerr != nil {
+			return rerr
+		}
+		dst := filepath.Join(tmpRoot, rel)
+		// Defense in depth: refuse zip entries whose joined path escapes
+		// tmpRoot (a malformed module proxy could serve "../" entries).
+		if !strings.HasPrefix(dst, tmpRoot+string(filepath.Separator)) && dst != tmpRoot {
+			return fmt.Errorf("refusing entry outside temp dir: %s", p)
+		}
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o700) //nolint:gosec // dst validated above
+		}
+		src, oerr := fsys.Open(p)
+		if oerr != nil {
+			return oerr
+		}
+		defer func() { _ = src.Close() }()
+		out, cerr := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // dst validated above
+		if cerr != nil {
+			return cerr
+		}
+		if _, err := io.Copy(out, src); err != nil {
+			_ = out.Close()
+			return err
+		}
+		return out.Close()
+	})
+	if walkErr != nil {
+		cleanup()
+		return "", nil, walkErr
+	}
+	return tmp, cleanup, nil
 }
 
 func evalLocalDir(i *interp.Interp, absDir string, entries []os.DirEntry) error {
