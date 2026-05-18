@@ -578,6 +578,10 @@ f()`, res: "start"},
 		// the condition, not to a (never-emitted) post label.
 		{n: "#41", src: `n := 0; for i := 0; i < 5; { if i == 2 { i++; continue }; n++; i++ }; n`, res: "4"},
 		{n: "#42", src: `func f() int { n := 0; for i := 0; i < 5; { if i == 2 { i++; continue }; n++; i++ }; return n }; f()`, res: "4"},
+		// Go spec violations: clean compile error, not VM panic.
+		{n: "range_int_two_vars", src: `for k, v := range 5 { _ = k; _ = v }`, err: "range over integer permits only one iteration variable"},
+		{n: "range_chan_two_vars", src: `ch := make(chan int); close(ch); for k, v := range ch { _ = k; _ = v }`, err: "range over channel permits only one iteration variable"},
+		{n: "range_invalid_subject", src: `var x struct{}; for k := range x { _ = k }`, err: "cannot range over"},
 	})
 }
 

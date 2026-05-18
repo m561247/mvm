@@ -2026,8 +2026,6 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Range:
 			n := t.Arg[0].(int)
-			// FIXME: handle all iterator types.
-			// set the correct type to the iterator variables.
 			topSym := top()
 			vt := symbol.Vtype(topSym)
 			var rangeKind reflect.Kind
@@ -2056,6 +2054,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			switch rangeKind {
 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+				if n > 1 {
+					return c.errAt(t, "range over integer permits only one iteration variable")
+				}
 				if n > 0 {
 					initRangeVar(stack[len(stack)-2], c.Symbols["int"].Type)
 				}
@@ -2094,6 +2095,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					c.emit(t, vm.Pull2)
 				}
 			case reflect.Chan:
+				if n > 1 {
+					return c.errAt(t, "range over channel permits only one iteration variable")
+				}
 				switch n {
 				case 0:
 					c.emit(t, vm.Pull)
@@ -2135,12 +2139,17 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				}
 				c.emit(t, op, 0, funcTypeIdx)
 			default:
-				// Unhandled range type (e.g. struct element type from empty composite literal).
-				if n == 0 {
-					c.emit(t, vm.Pop, 1)
-					c.emit(t, vm.Push, 0)
-					c.emit(t, vm.Pull)
+				// Unhandled range type. n == 0 degrades to a no-op iteration
+				// (used by some upstream paths that emit a range over a value
+				// of unresolved/degenerate type, e.g. an empty composite
+				// literal). n > 0 is a Go spec violation -- emit a clean error
+				// rather than miscompiling.
+				if n > 0 {
+					return c.errAt(t, "cannot range over %v", topSym.Type.Rtype)
 				}
+				c.emit(t, vm.Pop, 1)
+				c.emit(t, vm.Push, 0)
+				c.emit(t, vm.Pull)
 			}
 
 		case lang.Stop:

@@ -28,6 +28,8 @@ func main() {
 	middle()
 }
 
-// skip: file path differs between `mvm run` and interp.TestFile harness
-// (the test loads via path, mvm run via import name). The bridge
-// virtualization is exercised via pkg/errors tests instead.
+// Output:
+// frame 0: _samples.inner @ modfs/_samples/runtime_callers.go:10
+// frame 1: _samples.middle @ modfs/_samples/runtime_callers.go:24
+// frame 2: _samples.main @ modfs/_samples/runtime_callers.go:28
+// total frames: 3

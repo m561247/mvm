@@ -1234,16 +1234,29 @@ println(b.ID())`
 	}
 }
 
-func TestRemoteXTextCrash(t *testing.T) {
-	t.Skip("vm.patchRtype crash fixed; x/text still hits other parser limits and the test needs network")
-
+// TestRemoteXTextLanguageImport is a smoke test that x/text/language --
+// historically a deep stress on cross-pkg type resolution, generic-shim
+// dispatch, and reflect-via-mvm plumbing -- imports end-to-end through
+// the default Go module proxy. Originally tracked vm.patchRtype crashes;
+// after the Phase-2 path-B refactor + reflect.TypeFor shim + named-return
+// slice/map zero-init fixes it now compiles cleanly.
+//
+// Skipped in -short mode because it requires network access to
+// proxy.golang.org and the (cached) module zip.
+func TestRemoteXTextLanguageImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires network access to the Go module proxy")
+	}
 	var stdout bytes.Buffer
 	i := NewInterpreter(golang.GoSpec)
 	i.ImportPackageValues(stdlib.Values)
 	i.SetIO(os.Stdin, &stdout, os.Stderr)
 	i.SetRemoteFS(modfs.New(modfs.Options{}))
-	if _, err := i.Eval("test", `import "golang.org/x/text/language"; _ = language.English`); err != nil {
+	if _, err := i.Eval("test", `import "golang.org/x/text/language"; println(language.English.String())`); err != nil {
 		t.Fatalf("Eval: %v", err)
+	}
+	if got, want := stdout.String(), "en\n"; got != want {
+		t.Errorf("stdout: got %q, want %q", got, want)
 	}
 }
 

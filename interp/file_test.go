@@ -56,7 +56,12 @@ func runFile(t *testing.T, p string) {
 	i.SetIO(os.Stdin, &stdout, errW)
 	i.SetPkgfs("../_samples/pkg")
 
-	_, err = i.Eval(p, string(buf))
+	// Normalize the Eval label so the source registry sees the same path
+	// shape that `mvm run` produces (which a user invokes from the repo
+	// root). Without this the harness's "../" prefix leaks into pkg names
+	// and file paths reported by runtime.Callers/FuncForPC.
+	label := filepath.Join("_samples", filepath.Base(p))
+	_, err = i.Eval(label, string(buf))
 	if isErr {
 		if err == nil {
 			t.Fatalf("got nil error, want: %q", want)
