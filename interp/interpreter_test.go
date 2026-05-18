@@ -3157,6 +3157,49 @@ answer()`, res: "42"},
 	})
 }
 
+// TestReflectMethodByNameConcurrentMachines exercises the
+// reflect.Value.MethodByName path concurrently from independent Machines
+// running on independent goroutines. Each subtest defines a type whose Name()
+// returns a sub-test-specific string; if reflectValueShim resolved the
+// receiver against the wrong Machine (the global-activeMachine race the
+// memory project_active_machine_race describes), the call would either
+// return a value drawn from another goroutine's interpreter or panic on a
+// zero reflect.Value. The combination of t.Parallel + a tight inner loop
+// reliably exercised the race under -race before the fix; afterwards the
+// test is both data-race-clean and value-stable.
+func TestReflectMethodByNameConcurrentMachines(t *testing.T) {
+	const goroutines = 8
+	const iters = 50
+	for i := 0; i < goroutines; i++ {
+		name := fmt.Sprintf("g%d", i)
+		want := fmt.Sprintf("hello-%d", i)
+		src := `import "reflect"
+type Namer interface { Name() string }
+type T struct{}
+func (T) Name() string { return "` + want + `" }
+func run() string {
+	var n Namer = T{}
+	rv := reflect.ValueOf(n)
+	return rv.MethodByName("Name").Call(nil)[0].String()
+}
+out := ""
+for i := 0; i < ` + strconv.Itoa(iters) + `; i++ { out = run() }
+out`
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			intp := interp.NewInterpreter(golang.GoSpec)
+			intp.ImportPackageValues(stdlib.Values)
+			r, err := intp.Eval(name, src)
+			if err != nil {
+				t.Fatalf("eval: %v", err)
+			}
+			if got := fmt.Sprintf("%v", r); got != want {
+				t.Fatalf("got %q, want %q (likely a cross-Machine method leak)", got, want)
+			}
+		})
+	}
+}
+
 // TestRepl exercises the re-entrant interpreter (REPL mode), where a single
 // Interp is used across multiple sequential Eval calls.
 func TestRepl(t *testing.T) {

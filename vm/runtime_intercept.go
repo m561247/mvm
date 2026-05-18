@@ -35,13 +35,17 @@ type runtimeFuncEntry struct {
 var runtimeFuncMeta sync.Map // uintptr (sentinel addr) -> *runtimeFuncEntry
 
 // activeMachine tracks the currently running Machine so that native
-// bridges (e.g. the runtime.Callers replacement) can find it.
+// bridges that cannot otherwise reach it (currently only stdlib's
+// runtime.Callers replacement, installed via PackagePatcher closure at
+// import time) can find one. Most bridges receive `m` explicitly via
+// the VM-side call site and should NOT touch this global.
+//
 // Single-machine-at-a-time semantics: concurrent Machines on different
-// goroutines will race on this slot. Run threads the previous value
-// through its call chain via SetActiveMachine + defer-restore, which is
-// correct for the synchronous nesting that makeCallFunc/CallFunc
-// produce. Concurrent goroutine execution is no worse off than under
-// the previous global-stack implementation, which had the same race.
+// goroutines race on this slot. The race manifests if the surviving
+// bridge readers care about the *currently running* Machine and two
+// goroutines happen to be inside Run() simultaneously. See
+// docs/architecture.md and [[project_active_machine_race]] for the
+// outstanding plan to migrate the last bridge off this global.
 var activeMachine atomic.Pointer[Machine]
 
 // SetActiveMachine atomically replaces the current Machine and returns
@@ -52,7 +56,10 @@ func SetActiveMachine(m *Machine) (prev *Machine) {
 }
 
 // ActiveMachine returns the Machine currently set via SetActiveMachine,
-// or nil if none.
+// or nil if none. Prefer reaching the Machine through an explicit
+// parameter or a closure capture; ActiveMachine is reserved for native
+// bridge closures installed at package patch time with no other route to
+// the runtime.
 func ActiveMachine() *Machine {
 	return activeMachine.Load()
 }
@@ -164,8 +171,15 @@ var zeroReflectValueResult = []reflect.Value{reflect.Zero(reflectValueRtype)}
 //   - vm.Iface: reflect.ValueOf received an mvm interface without unwrapping;
 //     we extract Typ and Val directly from the Iface struct.
 //   - concrete mvm type: typeByRtype maps the Rtype back to the mvm *Type.
-func reflectValueShim(rv reflect.Value, name string) reflect.Value {
-	if !rv.IsValid() || rv.Type() != reflectValueRtype {
+//
+// m is the Machine currently executing the bridge call; it is captured into
+// the returned MakeFunc closures so that later invocations resolve the
+// receiver's method through the right type tables even when another goroutine
+// is simultaneously running an unrelated Machine. Threading m explicitly here
+// (vs. reading the package-global activeMachine) is what makes the
+// reflect.Value.MethodByName path race-free under -race with t.Parallel().
+func reflectValueShim(m *Machine, rv reflect.Value, name string) reflect.Value {
+	if m == nil || !rv.IsValid() || rv.Type() != reflectValueRtype {
 		return reflect.Value{}
 	}
 	innerRV, ok := rv.Interface().(reflect.Value)
@@ -174,10 +188,6 @@ func reflectValueShim(rv reflect.Value, name string) reflect.Value {
 	}
 	switch name {
 	case "MethodByName":
-		m := ActiveMachine()
-		if m == nil {
-			return reflect.Value{}
-		}
 		// Build the Iface that MakeMethodCallable expects. When innerRV is
 		// already a vm.Iface (mvm interface that escaped reflect.ValueOf
 		// untouched), use it directly; otherwise wrap the concrete value
@@ -198,22 +208,18 @@ func reflectValueShim(rv reflect.Value, name string) reflect.Value {
 		return reflect.MakeFunc(methodByNameShimType,
 			func(args []reflect.Value) []reflect.Value {
 				methodName := args[0].String()
-				m2 := ActiveMachine()
-				if m2 == nil {
-					return zeroReflectValueResult
-				}
-				method, found := m2.MethodByName(ifc.Typ, methodName)
+				method, found := m.MethodByName(ifc.Typ, methodName)
 				if !found {
 					return zeroReflectValueResult
 				}
-				ft := m2.ifaceMethodFuncType(methodName)
+				ft := m.ifaceMethodFuncType(methodName)
 				if ft == nil {
 					return zeroReflectValueResult
 				}
-				closure := m2.MakeMethodCallable(ifc, method)
+				closure := m.MakeMethodCallable(ifc, method)
 				// Wrap in reflect.ValueOf so the returned value has type reflect.Value
 				// (struct), matching the declared return type of func(string) reflect.Value.
-				return []reflect.Value{reflect.ValueOf(m2.makeCallFunc(closure, ft))}
+				return []reflect.Value{reflect.ValueOf(m.makeCallFunc(closure, ft))}
 			})
 	case "Call":
 		if innerRV.Kind() != reflect.Func {

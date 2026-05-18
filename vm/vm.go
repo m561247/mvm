@@ -1204,7 +1204,7 @@ func (m *Machine) Run() (err error) {
 					ip = panicAddr
 					continue
 				}
-				rv := nativeMethodLookup(recvRV, methodName)
+				rv := nativeMethodLookup(m, recvRV, methodName)
 				if !rv.IsValid() && c.B != 0 {
 					// Numeric value lost its named type (e.g. time.Duration stored as int64).
 					// Convert to the named type encoded in B-1 and retry the method lookup.
@@ -1233,7 +1233,7 @@ func (m *Machine) Run() (err error) {
 					ip = panicAddr
 					continue
 				}
-				mem[sp] = Value{ref: nativeMethodLookup(rv, m.MethodNames[methodID])}
+				mem[sp] = Value{ref: nativeMethodLookup(m, rv, m.MethodNames[methodID])}
 				break
 			}
 			method := methodTyp.Methods[methodID]
@@ -1260,7 +1260,7 @@ func (m *Machine) Run() (err error) {
 					if isNilReceiver(rv) {
 						outcome = outNilRcv
 					} else {
-						mem[sp] = Value{ref: nativeMethodLookup(rv, m.MethodNames[methodID])}
+						mem[sp] = Value{ref: nativeMethodLookup(m, rv, m.MethodNames[methodID])}
 						outcome = outNative
 					}
 					break
@@ -2772,7 +2772,11 @@ func fieldByAB(v reflect.Value, a, b int) reflect.Value {
 // zero Value" panic path. Kind() on invalid returns Invalid so the Interface
 // branch is skipped naturally; only the post-Elem check is load-bearing
 // (a non-nil interface containing a typed-nil value Elem()s to invalid).
-func nativeMethodLookup(rv reflect.Value, name string) reflect.Value {
+//
+// m is the calling Machine; reflectValueShim captures it into MakeFunc
+// closures so concurrent Run() invocations on different goroutines don't
+// race through a shared global.
+func nativeMethodLookup(m *Machine, rv reflect.Value, name string) reflect.Value {
 	if rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
@@ -2782,7 +2786,7 @@ func nativeMethodLookup(rv reflect.Value, name string) reflect.Value {
 	if shim := runtimeFuncShim(rv, name); shim.IsValid() {
 		return shim
 	}
-	if shim := reflectValueShim(rv, name); shim.IsValid() {
+	if shim := reflectValueShim(m, rv, name); shim.IsValid() {
 		return shim
 	}
 	if mv := rv.MethodByName(name); mv.IsValid() {
