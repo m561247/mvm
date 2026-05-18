@@ -1151,6 +1151,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if ft != nil && ft.Rtype.Kind() == reflect.Func {
 					c.emit(t, vm.WrapFunc, c.typeIndex(ft))
 				}
+				c.emitNumConvert(t, ft, vs.Type, 0)
 				c.emitIfaceWrap(t, ft, vs.Type)
 				c.emit(t, vm.FieldSet, j...)
 				break
@@ -1169,6 +1170,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if elemTyp.IsPtr() && vs.Kind == symbol.Type {
 					c.emit(t, vm.Addr)
 				}
+				c.emitNumConvert(t, elemTyp, vs.Type, 0)
 				c.emitMapValueWrap(t, elemTyp, vs)
 				c.emit(t, vm.MapSet)
 				break
@@ -1184,6 +1186,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 							if ft != nil && ft.Rtype.Kind() == reflect.Func {
 								c.emit(t, vm.WrapFunc, c.typeIndex(ft))
 							}
+							c.emitNumConvert(t, ft, vs.Type, 0)
 							c.emitIfaceWrap(t, ft, vs.Type)
 						}
 						c.emit(t, vm.FieldFset)
@@ -1192,6 +1195,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					if ts.Type.Elem().IsPtr() && vs.Kind == symbol.Type {
 						c.emit(t, vm.Addr)
 					}
+					c.emitNumConvert(t, ts.Type.Elem(), vs.Type, 0)
 					c.emitIfaceWrap(t, ts.Type.Elem(), vs.Type)
 					c.emit(t, vm.IndexSet)
 				}
@@ -1215,6 +1219,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if ft != nil && ft.Rtype.Kind() == reflect.Func {
 					c.emit(t, vm.WrapFunc, c.typeIndex(ft))
 				}
+				c.emitNumConvert(t, ft, vs.Type, 0)
 				c.emitIfaceWrap(t, ft, vs.Type)
 				c.emit(t, vm.FieldSet, j...)
 
@@ -1238,6 +1243,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if ft != nil && ft.Rtype.Kind() == reflect.Func {
 					c.emit(t, vm.WrapFunc, c.typeIndex(ft))
 				}
+				c.emitNumConvert(t, ft, vs.Type, 0)
 				c.emitIfaceWrap(t, ft, vs.Type)
 				c.emit(t, vm.FieldSet, j...)
 			}
@@ -1354,6 +1360,14 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					c.emitNumConvert(t, lhss[i].Type, rhss[i].Type, 0)
 					switch {
 					case lhss[i].Kind == symbol.LocalVar:
+						// Param slots alias the caller's Value; SetLocal would write through to the caller.
+						// Detach via vm.New, matching the single-assign branch below.
+						if (!lhss[i].Used || lhss[i].IsParam()) && !lhss[i].NeedsCell() {
+							typeIdx := c.typeSym(lhss[i].Type).Index
+							c.fixPtrFnewE(lhss[i].Type, typeIdx)
+							c.emit(t, vm.New, lhss[i].Index, typeIdx)
+							lhss[i].Used = true
+						}
 						if lhss[i].CellSlot {
 							c.emit(t, vm.CellSet, lhss[i].Index)
 						} else {
