@@ -2941,8 +2941,13 @@ func (m *Machine) reflectForSend(val Value, elemType reflect.Type) reflect.Value
 	if elemType.Kind() == reflect.Func {
 		return m.wrapForFunc(val, elemType)
 	}
-	// Bridge-wrap so the value satisfies the interface.
+	// Bridge-wrap so the value satisfies the interface. Keep the Iface in
+	// `any` slots: identity rides on Iface.Typ, but mvm placeholder/basic
+	// rtypes can alias across distinct interpreted types (see setFuncField).
 	if elemType.Kind() == reflect.Interface && val.IsIface() {
+		if elemType == AnyRtype {
+			return val.Reflect()
+		}
 		return m.bridgeIface(val.IfaceVal(), elemType)
 	}
 	rv := val.Reflect()
@@ -3505,10 +3510,13 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 	}
 	if fv.Kind() == reflect.Interface && val.IsIface() {
 		iv := val.IfaceVal()
-		// Unwrap Iface for native types so reflect-based code (e.g. fmt.Println)
-		// sees raw Go values. Keep Iface for interpreted types that need it for
-		// method dispatch.
-		if len(iv.Typ.Methods) == 0 {
+		// Unwrap Iface for native types so reflect-based code sees raw Go
+		// values. Keep it for methodful types (dispatch) and for interpreted
+		// named types whose rtype loses identity (StructOf placeholders, or
+		// basic kinds shared across typedefs like `type Foo int` vs
+		// `type Bar int`) — otherwise `.(T)`/type-switch collides on Rtype.
+		keepInterpreted := iv.Typ.Name != "" && iv.Typ.Name != iv.Typ.Rtype.Name()
+		if len(iv.Typ.Methods) == 0 && !keepInterpreted {
 			if iv.Typ.Rtype.Kind() == reflect.Func {
 				// Wrap interpreted func so native method lookup works.
 				fv.Set(m.wrapForFunc(iv.Val, iv.Typ.Rtype))

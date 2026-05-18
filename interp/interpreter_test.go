@@ -2044,6 +2044,64 @@ func F[T int | string](x T) T {
 	return x
 }
 F(42)`, res: "999"},
+
+		// Distinct interpreted types whose rtype identity collides
+		// (StructOf placeholders for `struct{s string}`; basic int rtype
+		// shared by `type Foo int` vs `type Bar int`) must keep their
+		// Iface wrapping through `[]interface{}` storage and append so
+		// the type switch resolves by Iface.Typ.
+		{n: "iface_slice_struct_aliased_rtype", src: `
+type Variant struct{ s string }
+type Extension struct{ s string }
+v := Variant{s: "rozaj"}
+e := Extension{s: "u-va-posix"}
+p := []interface{}{v, e}
+var r string
+for _, x := range p {
+	switch y := x.(type) {
+	case Variant:
+		r += "V:" + y.s + ";"
+	case Extension:
+		r += "E:" + y.s + ";"
+	}
+}
+r`, res: "V:rozaj;E:u-va-posix;"},
+		{n: "iface_slice_int_aliased_rtype", src: `
+type Foo int
+type Bar int
+p := []interface{}{Foo(1), Bar(2)}
+var r string
+for _, x := range p {
+	switch y := x.(type) {
+	case Foo:
+		r += "F" + string(rune('0'+int(y))) + ";"
+	case Bar:
+		r += "B" + string(rune('0'+int(y))) + ";"
+	}
+}
+r`, res: "F1;B2;"},
+		// Append into `[]interface{}`: a methodful interpreted type would
+		// otherwise get bridge-wrapped as *BridgeString and lose identity
+		// in the subsequent type switch.
+		{n: "iface_append_methodful_keeps_identity", src: `
+import "fmt"
+type V struct{ s string }
+type E struct{ s string }
+func (v V) String() string { return "V:" + v.s }
+func (e E) String() string { return "E:" + e.s }
+var p []interface{}
+p = append(p, V{s: "x"})
+p = append(p, E{s: "y"})
+var r string
+for _, x := range p {
+	switch y := x.(type) {
+	case V:
+		r += "v:" + y.s + ";"
+	case E:
+		r += "e:" + y.s + ";"
+	}
+}
+fmt.Sprint(p[0]) + "|" + fmt.Sprint(p[1]) + "|" + r`, res: "V:x|E:y|v:x;e:y;"},
 	})
 }
 

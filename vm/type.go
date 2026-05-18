@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"fmt"
 	"iter"
 	"math"
 	"reflect"
@@ -71,6 +72,16 @@ type TypeElem struct {
 type Iface struct {
 	Typ *Type // concrete mvm type (carries Name for method lookup)
 	Val Value // the concrete value
+}
+
+// Format routes fmt verbs to the concrete value so an Iface boxed in an
+// interface{} slot renders like the raw Go value.
+func (i Iface) Format(s fmt.State, verb rune) {
+	if !i.Val.IsValid() {
+		_, _ = fmt.Fprint(s, "<nil>")
+		return
+	}
+	_, _ = fmt.Fprintf(s, fmt.FormatString(s, verb), Exportable(i.Val.ref).Interface())
 }
 
 // AnyRtype is the reflect.Type for the empty interface (any).
