@@ -83,6 +83,32 @@ var InterfaceBridges = map[reflect.Type]reflect.Type{}
 // the WriterTo capability so io.Copy's internal type assertion succeeds).
 var CompositeBridges = map[[2]string]reflect.Type{}
 
+// MultiCompositeBridge ties a set of method names to a bridge pointer type
+// that implements all of them. Used when 3+ methods must coexist on the
+// host-side proxy (e.g. Error+Is+As+Unwrap for multierror's chain so
+// stderrors.Is/As reach the interpreted Is/As bodies; a pair-only composite
+// would hide Is/As and break the chain walk).
+type MultiCompositeBridge struct {
+	Methods []string // sorted method names; the bridge must implement all
+	Type    reflect.Type
+}
+
+// multiCompositeBridges is kept sorted by descending len(Methods) so
+// wrapIface picks the richest match first.
+var multiCompositeBridges []MultiCompositeBridge
+
+// RegisterMultiCompositeBridge installs mcb, preserving the
+// richest-first ordering wrapIface relies on.
+func RegisterMultiCompositeBridge(mcb MultiCompositeBridge) {
+	multiCompositeBridges = append(multiCompositeBridges, mcb)
+	for i := len(multiCompositeBridges) - 1; i > 0; i-- {
+		if len(multiCompositeBridges[i].Methods) <= len(multiCompositeBridges[i-1].Methods) {
+			break
+		}
+		multiCompositeBridges[i], multiCompositeBridges[i-1] = multiCompositeBridges[i-1], multiCompositeBridges[i]
+	}
+}
+
 // IfaceFallbackHook is consulted by bridgeIface when no bridgeable method
 // matches the target interface (typically `any`). It lets a higher layer
 // (e.g. stdlib) substitute a custom wrapper that preserves mvm-level type

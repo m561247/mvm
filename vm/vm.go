@@ -2100,18 +2100,15 @@ func (m *Machine) Run() (err error) {
 		case HeapAlloc:
 			cell := new(Value)
 			*cell = mem[sp] // initialise cell with top-of-stack value
-			// Detach addressable refs to prevent aliasing: a frame slot ref may
-			// be reused/overwritten after the cell is created, and value-receiver
-			// methods need their own storage so field writes don't leak to caller.
-			// Allocate a fresh reflect.Value (not reflect.Zero) so that Reflect() returns
-			// the correct captured value via cell.ref.
+			// Detach addressable refs so a later overwrite of the source slot
+			// (per-iteration loop variable, value-receiver mutation) does not
+			// leak through into closures/cells that captured it.
 			if cell.ref.CanAddr() {
-				switch k := cell.ref.Kind(); {
-				case isNum(k):
+				if k := cell.ref.Kind(); isNum(k) {
 					rv := reflect.New(cell.ref.Type()).Elem()
 					setNumReflect(rv, cell.num)
 					cell.ref = rv
-				case k == reflect.Struct || k == reflect.Array:
+				} else {
 					rv := reflect.New(cell.ref.Type()).Elem()
 					rv.Set(cell.ref)
 					cell.ref = rv
@@ -3862,6 +3859,23 @@ func (m *Machine) wrapIface(ifc Iface, targetType reflect.Type) reflect.Value {
 		}
 	}
 
+	// Multi-method composite bridges are checked first: every declared
+	// method must be present on the source so wrapIfaceMulti leaves no
+	// Fn<MethodName> field nil.
+	if nonEmpty && count >= 3 {
+		for _, mcb := range multiCompositeBridges {
+			if len(mcb.Methods) > count || !subsetOfBridged(mcb.Methods, bridged[:count]) {
+				continue
+			}
+			if !mcb.Type.Implements(targetType) {
+				continue
+			}
+			if w := m.wrapIfaceMulti(ifc, mcb.Type); w.IsValid() {
+				return w
+			}
+		}
+	}
+
 	// Try composite bridge if 2+ bridgeable methods and target is a non-empty interface.
 	if count >= 2 && nonEmpty && len(CompositeBridges) > 0 {
 		for i := 0; i < count; i++ {
@@ -3981,6 +3995,24 @@ var ifaceMetaType = reflect.TypeOf(Iface{})
 type bridgedMethod struct {
 	name   string
 	method Method
+}
+
+// subsetOfBridged reports whether every name in want appears in have.
+// Used by wrapIface to gate a MultiCompositeBridge candidate.
+func subsetOfBridged(want []string, have []bridgedMethod) bool {
+	for _, name := range want {
+		found := false
+		for i := range have {
+			if have[i].name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // wrapIfaceMulti creates a bridge that implements a multi-method interface

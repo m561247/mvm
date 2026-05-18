@@ -271,6 +271,63 @@ func (b *BridgeErrorUnwrap) Is(target error) bool {
 
 func (b *BridgeErrorUnwrap) bridgeVal() any { return b.Val }
 
+// BridgeIs and BridgeAs exist so that an Is or As method gets counted
+// as bridgeable when wrapIface selects a multi-method composite. The
+// Val/Ifc-carrying fields live on the composite bridge instead.
+type BridgeIs struct{ Fn func(error) bool }
+
+// Is implements interface{ Is(error) bool }.
+func (b *BridgeIs) Is(target error) bool { return b.Fn(target) }
+
+// BridgeAs - see BridgeIs.
+type BridgeAs struct{ Fn func(any) bool }
+
+// As implements interface{ As(any) bool }.
+func (b *BridgeAs) As(target any) bool { return b.Fn(target) }
+
+// BridgeErrorIsAsUnwrap is the composite bridge for types that implement
+// Error + Is + As + Unwrap (e.g. hashicorp/go-multierror's chain),
+// required so stderrors.Is/As reach the interpreted Is/As when walking
+// the chain instead of falling back to Unwrap-only.
+type BridgeErrorIsAsUnwrap struct {
+	FnError  func() string
+	FnIs     func(error) bool
+	FnAs     func(any) bool
+	FnUnwrap func() error
+	FnFormat func(fmt.State, rune)
+	Val      any
+	Ifc      vm.Iface
+}
+
+// Error implements the error interface.
+func (b *BridgeErrorIsAsUnwrap) Error() string { return b.FnError() }
+
+// Unwrap implements interface{ Unwrap() error }.
+func (b *BridgeErrorIsAsUnwrap) Unwrap() error { return b.FnUnwrap() }
+
+// Is enables stderrors.Is to short-circuit on cross-bridge identity and
+// otherwise delegates to the interpreted Is body.
+func (b *BridgeErrorIsAsUnwrap) Is(target error) bool {
+	if t, ok := target.(bridgedValue); ok && b.Val != nil && b.Val == t.bridgeVal() {
+		return true
+	}
+	return b.FnIs(target)
+}
+
+// As delegates to the interpreted As body.
+func (b *BridgeErrorIsAsUnwrap) As(target any) bool { return b.FnAs(target) }
+
+// Format implements fmt.Formatter, routing to user code when present.
+func (b *BridgeErrorIsAsUnwrap) Format(f fmt.State, verb rune) {
+	if b.FnFormat != nil {
+		b.FnFormat(f, verb)
+		return
+	}
+	formatBridgeDisplay(f, verb, b.Error, b.Val)
+}
+
+func (b *BridgeErrorIsAsUnwrap) bridgeVal() any { return b.Val }
+
 // BridgeFlagValue bridges flag.Value (String, Set).
 type BridgeFlagValue struct {
 	FnString func() string
@@ -296,11 +353,18 @@ func init() {
 	vm.Bridges["WriteTo"] = reflect.TypeOf((*BridgeWriteTo)(nil))
 	vm.Bridges["ReadFrom"] = reflect.TypeOf((*BridgeReadFrom)(nil))
 	vm.Bridges["Unwrap"] = reflect.TypeOf((*BridgeUnwrap)(nil))
+	vm.Bridges["Is"] = reflect.TypeOf((*BridgeIs)(nil))
+	vm.Bridges["As"] = reflect.TypeOf((*BridgeAs)(nil))
 
 	vm.CompositeBridges[[2]string{"Read", "WriteTo"}] = reflect.TypeOf((*BridgeReaderWriterTo)(nil))
 	vm.CompositeBridges[[2]string{"ReadFrom", "Write"}] = reflect.TypeOf((*BridgeWriterReaderFrom)(nil))
 	// Sorted alphabetically: Error < Unwrap.
 	vm.CompositeBridges[[2]string{"Error", "Unwrap"}] = reflect.TypeOf((*BridgeErrorUnwrap)(nil))
+
+	vm.RegisterMultiCompositeBridge(vm.MultiCompositeBridge{
+		Methods: []string{"As", "Error", "Is", "Unwrap"}, // alphabetical
+		Type:    reflect.TypeOf((*BridgeErrorIsAsUnwrap)(nil)),
+	})
 
 	// Display bridges are used when the target is interface{}/any.
 	// MarshalJSON/UnmarshalJSON are deliberately omitted: they are not
@@ -313,6 +377,7 @@ func init() {
 
 	vm.ValBridgeTypes[reflect.TypeOf((*BridgeError)(nil))] = true
 	vm.ValBridgeTypes[reflect.TypeOf((*BridgeErrorUnwrap)(nil))] = true
+	vm.ValBridgeTypes[reflect.TypeOf((*BridgeErrorIsAsUnwrap)(nil))] = true
 	vm.ValBridgeTypes[reflect.TypeOf((*BridgeGoString)(nil))] = true
 	vm.ValBridgeTypes[reflect.TypeOf((*BridgeString)(nil))] = true
 

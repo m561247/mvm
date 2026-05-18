@@ -2352,6 +2352,43 @@ func f() int {
 	return makeMid()()
 }
 f()`, res: "7"},
+		// Per-iteration snapshot for non-numeric range variables. HeapAlloc
+		// must detach addressable string/slice/interface refs from the loop
+		// slot so each closure captures its own value; regression flattened
+		// all captures to the last iteration's value.
+		{n: "range_string_snapshot", src: `
+func f() string {
+	vals := []string{"a", "b"}
+	var out string
+	fns := []func(){}
+	for _, v := range vals {
+		fns = append(fns, func() { out += v })
+	}
+	for _, fn := range fns {
+		fn()
+	}
+	return out
+}
+f()`, res: "ab"},
+		// Same shape with an interface-typed range variable: the surface
+		// symptom in go-multierror's TestGroup.
+		{n: "range_iface_snapshot", src: `
+func f() string {
+	vals := []any{"x", "y"}
+	var out string
+	fns := []func(){}
+	for _, v := range vals {
+		fns = append(fns, func() {
+			s, _ := v.(string)
+			out += s
+		})
+	}
+	for _, fn := range fns {
+		fn()
+	}
+	return out
+}
+f()`, res: "xy"},
 	})
 }
 
@@ -2447,6 +2484,38 @@ type withStack struct { error }
 w := &withStack{errors.New("inner")}
 vals := []error{nil, errors.New("a"), w}
 vals[2].Error()`, res: "inner"},
+
+		// Multierror-style chain: interpreted type implements Error + Is +
+		// As + Unwrap. stderrors.Is/As must reach the interpreted Is/As
+		// bodies so the chain element comparison fires. Regression: bridge
+		// composite only carried Error+Unwrap, so Is/As fell back to direct
+		// equality and Unwrap-only walks, never matching the chain element.
+		{n: "errors_chain_is_as_unwrap", src: `
+import "errors"
+type chain []error
+func (c chain) Error() string { return c[0].Error() }
+func (c chain) Unwrap() error { if len(c) == 1 { return nil }; return c[1:] }
+func (c chain) Is(target error) bool { return errors.Is(c[0], target) }
+func (c chain) As(target any) bool   { return errors.As(c[0], target) }
+type matchErr struct{}
+func (*matchErr) Error() string { return "match" }
+foo := errors.New("foo")
+bar := errors.New("bar")
+m := &matchErr{}
+c := chain{foo, bar, m}
+var got *matchErr
+ok := errors.Is(c, bar) && errors.As(c, &got) && got != nil
+ok`, res: "true"},
+
+		// Named slice type preserved through s[1:]: the slice expression
+		// must keep coll.Type so the result still routes method calls to
+		// the named type's method set.
+		{n: "named_slice_preserved_on_slice_expr", src: `
+type S []int
+func (s S) Head() int { return s[0] }
+s := S{10, 20, 30}
+tail := s[1:]
+tail.Head()`, res: "20"},
 	})
 }
 

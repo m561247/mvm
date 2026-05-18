@@ -2242,14 +2242,17 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				c.emit(t, vm.Slice)
 				stack = stack[:len(stack)-3]
 			}
+			// Slicing a slice/string yields the same named type; only an
+			// array or *array operand produces a fresh []T result.
+			resType := coll.Type
 			rtype := coll.Type.Rtype
 			if rtype.Kind() == reflect.Pointer && rtype.Elem().Kind() == reflect.Array {
 				rtype = rtype.Elem()
 			}
 			if rtype.Kind() == reflect.Array {
-				rtype = reflect.SliceOf(rtype.Elem())
+				resType = &vm.Type{Rtype: reflect.SliceOf(rtype.Elem())}
 			}
-			push(&symbol.Symbol{Kind: symbol.Value, Type: &vm.Type{Rtype: rtype}})
+			push(&symbol.Symbol{Kind: symbol.Value, Type: resType})
 
 		case lang.Select:
 			descs := t.Arg[0].([]goparser.SelectCaseDesc)
