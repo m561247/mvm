@@ -673,9 +673,12 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 				p.SymSet(k, &symbol.Symbol{Index: symbol.UnsetAddr, Name: k, Kind: symbol.Value, PkgPath: pp, Value: v})
 			}
 		}
-	} else {
+	} else if n != "_" {
 		// pkgKey-qualify so two pkgs both `import "x/y"` keep distinct alias
 		// entries instead of clobbering the bare `y` key.
+		// Blank-import (`import _ "path"`) is side-effect-only per Go spec and
+		// must not bind a name -- registering "_" as a Pkg symbol would shadow
+		// the blank identifier in tuple-assign LHS lookups.
 		p.SymSet(p.pkgKey(n), &symbol.Symbol{Kind: symbol.Pkg, PkgPath: pp, Index: symbol.UnsetAddr, Name: n})
 	}
 	return out, err
