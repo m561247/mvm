@@ -93,6 +93,7 @@ mvm -e 'http.ListenAndServe(":8080", http.FileServer(http.Dir(".")))'
 - [docs/architecture.md](docs/architecture.md): pipeline, memory model, key design decisions
 - [docs/modules/](docs/modules/): per-package reference
 - [docs/decisions/](docs/decisions/): architecture decision records (ADRs)
+- [CHANGELOG.md](CHANGELOG.md): release notes
 
 ## Build
 
