@@ -847,7 +847,11 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
-			push(&symbol.Symbol{Type: booleanOpType(pop(), pop())})
+			s2, s1 := pop(), pop()
+			typ := arithmeticOpType(s2, s1)
+			c.emitNumConvert(t, typ, s2.Type, 0)
+			c.emitNumConvert(t, typ, s1.Type, 1)
+			push(&symbol.Symbol{Type: booleanOpType(s2, s1)})
 			c.emit(t, vm.Equal)
 			c.emit(t, vm.Not)
 
@@ -1526,7 +1530,11 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			if err := checkTopN(t, 2); err != nil {
 				return err
 			}
-			push(&symbol.Symbol{Type: booleanOpType(pop(), pop())})
+			s2, s1 := pop(), pop()
+			typ := arithmeticOpType(s2, s1)
+			c.emitNumConvert(t, typ, s2.Type, 0)
+			c.emitNumConvert(t, typ, s1.Type, 1)
+			push(&symbol.Symbol{Type: booleanOpType(s2, s1)})
 			c.emit(t, vm.Equal)
 
 		case lang.EqualSet:

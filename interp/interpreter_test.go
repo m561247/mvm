@@ -153,6 +153,16 @@ func TestNumericWidening(t *testing.T) {
 		// math.MaxUint64 is bound as a typed uint64 in stdlib; comparing
 		// float64 against it must widen the uint64 to float64.
 		{n: "float_ge_math_maxuint64", src: `import "math"; var f float64 = 42; f >= math.MaxUint64`, res: "false"},
+
+		// float32 var compared against an untyped float const: the const
+		// must narrow to float32 precision before the bit compare, otherwise
+		// Float64bits(-172e12) != Float64bits(float64(float32(-172e12))).
+		{n: "float32_eq_untyped_const", src: `var v float32 = -172e12; v == -172e12`, res: "true"},
+		{n: "float32_neq_untyped_const", src: `var v float32 = -172e12; v != -172e12`, res: "false"},
+		{n: "float32_const_eq_var", src: `var v float32 = -172e12; -172e12 == v`, res: "true"},
+		// float64 var vs int untyped const: int must widen to float64.
+		{n: "float64_eq_int_const", src: `var v float64 = 10.0; v == 10`, res: "true"},
+		{n: "float64_neq_int_const", src: `var v float64 = 11.0; v != 10`, res: "true"},
 	})
 }
 
