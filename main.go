@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -88,25 +89,21 @@ func (t *traceFlag) Set(s string) error {
 	return nil
 }
 
-// setupStats wires the -stat flag's exit-time and post-run print paths.
-// Returns a once-guarded flush closure: the caller defers it and may also
-// invoke it manually (e.g. before testing.Main's native os.Exit bypasses
-// host defers). When enabled is false the closure is a no-op.
+// setupStats returns a once-guarded flush closure for the -stat summary,
+// or a no-op when enabled is false.
 func setupStats(i *interp.Interp, mfs *modfs.FS, enabled bool) func() {
 	if !enabled {
 		return func() {}
 	}
-	format := func() string {
+	return sync.OnceFunc(func() {
 		out := interp.FormatStats(i)
-		if mfs == nil {
-			return out
+		if mfs != nil {
+			ns := mfs.NetStats()
+			out += fmt.Sprintf("  network:  %d requests, %s in %v\n",
+				ns.Requests, humanBytes(ns.BytesFetched), ns.FetchTime)
 		}
-		ns := mfs.NetStats()
-		return out + fmt.Sprintf("  network:  %d requests, %s in %v\n",
-			ns.Requests, humanBytes(ns.BytesFetched), ns.FetchTime)
-	}
-	interp.InstallStatsExitHook(i, format)
-	return sync.OnceFunc(func() { _, _ = fmt.Fprint(os.Stderr, format()) })
+		_, _ = fmt.Fprint(os.Stderr, out)
+	})
 }
 
 // humanBytes formats a byte count with a binary-unit suffix.
@@ -140,6 +137,10 @@ func (t *newlineTracker) Write(p []byte) (int, error) {
 
 func main() {
 	if err := dispatch(os.Args[1:]); err != nil {
+		var ee *interp.ExitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.Code)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -230,7 +231,7 @@ func runCmd(arg []string) error {
 
 	out := &newlineTracker{w: os.Stdout}
 	i.SetIO(os.Stdin, out, os.Stderr)
-	flushStats := setupStats(i, mfs, stat)
+	defer setupStats(i, mfs, stat)()
 
 	var err error
 	switch {
@@ -261,7 +262,6 @@ func runCmd(arg []string) error {
 	if out.written && out.last != '\n' {
 		_, _ = fmt.Fprintln(os.Stdout)
 	}
-	flushStats()
 	return err
 }
 
@@ -348,9 +348,9 @@ func testCmd(arg []string) error {
 		i.SetTraceOps(true)
 	}
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
-	// testing.Main calls runtime os.Exit; flushStats fires before each
-	// driver invocation so stats survive the bypass. defer covers paths
-	// that never reach the driver (load errors, no tests found).
+	// testing.Main ends in a host os.Exit that bypasses defer; flush stats
+	// manually before each driver invocation, and let the deferred copy
+	// cover paths that never reach the driver (load errors, no tests).
 	flushStats := setupStats(i, mfs, stat)
 	defer flushStats()
 
@@ -502,6 +502,11 @@ func runTestDriver(i *interp.Interp) error {
 	// data segment. On large packages (e.g. golang.org/x/text/language) that
 	// snowballed into minutes-long hangs and gigabytes of allocations under
 	// `mvm test -run=X`. Passing the native func value avoids the bridge.
+	//
+	// testing.Main calls native os.Exit on completion, bypassing host defers
+	// (including -stat flush). Switching to a non-exit-calling driver
+	// (testing.RunTests) is intended but blocked: RunTests reads private
+	// cpuList state only set by M.Run()'s parseCpuList(). See ADR-018.
 	driver.WriteString("testing.Main(regexp.MatchString, []testing.InternalTest{")
 	for _, name := range testNames {
 		fmt.Fprintf(&driver, "{Name: %q, F: %s},", name, name)

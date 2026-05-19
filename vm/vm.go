@@ -9,6 +9,7 @@ import (
 	"math/bits"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"unsafe" // to allow setting unexported struct fields //nolint:depguard
@@ -738,6 +739,17 @@ func (m *Machine) recoverPanic(err *error) {
 		if pe, ok := r.(*PanicError); ok {
 			*err = pe
 			return
+		}
+		// Clean-exit signals (anything implementing error that is not a
+		// runtime.Error) flow through unwrapped, e.g. *interp.ExitError
+		// from the virtualized os.Exit / log.Fatal* bindings. capturePanic
+		// is reserved for genuine runtime crashes (nil deref, divide by
+		// zero, reflect.Convert mismatch).
+		if e, ok := r.(error); ok {
+			if _, isRuntimeErr := r.(runtime.Error); !isRuntimeErr {
+				*err = e
+				return
+			}
 		}
 		*err = m.capturePanic(r)
 	}

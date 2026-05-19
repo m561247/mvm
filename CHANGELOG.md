@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `interp.ExitError` lets embedders catch interpreted `os.Exit` and
+  `log.Fatal*` as a typed error rather than having the host process
+  terminate.
+  `i.Eval` returns `*interp.ExitError` whenever interpreted code reaches
+  an exit path; `errors.As` recovers the exit code.
+  The `mvm run` CLI translates the error back into a host `os.Exit(code)`
+  so the user-facing exit status is unchanged.
+  See ADR-018.
+
+### Changed
+
+- `interp.InstallStatsExitHook` is removed.
+  Exit virtualization is now unconditional and wired automatically on
+  first `Eval`, so the hook is no longer needed.
+
 ## [0.2.0] - 2026-05-18
 
 ### Added

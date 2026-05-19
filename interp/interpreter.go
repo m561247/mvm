@@ -3,6 +3,7 @@ package interp
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"reflect"
@@ -18,6 +19,15 @@ import (
 	"github.com/mvm-sh/mvm/symbol"
 	"github.com/mvm-sh/mvm/vm"
 )
+
+// ExitError is the error returned from Eval when interpreted code calls
+// os.Exit, log.Fatal*, or any other path that bottoms out in the bound
+// os.Exit stub. Callers type-assert (or errors.As) to recover Code and
+// decide the host process exit status; treating it as a plain error is
+// also fine for embedders that do not need the code.
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
 
 var (
 	debug              = os.Getenv("MVM_DEBUG") != ""
@@ -122,20 +132,29 @@ func (i *Interp) Eval(name, src string) (res reflect.Value, err error) {
 	return i.Top().Reflect(), err
 }
 
-// InstallStatsExitHook overrides the bound os.Exit with a wrapper that
-// writes format() to stderr before calling the real os.Exit. Used by the
-// CLI to flush stats on the os.Exit path; native bridges like testing.Main
-// still bypass it (they call the host runtime's os.Exit directly). No-op
-// if the os package is not bound on i (e.g. stripped-down embed).
-func InstallStatsExitHook(i *Interp, format func() string) {
-	pkg, ok := i.Packages["os"]
-	if !ok {
-		return
+// installExitVirtualization rebinds os.Exit and log.Fatal* so interpreted
+// code's exit paths surface as *ExitError from Eval rather than killing the
+// host process. No-op for packages the embedder did not import.
+func (i *Interp) installExitVirtualization() {
+	if pkg, ok := i.Packages["os"]; ok {
+		pkg.Values["Exit"] = vm.FromReflect(reflect.ValueOf(func(code int) {
+			panic(&ExitError{Code: code})
+		}))
 	}
-	pkg.Values["Exit"] = vm.FromReflect(reflect.ValueOf(func(code int) {
-		_, _ = fmt.Fprint(os.Stderr, format())
-		os.Exit(code)
-	}))
+	if pkg, ok := i.Packages["log"]; ok {
+		pkg.Values["Fatal"] = vm.FromReflect(reflect.ValueOf(func(a ...any) {
+			log.Print(a...)
+			panic(&ExitError{Code: 1})
+		}))
+		pkg.Values["Fatalf"] = vm.FromReflect(reflect.ValueOf(func(format string, a ...any) {
+			log.Printf(format, a...)
+			panic(&ExitError{Code: 1})
+		}))
+		pkg.Values["Fatalln"] = vm.FromReflect(reflect.ValueOf(func(a ...any) {
+			log.Println(a...)
+			panic(&ExitError{Code: 1})
+		}))
+	}
 }
 
 // FormatStats returns a multi-line summary of an Interp's accumulated work
@@ -180,6 +199,7 @@ func FormatStats(i *Interp) string {
 
 func (i *Interp) patchStdlibOverrides() {
 	i.patchFmtBindings()
+	i.installExitVirtualization()
 	for importPath, fns := range stdlib.PackagePatchers() {
 		pkg, ok := i.Packages[importPath]
 		if !ok {
