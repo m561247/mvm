@@ -134,6 +134,28 @@ func TestExpr(t *testing.T) {
 	})
 }
 
+func TestNumericWidening(t *testing.T) {
+	run(t, []etest{
+		// float64 var < untyped int constant: comparison must widen the
+		// constant to float64 instead of bit-reinterpreting Push(10) as float bits.
+		{n: "float_lt_int_const", src: `var v float64 = 5.5; v < 10`, res: "true"},
+		{n: "float_ge_int_const", src: `var v float64 = 5.5; v >= 10`, res: "false"},
+		{n: "float_lt_int_const_eq", src: `var v float64 = 10.0; v < 10`, res: "false"},
+
+		// map[float64]V composite literal with int-typed key literals: keys
+		// must be float64 in the resulting map so float64 lookups hit.
+		{n: "map_float_key_int_lit", src: `m := map[float64]string{-30: "q", 0: "z", 3: "k"}; m[3.0] + m[-30.0] + m[0.0]`, res: "kqz"},
+
+		// float64 -> uint64 conversion for values above MaxInt64 must
+		// not saturate through an int64 intermediate.
+		{n: "uint64_from_large_float", src: `var f float64 = 1.25e19; uint64(f)`, res: "12500000000000000000"},
+
+		// math.MaxUint64 is bound as a typed uint64 in stdlib; comparing
+		// float64 against it must widen the uint64 to float64.
+		{n: "float_ge_math_maxuint64", src: `import "math"; var f float64 = 42; f >= math.MaxUint64`, res: "false"},
+	})
+}
+
 func TestParseErrorPos(t *testing.T) {
 	run(t, []etest{
 		{n: "import_in_func", src: `func main() { import "fmt" }`, err: `test:1:15: unexpected import inside function body`},

@@ -607,9 +607,16 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 				}
 			}
 		case isFloat(srcKind):
-			// float -> int: truncate.
+			// float -> int/uint: truncate. Route unsigned destinations
+			// through uint64(f) directly: `int64(f)` is undefined for
+			// values above MaxInt64 (clamps to MaxInt64 on amd64/arm64),
+			// which would silently saturate uint64 results.
 			f := math.Float64frombits(bits)
-			bits = uint64(int64(f)) //nolint:gosec
+			if dstKind >= reflect.Uint && dstKind <= reflect.Uintptr {
+				bits = uint64(f)
+			} else {
+				bits = uint64(int64(f)) //nolint:gosec
+			}
 		case isFloat(dstKind):
 			// int -> float.
 			if srcKind >= reflect.Uint && srcKind <= reflect.Uintptr {

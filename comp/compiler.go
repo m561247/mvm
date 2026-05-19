@@ -818,7 +818,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			s2, s1 := pop(), pop()
-			typ := symbol.Vtype(s1)
+			typ := arithmeticOpType(s2, s1)
+			c.emitNumConvert(t, typ, s2.Type, 0)
+			c.emitNumConvert(t, typ, s1.Type, 1)
 			push(&symbol.Symbol{Kind: symbol.Value, Type: booleanOpType(s2, s1)})
 			switch t.Tok {
 			case lang.Greater:
@@ -1192,6 +1194,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			// The key may be any kind of expression, so this must come before the ks.Kind switch.
 			if ts.Type != nil && ts.Type.Rtype.Kind() == reflect.Map {
 				elemTyp := ts.Type.Elem()
+				c.emitNumConvert(t, ts.Type.Key(), ks.Type, 1)
 				if elemTyp.IsPtr() && vs.Kind == symbol.Type {
 					c.emit(t, vm.Addr)
 				}
