@@ -3625,11 +3625,7 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 	}
 	if fv.Kind() == reflect.Interface && val.IsIface() {
 		iv := val.IfaceVal()
-		// Unwrap Iface for native types so reflect-based code sees raw Go
-		// values. Keep it for methodful types (dispatch) and for interpreted
-		// named types whose rtype loses identity (StructOf placeholders, or
-		// basic kinds shared across typedefs like `type Foo int` vs
-		// `type Bar int`) — otherwise `.(T)`/type-switch collides on Rtype.
+		// Unwrap Iface for native types so reflect-based code sees raw Go values.
 		keepInterpreted := iv.Typ.Name != "" && iv.Typ.Name != iv.Typ.Rtype.Name()
 		if len(iv.Typ.Methods) == 0 && !keepInterpreted {
 			if iv.Typ.Rtype.Kind() == reflect.Func {

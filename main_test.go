@@ -1,8 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mvm-sh/mvm/stdlib/stdmod"
@@ -91,5 +96,148 @@ func TestEmbeddedStdResolves(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Error("slices/slices.go empty")
+	}
+}
+
+func TestFilterTopLevelTests(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		args []string
+		want []string
+	}{
+		{"no filter", []string{"TestA", "TestB"}, nil, []string{"TestA", "TestB"}},
+		{"run match", []string{"TestA", "TestB"}, []string{"-test.run=TestA"}, []string{"TestA"}},
+		{"run subtest segment ignored", []string{"TestA", "TestB"}, []string{"-test.run=TestA/sub"}, []string{"TestA"}},
+		{"run space-separated", []string{"TestA", "TestB"}, []string{"-test.run", "TestB"}, []string{"TestB"}},
+		{"run alternation", []string{"TestA", "TestB", "TestC"}, []string{"-test.run=TestA|TestC"}, []string{"TestA", "TestC"}},
+		{"skip match", []string{"TestA", "TestB"}, []string{"-test.skip=TestB"}, []string{"TestA"}},
+		{"run + skip", []string{"TestAlpha", "TestBeta", "TestGamma"}, []string{"-test.run=Test", "-test.skip=Beta"}, []string{"TestAlpha", "TestGamma"}},
+		{"run no match", []string{"TestA"}, []string{"-test.run=NoSuch"}, []string{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Copy input -- filterTopLevelTests reuses the backing array.
+			in := append([]string(nil), c.in...)
+			got := filterTopLevelTests(in, c.args)
+			if len(got) == 0 && len(c.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// buildMvm builds the mvm binary into a temp dir and returns its path.
+// Shared by the -stat integration tests.
+func buildMvm(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "mvm")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// TestStatOrderingAfterTests asserts the stats block appears AFTER the test
+// body's stdout. Stats fire from a t.Cleanup, so they precede the package
+// PASS line but follow the test body's output; this guards that ordering.
+func TestStatOrderingAfterTests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short")
+	}
+
+	fixture := t.TempDir()
+	src := `package x
+import "fmt"
+import "testing"
+func TestSentinel(t *testing.T) { fmt.Println("SENTINEL_OUTPUT") }
+`
+	if err := os.WriteFile(filepath.Join(fixture, "x_test.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := buildMvm(t)
+	out, err := exec.Command(bin, "test", "-stat", fixture).CombinedOutput() //nolint:gosec // bin is a freshly-built copy of our own binary in a t.TempDir
+	if err != nil {
+		t.Fatalf("mvm test: %v\n%s", err, out)
+	}
+	s := string(out)
+	sentinel := strings.Index(s, "SENTINEL_OUTPUT")
+	stats := strings.Index(s, "mvm stats:")
+	pass := strings.Index(s, "PASS")
+	switch {
+	case sentinel < 0:
+		t.Fatalf("test body did not run (no SENTINEL_OUTPUT):\n%s", s)
+	case stats < 0:
+		t.Fatalf("no stats block:\n%s", s)
+	case pass < 0:
+		t.Fatalf("no PASS line:\n%s", s)
+	case stats < sentinel:
+		t.Errorf("stats appeared BEFORE test output; want after:\n%s", s)
+	case pass < stats:
+		t.Errorf("PASS appeared BEFORE stats; the counter callback should fire before testing prints PASS:\n%s", s)
+	}
+}
+
+// TestStatFlushAcrossFailureModes guards the t.Cleanup-based counter design:
+// stats must flush even when tests exit via t.Errorf (plain fail), t.Fatal
+// (runtime.Goexit), or t.Skip (runtime.Goexit). The Goexit paths are the
+// reason the wrapper registers t.Cleanup instead of a defer -- testing's
+// runner always processes cleanups regardless of how the test exited, while
+// native Goexit would bypass mvm's VM defer registry. Panicking tests are
+// out of scope per ADR-018 (testing re-panics and crashes the process).
+func TestStatFlushAcrossFailureModes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short")
+	}
+
+	bin := buildMvm(t)
+	cases := []struct {
+		name        string
+		body        string
+		wantExit    int
+		wantSummary string
+	}{
+		{"Errorf", `t.Errorf("plain fail")`, 1, "FAIL"},
+		{"Fatal", `t.Fatal("hard fail via Goexit")`, 1, "FAIL"},
+		{"Skip", `t.Skip("skipped via Goexit")`, 0, "PASS"},
+	}
+	const tmpl = `package x
+import "testing"
+func TestA(t *testing.T) {}
+func TestFailing(t *testing.T) { %s }
+func TestZ(t *testing.T) {}
+`
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fixture := t.TempDir()
+			src := fmt.Sprintf(tmpl, c.body)
+			if err := os.WriteFile(filepath.Join(fixture, "x_test.go"), []byte(src), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(bin, "test", "-stat", fixture) //nolint:gosec // bin is buildMvm's t.TempDir output
+			out, err := cmd.CombinedOutput()
+			s := string(out)
+			gotExit := 0
+			if err != nil {
+				if ee, ok := err.(*exec.ExitError); ok {
+					gotExit = ee.ExitCode()
+				} else {
+					t.Fatalf("unexpected error: %v\n%s", err, s)
+				}
+			}
+			if gotExit != c.wantExit {
+				t.Errorf("exit = %d, want %d:\n%s", gotExit, c.wantExit, s)
+			}
+			if !strings.Contains(s, "mvm stats:") {
+				t.Errorf("stats block missing -- counter did not reach zero, suggesting a cleanup path was skipped:\n%s", s)
+			}
+			if !strings.Contains(s, c.wantSummary) {
+				t.Errorf("expected summary %q in output:\n%s", c.wantSummary, s)
+			}
+		})
 	}
 }

@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `interp.InstallStatsExitHook` is removed.
   Exit virtualization is now unconditional and wired automatically on
   first `Eval`, so the hook is no longer needed.
+- `mvm test -stat` now prints the stats block *after* the test output
+  (just before the package-level `PASS`/`FAIL` line) instead of before
+  the driver runs.
+  The `_testmain` driver wraps each test in a `t.Cleanup` that
+  decrements an atomic counter; when the last test completes, mvm
+  flushes `-stat` to stderr before native `testing.Main` reaches
+  `os.Exit`.
+  See ADR-018.
 
 ## [0.2.0] - 2026-05-18
 

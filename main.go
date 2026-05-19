@@ -9,10 +9,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"testing"
 
 	"github.com/mvm-sh/mvm/interp"
 	"github.com/mvm-sh/mvm/lang/golang"
@@ -348,9 +352,11 @@ func testCmd(arg []string) error {
 		i.SetTraceOps(true)
 	}
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
-	// testing.Main ends in a host os.Exit that bypasses defer; flush stats
-	// manually before each driver invocation, and let the deferred copy
-	// cover paths that never reach the driver (load errors, no tests).
+	// flushStats covers the load-error / no-tests-found paths via defer;
+	// the driver itself fires flushStats from a per-test counter once the
+	// last test body returns (it can't run from defer because testing.Main
+	// ends in a host os.Exit). flushStats is sync.OnceFunc so the defer
+	// becomes a no-op when the counter already fired.
 	flushStats := setupStats(i, mfs, stat)
 	defer flushStats()
 
@@ -361,8 +367,7 @@ func testCmd(arg []string) error {
 			if err := evalLocalDir(i, absDir, entries); err != nil {
 				return err
 			}
-			flushStats()
-			return runTestsInDir(i, absDir)
+			return runTestsInDir(i, absDir, flushStats)
 		}
 	}
 	i.SetIncludeTests(true)
@@ -379,18 +384,16 @@ func testCmd(arg []string) error {
 		}
 		if dir != "" {
 			defer cleanup()
-			flushStats()
-			return runTestsInDir(i, dir)
+			return runTestsInDir(i, dir, flushStats)
 		}
 	}
-	flushStats()
-	return runTestDriver(i)
+	return runTestDriver(i, flushStats)
 }
 
 // runTestsInDir runs the test driver with cwd set to dir, restoring cwd on
 // return. Cwd matters because `go test` chdirs to the package source dir, and
 // any test using testdata-relative paths depends on that.
-func runTestsInDir(i *interp.Interp, dir string) error {
+func runTestsInDir(i *interp.Interp, dir string, onAllDone func()) error {
 	prev, err := os.Getwd()
 	if err != nil {
 		return err
@@ -399,7 +402,7 @@ func runTestsInDir(i *interp.Interp, dir string) error {
 		return err
 	}
 	defer func() { _ = os.Chdir(prev) }()
-	return runTestDriver(i)
+	return runTestDriver(i, onAllDone)
 }
 
 // materializePkgDir copies the import-path subtree of fsys into a fresh
@@ -486,12 +489,89 @@ func evalLocalDir(i *interp.Interp, absDir string, entries []os.DirEntry) error 
 	return nil
 }
 
-func runTestDriver(i *interp.Interp) error {
-	testNames := i.FuncNames("Test")
+// filterTopLevelTests applies the user's -test.run / -test.skip patterns to
+// the top-level Test* name list, matching what testing's own matcher would
+// admit (only the first path segment is consulted -- subtest filtering still
+// happens inside testing). args is os.Args[1:] (post-rewriteTestFlags).
+func filterTopLevelTests(names, args []string) []string {
+	runRE, skipRE := compileTestFilters(args)
+	if runRE == nil && skipRE == nil {
+		return names
+	}
+	out := names[:0]
+	for _, name := range names {
+		if runRE != nil && !runRE.MatchString(name) {
+			continue
+		}
+		if skipRE != nil && skipRE.MatchString(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// compileTestFilters extracts -test.run / -test.skip patterns from args and
+// compiles their first path segment to a *regexp.Regexp. A nil result means
+// "no filter for that side". Compile errors yield nil (we mirror testing's
+// behavior of failing later in its own verify step).
+func compileTestFilters(args []string) (run, skip *regexp.Regexp) {
+	var runPat, skipPat string
+	for i, a := range args {
+		switch {
+		case a == "-test.run" && i+1 < len(args):
+			runPat = args[i+1]
+		case strings.HasPrefix(a, "-test.run="):
+			runPat = a[len("-test.run="):]
+		case a == "-test.skip" && i+1 < len(args):
+			skipPat = args[i+1]
+		case strings.HasPrefix(a, "-test.skip="):
+			skipPat = a[len("-test.skip="):]
+		}
+	}
+	compile := func(pat string) *regexp.Regexp {
+		if i := strings.Index(pat, "/"); i >= 0 {
+			pat = pat[:i]
+		}
+		if pat == "" {
+			return nil
+		}
+		re, _ := regexp.Compile(pat)
+		return re
+	}
+	return compile(runPat), compile(skipPat)
+}
+
+// runTestDriver synthesizes the _testmain Eval that drives the loaded test
+// package's Test* funcs through native testing.Main. Each test is wrapped
+// via a host-side mvmtest.WrapTest that registers t.Cleanup(oneDone); when
+// the counter hits zero, onAllDone flushes -stat output before testing's
+// native os.Exit terminates the host. See ADR-018 for the design rationale.
+func runTestDriver(i *interp.Interp, onAllDone func()) error {
+	testNames := filterTopLevelTests(i.FuncNames("Test"), os.Args[1:])
 	if len(testNames) == 0 {
 		fmt.Fprintln(os.Stderr, "testing: warning: no tests to run")
 		return nil
 	}
+
+	var remaining atomic.Int32
+	remaining.Store(int32(len(testNames))) //nolint:gosec // bounded by Test* count
+	oneDone := func() {
+		if remaining.Add(-1) == 0 {
+			onAllDone()
+		}
+	}
+	i.ImportPackageValues(map[string]map[string]reflect.Value{
+		"mvmtest": {
+			"WrapTest": reflect.ValueOf(func(f func(*testing.T)) func(*testing.T) {
+				return func(t *testing.T) {
+					t.Cleanup(oneDone)
+					f(t)
+				}
+			}),
+		},
+	})
+	i.AutoImportPackages()
 
 	var driver strings.Builder
 	// Pass regexp.MatchString directly rather than wrapping it in an interpreted
@@ -502,14 +582,9 @@ func runTestDriver(i *interp.Interp) error {
 	// data segment. On large packages (e.g. golang.org/x/text/language) that
 	// snowballed into minutes-long hangs and gigabytes of allocations under
 	// `mvm test -run=X`. Passing the native func value avoids the bridge.
-	//
-	// testing.Main calls native os.Exit on completion, bypassing host defers
-	// (including -stat flush). Switching to a non-exit-calling driver
-	// (testing.RunTests) is intended but blocked: RunTests reads private
-	// cpuList state only set by M.Run()'s parseCpuList(). See ADR-018.
 	driver.WriteString("testing.Main(regexp.MatchString, []testing.InternalTest{")
 	for _, name := range testNames {
-		fmt.Fprintf(&driver, "{Name: %q, F: %s},", name, name)
+		fmt.Fprintf(&driver, "{Name: %q, F: mvmtest.WrapTest(%s)},", name, name)
 	}
 	driver.WriteString("}, nil, nil)")
 	_, err := i.Eval("_testmain", driver.String())
