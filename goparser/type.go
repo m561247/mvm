@@ -252,7 +252,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 			return s2.Type, 2, nil
 		}
 		if s.Kind != symbol.Type {
-			return nil, 0, fmt.Errorf("%w: %s", ErrInvalidType, in[0].Str)
+			return nil, 0, p.wrapAt(in[0], ErrInvalidType, "%s is not a type", in[0].Str)
 		}
 		return s.Type, 1, nil
 
@@ -266,7 +266,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 	case lang.Arrow:
 		// "<-chan T" is recv-only; require chan keyword next.
 		if len(in) < 3 || in[1].Tok != lang.Chan {
-			return nil, 0, fmt.Errorf("%w: %s", ErrInvalidType, in[0].Str)
+			return nil, 0, p.wrapAt(in[0], ErrInvalidType, "expected 'chan' after '<-'")
 		}
 		elemTyp, i, err := p.parseTypeExpr(in[2:])
 		if err != nil {
@@ -276,7 +276,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 
 	case lang.Chan:
 		if len(in) < 2 {
-			return nil, 0, fmt.Errorf("%w: %s", ErrInvalidType, in[0].Str)
+			return nil, 0, p.wrapAt(in[0], ErrInvalidType, "missing element type after 'chan'")
 		}
 		dir := reflect.BothDir
 		rest, skip := in[1:], 1
@@ -291,7 +291,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 
 	case lang.Map:
 		if len(in) < 3 || in[1].Tok != lang.BracketBlock {
-			return nil, 0, fmt.Errorf("%w: %s", ErrInvalidType, in[0].Str)
+			return nil, 0, p.wrapAt(in[0], ErrInvalidType, "expected 'map[KeyType]', got %s", in[0].Describe())
 		}
 		kin, err := p.scanBlock(in[1].Token, false)
 		if err != nil {
@@ -309,7 +309,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 
 	case lang.Interface:
 		if len(in) < 2 || in[1].Tok != lang.BraceBlock {
-			return nil, 0, fmt.Errorf("%w: %v", ErrSyntax, in)
+			return nil, 0, p.wrapAt(in[0], ErrSyntax, "expected 'interface{...}', got %s", in[0].Describe())
 		}
 		if strings.TrimSpace(in[1].Block()) == "" {
 			// Empty interface (equivalent to any).
@@ -335,7 +335,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 				continue
 			}
 			if lt[0].Tok != lang.Ident {
-				return nil, 0, fmt.Errorf("%w: expected method name in interface", ErrSyntax)
+				return nil, 0, p.wrapAt(lt[0], ErrSyntax, "expected method name in interface, got %s", lt[0].Describe())
 			}
 			if len(lt) == 1 || lt[1].Tok != lang.ParenBlock {
 				ifaceType, _, err := p.parseTypeExpr(lt)
@@ -343,7 +343,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 					return nil, 0, err
 				}
 				if !ifaceType.IsInterface() {
-					return nil, 0, fmt.Errorf("%w: %s is not an interface", ErrSyntax, lt[0].Str)
+					return nil, 0, p.wrapAt(lt[0], ErrSyntax, "%s is not an interface", lt[0].Str)
 				}
 				ifaceType.EnsureIfaceMethods()
 				methods = append(methods, ifaceType.IfaceMethods...)
@@ -365,7 +365,8 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 		}, 2, nil
 
 	default:
-		return nil, 0, fmt.Errorf("%w: %v", ErrNotImplemented, in[0].Name())
+		return nil, 0, p.wrapAt(in[0], ErrNotImplemented,
+			"cannot parse type starting with %s", in[0].Describe())
 	}
 }
 

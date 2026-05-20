@@ -44,6 +44,16 @@ func (t *Token) Name() string {
 	return t.Str[:t.Beg] + ".." + t.Str[len(t.Str)-t.End:]
 }
 
+// Describe returns a short human-readable form of t for diagnostics:
+// the token kind plus a quoted, whitespace-collapsed, truncated snippet of its source.
+func (t *Token) Describe() string {
+	s := strings.Join(strings.Fields(t.Str), " ")
+	if len(s) > 60 {
+		s = s[:57] + "..."
+	}
+	return t.Tok.String() + " " + strconv.Quote(s)
+}
+
 func (t *Token) String() string {
 	s := t.Tok.String()
 	if t.Tok.IsLiteral() || t.Tok.IsBlock() || t.Tok == lang.Ident || t.Tok == lang.Comment ||

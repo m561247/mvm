@@ -235,6 +235,15 @@ func (p *Parser) errAt(tok Token, format string, args ...any) error {
 	return errors.New(msg)
 }
 
+// wrapAt wraps base (preserving it for errors.Is) with the source position of tok and a message.
+func (p *Parser) wrapAt(tok Token, base error, format string, args ...any) error {
+	msg := fmt.Sprintf(format, args...)
+	if loc := p.Sources.FormatPos(tok.Pos); loc != "" {
+		return fmt.Errorf("%s: %w: %s", loc, base, msg)
+	}
+	return fmt.Errorf("%w: %s", base, msg)
+}
+
 func (p *Parser) scan(s string, endSemi bool) (out Tokens, err error) {
 	return p.scanAt(0, s, endSemi)
 }
