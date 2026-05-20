@@ -3428,10 +3428,21 @@ func (m *Machine) collectReturns(funcType reflect.Type, nret int) []reflect.Valu
 			// Unwrap Iface return values so MakeFunc callers see the concrete value.
 			// IsIface handles both direct Iface and Iface inside an interface{} slot.
 			rv = m.bridgeIface(m.mem[i].IfaceVal(), funcType.Out(i))
-		} else if outType := funcType.Out(i); rv.Type() != outType && outType.Kind() == reflect.Interface {
-			// Interface locals use interface{} internally; convert to the expected
-			// interface type (e.g. interface{} -> error) for MakeFunc callers.
-			rv = interfaceToInterface(rv, outType)
+		} else if outType := funcType.Out(i); rv.Type() != outType {
+			switch {
+			case outType.Kind() == reflect.Interface:
+				// Interface locals use interface{} internally; convert to the
+				// expected interface type (e.g. interface{} -> error) for
+				// MakeFunc callers.
+				rv = interfaceToInterface(rv, outType)
+			case rv.Type().ConvertibleTo(outType):
+				// A loosely-typed numeric return (e.g. an untyped int constant
+				// returned from a func(rune) rune callback) must be converted
+				// to the declared return type -- which the Go compiler would
+				// have done at the return statement -- before delivery to a
+				// reflect.MakeFunc caller.
+				rv = rv.Convert(outType)
+			}
 		}
 		out[i] = rv
 	}
