@@ -110,6 +110,45 @@ func TestUsesInternalStubs(t *testing.T) {
 	}
 }
 
+// TestBridgedStdlibSkipFiles verifies SetTestSkipFiles excludes named test
+// files from a bridged-stdlib load. This backs `mvm test`'s drop-on-compile-
+// error retry: a file that can't compile against the bridge (e.g. one using
+// export_test.go-only symbols) is recorded and skipped on the next attempt.
+func TestBridgedStdlibSkipFiles(t *testing.T) {
+	mapFS := fstest.MapFS{
+		"strings/good_test.go": &fstest.MapFile{Data: []byte(`package strings_test
+
+import "testing"
+
+func TestGood(t *testing.T) {}
+`)},
+		"strings/bad_test.go": &fstest.MapFile{Data: []byte(`package strings_test
+
+import "testing"
+
+func TestBad(t *testing.T) {}
+`)},
+	}
+
+	var stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, os.Stdout, &stderr)
+	i.SetTestSourceFS(mapFS)
+	i.SetIncludeTests(true)
+	i.SetTestSkipFiles(map[string]bool{"bad_test.go": true})
+	if _, err := i.Eval("strings", ""); err != nil {
+		t.Fatalf("loading strings tests: %v\nstderr: %s", err, stderr.String())
+	}
+	names := i.FuncNames("Test")
+	if !slices.Contains(names, "TestGood") {
+		t.Errorf("TestGood should load; got %v", names)
+	}
+	if slices.Contains(names, "TestBad") {
+		t.Errorf("TestBad is in the skip set and must not load; got %v", names)
+	}
+}
+
 // TestBridgedStdlibTestSourceFSNotConsultedForImports guards the design
 // promise that the test-source FS is invisible to ordinary `import "X"`
 // resolution. If it were chained alongside stdlibfs/remotefs, an import

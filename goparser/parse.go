@@ -21,19 +21,20 @@ type Parser struct {
 
 	Symbols         symbol.SymMap
 	Packages        map[string]*symbol.Package
-	function        *symbol.Symbol // current function
-	scope           string         // current scope
-	fname           string         // current function name
-	pkgName         string         // current package name
-	noPkg           bool           // true if package statement is not mandatory (test, repl).
-	pkgfs           fs.FS          // filesystem to read imported sources from
-	stdlibfs        fs.FS          // fallback filesystem for embedded stdlib sources
-	remotefs        fs.FS          // last-resort filesystem (e.g. network module proxy)
-	testSrcFS       fs.FS          // test-only fs for bridged-stdlib *_test.go sources ($GOROOT/src); never consulted by ordinary import resolution
-	includeTests    bool           // include _test.go files when loading package sources
-	importRemaining []DeferredDecl // code-gen declarations from imported source packages, tagged with their origin package
-	CompilingPkg    string         // while a deferred decl is being parsed/compiled in Phase 2: its origin package's import path ("" = main/REPL); makes unqualified type/name lookups prefer that package's symbols (see symGet, comp.Compiler.symAt)
-	importingPkg    string         // while parseSrc is running for an imported package: its full import path; "" outside any import. Used by pkgKey to qualify top-level Type/Func/Method/Generic symbol keys at definition time (Path B); also probed as a fallback in symGet for Phase-1 lookups.
+	function        *symbol.Symbol  // current function
+	scope           string          // current scope
+	fname           string          // current function name
+	pkgName         string          // current package name
+	noPkg           bool            // true if package statement is not mandatory (test, repl).
+	pkgfs           fs.FS           // filesystem to read imported sources from
+	stdlibfs        fs.FS           // fallback filesystem for embedded stdlib sources
+	remotefs        fs.FS           // last-resort filesystem (e.g. network module proxy)
+	testSrcFS       fs.FS           // test-only fs for bridged-stdlib *_test.go sources ($GOROOT/src); never consulted by ordinary import resolution
+	testSkipFiles   map[string]bool // basenames of bridged-stdlib test files to skip (drop-on-compile-error retry); see SetTestSkipFiles
+	includeTests    bool            // include _test.go files when loading package sources
+	importRemaining []DeferredDecl  // code-gen declarations from imported source packages, tagged with their origin package
+	CompilingPkg    string          // while a deferred decl is being parsed/compiled in Phase 2: its origin package's import path ("" = main/REPL); makes unqualified type/name lookups prefer that package's symbols (see symGet, comp.Compiler.symAt)
+	importingPkg    string          // while parseSrc is running for an imported package: its full import path; "" outside any import. Used by pkgKey to qualify top-level Type/Func/Method/Generic symbol keys at definition time (Path B); also probed as a fallback in symGet for Phase-1 lookups.
 
 	funcScope         string
 	framelen          map[string]int // length of function frames indexed by funcScope
@@ -175,6 +176,16 @@ func (p *Parser) SetIncludeTests(b bool) {
 // reflect bridge, double-defining every exported symbol.
 func (p *Parser) SetTestSourceFS(fsys fs.FS) {
 	p.testSrcFS = fsys
+}
+
+// SetTestSkipFiles records basenames of bridged-stdlib test files that
+// loadBridgedTestSources must skip. Used by `mvm test`'s drop-on-compile-
+// error retry: a stdlib external test file that references export_test.go-
+// only symbols (e.g. a method the real native type lacks) can't compile
+// against the bridge, so the driver drops it and reloads the rest. nil or
+// empty means skip nothing.
+func (p *Parser) SetTestSkipFiles(names map[string]bool) {
+	p.testSkipFiles = names
 }
 
 // WithImportingPkg sets p.importingPkg to pkg and returns a function that

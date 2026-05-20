@@ -144,6 +144,9 @@ func (p *Parser) loadBridgedTestSources(importPath string) ([]PackageSource, err
 		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
+		if p.testSkipFiles[e.Name()] {
+			continue
+		}
 		if !MatchFileName(e.Name(), p.buildCtx) {
 			continue
 		}

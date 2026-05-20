@@ -559,10 +559,17 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 		tpNames[tp.name] = true
 	}
 
+	// errAt-style wrapper so inference failures carry the call site's source
+	// position; `mvm test`'s drop-on-compile-error retry needs it to attribute
+	// the error to a file and skip it.
+	posErr := func(format string, a ...any) error {
+		return p.errAt(Token{Token: callArgs}, format, a...)
+	}
+
 	// Generic templates whose signature failed to parse cleanly leave Type nil;
 	// surface an inference error rather than nil-deref.
 	if genSym.Type == nil {
-		return nil, fmt.Errorf("cannot infer type parameters for %s: signature unresolved", tmpl.name)
+		return nil, posErr("cannot infer type parameters for %s: signature unresolved", tmpl.name)
 	}
 
 	// Match each argument to the corresponding parameter type from the parsed signature.
@@ -597,7 +604,7 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 		}
 		argTyp := p.inferExprType(argExpr)
 		if argTyp == nil {
-			return nil, fmt.Errorf("cannot infer type for argument %d", i)
+			return nil, posErr("cannot infer type for argument %d", i)
 		}
 		unifyTypeParam(pType, argTyp, tpNames, inferred)
 	}
@@ -635,7 +642,7 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 	for i, tp := range tmpl.typeParams {
 		t, ok := inferred[tp.name]
 		if !ok {
-			return nil, fmt.Errorf("cannot infer type parameter %s", tp.name)
+			return nil, posErr("cannot infer type parameter %s", tp.name)
 		}
 		typeArgs[i] = t
 	}

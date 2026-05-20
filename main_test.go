@@ -59,6 +59,29 @@ func TestSplitTestArgs(t *testing.T) {
 	}
 }
 
+// TestFailingTestFile checks extraction of a bridged-stdlib test file
+// basename from a compile error's source position (drop-on-error retry).
+func TestFailingTestFile(t *testing.T) {
+	cases := []struct {
+		err, target, want string
+	}{
+		{"strings/replace_test.go:326:32: undefined: Replacer", "strings", "replace_test.go"},
+		{`loading "strings": strings/strings_test.go:25:23: cannot infer type parameter E`, "strings", "strings_test.go"},
+		{"unicode/utf16/utf16_test.go:17:13: undefined: MaxRune", "unicode/utf16", "utf16_test.go"},
+		// No position -> "" so the caller stops retrying.
+		{"cannot infer type parameter E", "strings", ""},
+		// Error in a non-test file under target must not be droppable.
+		{"strings/strings.go:10:1: oops", "strings", ""},
+		// Position in a different package must not match.
+		{"bytes/bytes_test.go:1:1: x", "strings", ""},
+	}
+	for _, c := range cases {
+		if got := failingTestFile(fmt.Errorf("%s", c.err), c.target); got != c.want {
+			t.Errorf("failingTestFile(%q, %q) = %q, want %q", c.err, c.target, got, c.want)
+		}
+	}
+}
+
 // TestBuildModFS exercises the GOPROXY parsing in buildModFS. The shape
 // of the resulting modfs (offline vs network-backed) is internal; this
 // test only asserts construction never fails or returns nil.

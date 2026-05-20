@@ -341,8 +341,86 @@ func testCmd(arg []string) error {
 
 	os.Args = append([]string{"mvm-test"}, rewriteTestFlags(testFlags)...)
 
+	// Try target as a local directory first; fall back to import-path
+	// resolution (modfs / stdlibfs / pkgfs) on miss.
+	if absDir, aerr := filepath.Abs(target); aerr == nil {
+		if entries, rerr := os.ReadDir(absDir); rerr == nil {
+			i, mfs := newTestInterp(trace)
+			flushStats := setupStats(i, mfs, stat)
+			if err := evalLocalDir(i, absDir, entries); err != nil {
+				flushStats()
+				return err
+			}
+			return runTestsInDir(i, absDir, flushStats)
+		}
+	}
+
+	// Import-path target. For bridged-stdlib packages (present in
+	// stdlib.Values, served from $GOROOT by loadBridgedTestSources), retry on
+	// compile error: drop the offending external test file and reload so the
+	// rest of the package still runs. This matters for files that reference
+	// export_test.go-only symbols, which can't exist on a native bridge.
+	// Each retry needs a fresh interpreter because Eval mutates compiler/VM
+	// state. Non-bridged targets get a single attempt.
+	_, bridged := stdlib.Values[target]
+	skip := map[string]bool{}
+	for {
+		i, mfs := newTestInterp(trace)
+		flushStats := setupStats(i, mfs, stat)
+		i.SetIncludeTests(true)
+		i.SetTestSkipFiles(skip)
+		if _, err := i.Eval(target, ""); err != nil {
+			if bridged {
+				if f := failingTestFile(err, target); f != "" && !skip[f] {
+					skip[f] = true
+					fmt.Fprintf(os.Stderr, "mvm test: skipping %s/%s (%v)\n", target, f, err)
+					continue
+				}
+			}
+			flushStats()
+			return fmt.Errorf("loading %q: %w", target, err)
+		}
+		// modfs serves the package from memory, so tests using testdata-relative
+		// paths see whatever cwd mvm was launched from. Spill the subtree to a
+		// temp dir and chdir there to mirror `go test`'s setup.
+		if mfs != nil {
+			dir, cleanup, err := materializePkgDir(mfs, target)
+			if err != nil {
+				flushStats()
+				return err
+			}
+			if dir != "" {
+				defer cleanup()
+				return runTestsInDir(i, dir, flushStats)
+			}
+		}
+		// Bridged-stdlib case: external test files came from $GOROOT/src/<target>.
+		// chdir there so testdata-relative paths resolve. No copy needed since
+		// stdlib tests read but do not write their testdata subtrees.
+		if dir := stdlib.GorootSrcDir(target); dir != "" {
+			return runTestsInDir(i, dir, flushStats)
+		}
+		return runTestDriver(i, flushStats)
+	}
+}
+
+// newTestInterp builds a fresh interpreter configured for `mvm test`:
+// stdlib bridges imported, FS chain wired, and the $GOROOT test-source FS
+// installed for bridged-stdlib external tests. Returns the modfs so callers
+// can materialize testdata subtrees.
+func newTestInterp(trace traceFlag) (*interp.Interp, *modfs.FS) {
 	i := interp.NewInterpreter(golang.GoSpec)
-	i.ImportPackageValues(stdlib.Values)
+	// Install bridges, then layer in test-only export_test stand-ins (e.g.
+	// strings.StringFind) so external stdlib tests that use them resolve. The
+	// overlay is test-runner-only, so `mvm run` never sees these symbols.
+	vals := make(map[string]map[string]reflect.Value, len(stdlib.Values))
+	for k, v := range stdlib.Values {
+		vals[k] = v
+	}
+	for pkg, merged := range stdlib.TestOverlay() {
+		vals[pkg] = merged
+	}
+	i.ImportPackageValues(vals)
 	mfs := wireFS(i)
 	// Test-source FS feeds `mvm test <stdlib-pkg>` external _test.go files
 	// against the existing reflect bridge. Kept off the shared wireFS so
@@ -356,48 +434,21 @@ func testCmd(arg []string) error {
 		i.SetTraceOps(true)
 	}
 	i.SetIO(os.Stdin, os.Stdout, os.Stderr)
-	// flushStats covers the load-error / no-tests-found paths via defer;
-	// the driver itself fires flushStats from a per-test counter once the
-	// last test body returns (it can't run from defer because testing.Main
-	// ends in a host os.Exit). flushStats is sync.OnceFunc so the defer
-	// becomes a no-op when the counter already fired.
-	flushStats := setupStats(i, mfs, stat)
-	defer flushStats()
+	return i, mfs
+}
 
-	// Try target as a local directory first; fall back to import-path
-	// resolution (modfs / stdlibfs / pkgfs) on miss.
-	if absDir, aerr := filepath.Abs(target); aerr == nil {
-		if entries, rerr := os.ReadDir(absDir); rerr == nil {
-			if err := evalLocalDir(i, absDir, entries); err != nil {
-				return err
-			}
-			return runTestsInDir(i, absDir, flushStats)
-		}
+// failingTestFile extracts the basename of the bridged-stdlib external test
+// file named by a compile error's source position (e.g.
+// "strings/replace_test.go:326:32: undefined: Replacer" -> "replace_test.go").
+// Only files directly under target ending in _test.go qualify. Returns ""
+// when the error carries no such position, so the caller stops retrying
+// rather than looping.
+func failingTestFile(err error, target string) string {
+	re := regexp.MustCompile(regexp.QuoteMeta(target) + `/([^/:\s]+_test\.go):\d+`)
+	if m := re.FindStringSubmatch(err.Error()); m != nil {
+		return m[1]
 	}
-	i.SetIncludeTests(true)
-	if _, err := i.Eval(target, ""); err != nil {
-		return fmt.Errorf("loading %q: %w", target, err)
-	}
-	// modfs serves the package from memory, so tests using testdata-relative
-	// paths see whatever cwd mvm was launched from. Spill the subtree to a
-	// temp dir and chdir there to mirror `go test`'s setup.
-	if mfs != nil {
-		dir, cleanup, err := materializePkgDir(mfs, target)
-		if err != nil {
-			return err
-		}
-		if dir != "" {
-			defer cleanup()
-			return runTestsInDir(i, dir, flushStats)
-		}
-	}
-	// Bridged-stdlib case: external test files came from $GOROOT/src/<target>.
-	// chdir there so testdata-relative paths resolve. No copy needed since
-	// stdlib tests read but do not write their testdata subtrees.
-	if dir := stdlib.GorootSrcDir(target); dir != "" {
-		return runTestsInDir(i, dir, flushStats)
-	}
-	return runTestDriver(i, flushStats)
+	return ""
 }
 
 // runTestsInDir runs the test driver with cwd set to dir, restoring cwd on
