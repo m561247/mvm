@@ -761,7 +761,8 @@ func (p *Parser) parseLabel(in Tokens) (out Tokens, err error) {
 }
 
 func (p *Parser) parseReturn(in Tokens) (out Tokens, err error) {
-	if l := len(in); l > 1 {
+	explicit := len(in) > 1
+	if explicit {
 		for _, val := range in[1:].Split(lang.Comma) {
 			if len(val) == 0 {
 				continue
@@ -773,7 +774,7 @@ func (p *Parser) parseReturn(in Tokens) (out Tokens, err error) {
 			out = append(out, toks...)
 		}
 	} else {
-		if l == 0 {
+		if len(in) == 0 {
 			in = Tokens{newReturn(0)} // Implicit return in functions with no return parameters.
 		}
 		// Bare return: push named return vars in declaration order (reverse of namedOut).
@@ -786,7 +787,9 @@ func (p *Parser) parseReturn(in Tokens) (out Tokens, err error) {
 	if s == nil || s.Type == nil {
 		return nil, p.errAt(in[0], "return statement outside function")
 	}
-	in[0].Arg = []any{s.Type.Rtype.NumOut(), s.Type}
+	// explicit distinguishes `return X...` from a bare return for the
+	// captured-named-return path (which stores explicit values into the cells).
+	in[0].Arg = []any{s.Type.Rtype.NumOut(), s.Type, explicit}
 	out = append(out, in[0])
 	return out, err
 }

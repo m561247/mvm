@@ -374,7 +374,20 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 		return out, err
 	}
 	l := max(p.framelen[p.funcScope]-1, 0)
-	out = append(out, newGrow(l, in[0].Pos))
+	// Promote captured named returns to heap cells at the prologue so a
+	// capturing (deferred) closure shares the slot rather than a snapshot.
+	// The body is already parsed, so Captured/NeedsCell is known. CellSlot is
+	// set here (shared with the compiler) so body refs use CellGet/CellSet and
+	// the closure-capture site shares the cell; the Grow handler emits the
+	// actual HeapAlloc for each collected slot index.
+	var cellRet []int
+	for _, name := range p.namedOut {
+		if rs := p.Symbols[name]; rs != nil && rs.NeedsCell() {
+			rs.CellSlot = true
+			cellRet = append(cellRet, rs.Index)
+		}
+	}
+	out = append(out, newGrow(l, in[0].Pos, cellRet))
 	// Zero-initialize named-return slots that need a typed zero reflect.Value.
 	// Without this, Grow leaves the slot as an empty Value{} with an invalid
 	// reflect.Value, breaking:

@@ -8,6 +8,7 @@ import (
 	"path"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -577,6 +578,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 	growPos := []int{}            // code positions of Grow instructions per function scope
 	maxExprDepth := []int{}       // max expression depth above locals per function scope
 	hasDefer := []bool{}          // whether current function scope uses defer
+	retCellSlots := [][]int{}     // per function scope: slot indices of cell-promoted named returns
 
 	push := func(s *symbol.Symbol) {
 		stack = append(stack, s)
@@ -1313,6 +1315,23 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			maxExprDepth = append(maxExprDepth, 0)
 			hasDefer = append(hasDefer, false)
 			c.emit(t, vm.Grow, t.Arg[0].(int))
+			// Allocate a heap cell for each captured named return so a
+			// capturing (deferred) closure shares the slot. Runs after Grow
+			// zeroes the slots and before zero-init/body; CellSlot was already
+			// set on the symbols in goparser so body refs use the cell.
+			cellRet, _ := t.Arg[1].([]int)
+			retCellSlots = append(retCellSlots, cellRet)
+			if len(cellRet) > 0 {
+				// Mark this frame as having captured named returns so the
+				// Return opcode and panicUnwind finalize results from the
+				// fixed slots (deref cells) after defers.
+				c.emit(t, vm.MarkNamedRet)
+				for _, idx := range cellRet {
+					c.emit(t, vm.GetLocal, idx)
+					c.emit(t, vm.HeapAlloc)
+					c.emit(t, vm.SetLocal, idx, 0)
+				}
+			}
 
 		case lang.Define:
 			showStack(stack)
@@ -1692,6 +1711,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 							growPos = growPos[:len(growPos)-1]
 							maxExprDepth = maxExprDepth[:len(maxExprDepth)-1]
 							hasDefer = hasDefer[:len(hasDefer)-1]
+							retCellSlots = retCellSlots[:len(retCellSlots)-1]
 						}
 						// Exit function: restore caller stack and function name tracking.
 						l := popflen()
@@ -2231,6 +2251,10 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Return:
 			numOut := t.Arg[0].(int)
+			var cells []int
+			if len(retCellSlots) > 0 {
+				cells = retCellSlots[len(retCellSlots)-1]
+			}
 			if err := checkTopN(t, numOut); err != nil {
 				return err
 			}
@@ -2242,9 +2266,39 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					c.emitIfaceWrapAt(t, funcType.ReturnType(i), stackSym.Type, numOut-1-i)
 				}
 			}
-			if len(hasDefer) == 0 || hasDefer[len(hasDefer)-1] || !c.fuseGetLocal(vm.GetLocalReturn, 0) {
-				c.emit(t, vm.Return)
+			if len(cells) == 0 {
+				// Fast path (unnamed or named-but-not-captured): the result
+				// can't be modified by a defer, so the pushed values are the
+				// result. Unchanged from the original return path.
+				if len(hasDefer) == 0 || hasDefer[len(hasDefer)-1] || !c.fuseGetLocal(vm.GetLocalReturn, 0) {
+					c.emit(t, vm.Return)
+				}
+				break
 			}
+			// Captured named returns: the result must be read from the cells
+			// after defers (MarkNamedRet flagged the frame; Return finalizes
+			// from slots). Store an explicit `return X...`'s values into the
+			// cells first; a bare return's pushed idents are already the cell
+			// values and are discarded by Return's stack reset.
+			explicit := t.Arg[2].(bool)
+			if explicit {
+				// Named returns are registered right-to-left, so result slots
+				// run 1..numOut with slot 1 = last result; popping top-down into
+				// slots 1..numOut places each value correctly.
+				for slot := 1; slot <= numOut; slot++ {
+					if slices.Contains(cells, slot) {
+						c.emit(t, vm.CellSet, slot)
+					} else {
+						c.emit(t, vm.SetLocal, slot, 0)
+					}
+				}
+			} else if numOut > 0 {
+				c.emit(t, vm.Pop, numOut)
+			}
+			if len(stack) >= numOut {
+				stack = stack[:len(stack)-numOut]
+			}
+			c.emit(t, vm.Return)
 
 		case lang.Slice:
 			var coll *symbol.Symbol

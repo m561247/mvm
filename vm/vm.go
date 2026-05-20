@@ -321,6 +321,7 @@ const (
 	LowerIntImmJumpTrue          // n -- ; if n < $2 { ip += $1 } ; sp--
 	GetLocalLowerIntImmJumpFalse // -- ; if local >= imm { ip += $1 } ; $2 = localOff<<16 | imm&0xFFFF
 	GetLocalLowerIntImmJumpTrue  // -- ; if local < imm { ip += $1 } ; $2 = localOff<<16 | imm&0xFFFF
+	MarkNamedRet                 // -- ; flag this frame as having captured named returns (set bit in retIPInfo)
 )
 
 // Memory attributes.
@@ -538,7 +539,7 @@ func stackTop(mem []Value, sp, fp, n int) string {
 			fmt.Fprintf(&sb, "%d:deferHead=%d", i, v.num)
 		case fp - 2:
 			retIP := int(int32(v.num)) //nolint:gosec
-			nret := int((v.num >> 32) & 0xFFFF)
+			nret := int((v.num >> 32) & retNretMask)
 			fb := int(v.num >> 48)
 			fmt.Fprintf(&sb, "%d:ret=%d,nret=%d,fb=%d", i, retIP, nret, fb)
 		case fp - 1:
@@ -709,6 +710,40 @@ func (m *Machine) handleTrap(ip, fp, sp int, mem []Value) (int, int, int, []Valu
 	return ip, fp, sp, mem
 }
 
+// derefCell returns the value a slot holds, dereferencing a heap cell (a
+// *Value, produced by HeapAlloc for captured locals/named returns); non-cell
+// values pass through unchanged.
+func derefCell(v Value) Value {
+	if v.ref.IsValid() && v.ref.Kind() == reflect.Pointer {
+		if pv, ok := v.ref.Interface().(*Value); ok {
+			return *pv
+		}
+	}
+	return v
+}
+
+// finalizeReturns copies the nret result values from a function's fixed
+// named-return slots (mem[ofp+0..nret-1]) into the caller's return area at
+// newBase, dereferencing cells. Results are registered right-to-left, so
+// result i is at slot nret-i (mem[ofp+nret-1-i]). A temp avoids source/dest
+// overlap; the stack array covers the common small-nret case allocation-free.
+func finalizeReturns(mem []Value, ofp, newBase, nret int) {
+	if nret == 0 {
+		return
+	}
+	var tmp [8]Value
+	var ret []Value
+	if nret <= len(tmp) {
+		ret = tmp[:nret]
+	} else {
+		ret = make([]Value, nret)
+	}
+	for i := 0; i < nret; i++ {
+		ret[i] = derefCell(mem[ofp+nret-1-i])
+	}
+	copy(mem[newBase:newBase+nret], ret)
+}
+
 func (m *Machine) handleRecover(fp, sp int, mem []Value, deferRetAddr int) (int, []Value) {
 	if m.panicking && int(int32(mem[fp-2].num)) == deferRetAddr { //nolint:gosec
 		m.panicking = false
@@ -772,8 +807,18 @@ const heapSavedFlag = uint64(1) << 63
 // native variadic functions.
 const CallSpreadFlag int32 = 1 << 15
 
+// retIPInfo word layout: retIP in bits 0..31, nret in bits 32..46 (retNretMask),
+// namedRetFlag in bit 47, frameBase in bits 48..63. namedRetFlag is set by
+// MarkNamedRet for functions with captured named returns and tells Return and
+// panicUnwind to finalize results from the fixed named-return slots (deref
+// cells) after defers.
+const (
+	retNretMask         = 0x7FFF
+	namedRetFlag uint64 = 1 << 47
+)
+
 func packRetIP(retIP, nret, frameBase int) uint64 {
-	return uint64(uint32(retIP)) | uint64(nret)<<32 | uint64(frameBase)<<48 //nolint:gosec
+	return uint64(uint32(retIP)) | uint64(nret&retNretMask)<<32 | uint64(frameBase)<<48 //nolint:gosec
 }
 
 func growStack(mem []Value, sp, need int) []Value {
@@ -1158,7 +1203,7 @@ func (m *Machine) Run() (err error) {
 				m.heap = nil
 			}
 			newBase := ofp - frameBase
-			nret := int((retIPInfo >> 32) & 0xFFFF)
+			nret := int((retIPInfo >> 32) & retNretMask)
 			switch nret {
 			case 0:
 			case 1:
@@ -1853,10 +1898,13 @@ func (m *Machine) Run() (err error) {
 		case Recover:
 			sp, mem = m.handleRecover(fp, sp, mem, deferRetAddr)
 
+		case MarkNamedRet:
+			mem[fp-2].num |= namedRetFlag
+
 		case Return:
 			// Read nret and frameBase from the packed retIP slot.
 			retIPInfo := mem[fp-2].num
-			nret := int((retIPInfo >> 32) & 0xFFFF)
+			nret := int((retIPInfo >> 32) & retNretMask)
 			frameBase := int(retIPInfo >> 48)
 			// If there are pending defers in this frame, dispatch the top one (LIFO).
 			dh := int(mem[fp-3].num) //nolint:gosec
@@ -1943,14 +1991,22 @@ func (m *Machine) Run() (err error) {
 				m.heap = nil
 			}
 			newBase := ofp - frameBase
-			// Inline copy for common small nret to avoid runtime.typedslicecopy.
-			switch nret {
-			case 0:
-				// nothing to copy
-			case 1:
-				mem[newBase] = mem[sp]
-			default:
-				copy(mem[newBase:], mem[sp-nret+1:sp+1])
+			if retIPInfo&namedRetFlag != 0 {
+				// Captured named returns: finalize results from the fixed
+				// named-return slots (mem[ofp+0..nret-1]) AFTER defers, so a
+				// deferred closure's write to a named return is reflected.
+				finalizeReturns(mem, ofp, newBase, nret)
+			} else {
+				// Fast path: results are the pushed values at the stack top.
+				// Inline copy for common small nret to avoid runtime.typedslicecopy.
+				switch nret {
+				case 0:
+					// nothing to copy
+				case 1:
+					mem[newBase] = mem[sp]
+				default:
+					copy(mem[newBase:], mem[sp-nret+1:sp+1])
+				}
 			}
 			sp = newBase + nret - 1
 			continue
@@ -2789,7 +2845,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		}
 		// VM defer: store panicAddr as return address, push frame.
 		retIPInfo := (*mem)[*fp-2].num
-		nret := int((retIPInfo >> 32) & 0xFFFF)
+		nret := int((retIPInfo >> 32) & retNretMask)
 		(*mem)[dh].num = uint64(uint32(panicAddr)) | uint64(nret)<<32 //nolint:gosec
 		prevHeap := m.heap
 		nip := m.resolveIPAndHeap(funcVal)
@@ -2810,17 +2866,23 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 	}
 	// No more defers in this frame.
 	if !m.panicking {
-		// Recovered: tear down frame, return zero values to caller.
+		// Recovered: produce the result values and tear down the frame.
 		retIPInfo := (*mem)[*fp-2].num
-		nret := int((retIPInfo >> 32) & 0xFFFF)
+		nret := int((retIPInfo >> 32) & retNretMask)
 		frameBase := int(retIPInfo >> 48)
 		*ip = int(int32(retIPInfo)) //nolint:gosec
 		ofp := *fp
 		*fp = m.restoreFP((*mem)[*fp-1].num)
 		newBase := ofp - frameBase
 		newSP := newBase + nret
-		clear((*mem)[newBase:newSP]) // clear return slots
-		clear((*mem)[newSP:])        // clear stale slots
+		if retIPInfo&namedRetFlag != 0 {
+			// Captured named returns: finalize from the fixed slots (deref
+			// cells) so a deferred recover that set a named return propagates.
+			finalizeReturns(*mem, ofp, newBase, nret)
+		} else {
+			clear((*mem)[newBase:newSP]) // no named returns: Go returns zeros after recover
+		}
+		clear((*mem)[newSP:]) // clear stale slots (incl. the source slots)
 		*mem = (*mem)[:newSP]
 		*sp = len(*mem) - 1
 		*mem = (*mem)[:cap(*mem)]
