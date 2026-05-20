@@ -3966,15 +3966,28 @@ func (m *Machine) wrapFuncArgs(in []reflect.Value, args []Value, funcType reflec
 	}
 }
 
-// ifaceMethodTypes returns the types to scan for methods: the type itself
-// and, for pointer types, the element type. Methods are registered on the
-// base type T, not *T, so both must be checked.
-func ifaceMethodTypes(typ *Type) (types [2]*Type, n int) {
-	types[0] = typ
-	n = 1
-	if typ.Rtype.Kind() == reflect.Pointer && typ.ElemType != nil {
-		types[1] = typ.ElemType
-		n = 2
+// ifaceMethodTypes returns the types whose Methods make up typ's method set:
+// typ, its ElemType (for pointers, since methods register on T not *T), and the
+// same for each type along the Base chain. A struct-field shallow copy has empty
+// Methods but links via Base to the source type that carries methods registered
+// after the copy was taken (e.g. a named-basic field type like `type Grams int`);
+// walking Base lets interface bridging find those methods, matching MethodByName.
+//
+// The [6] bound is ample: Base chains are collapsed to depth 1 at creation
+// (goparser decl.go points a copy's Base at its source's Base, never nesting),
+// so at most typ+ElemType plus one Base level+ElemType is produced.
+func ifaceMethodTypes(typ *Type) (types [6]*Type, n int) {
+	push := func(t *Type) {
+		if t != nil && n < len(types) {
+			types[n] = t
+			n++
+		}
+	}
+	for cur := typ; cur != nil; cur = cur.Base {
+		push(cur)
+		if cur.Rtype != nil && cur.Rtype.Kind() == reflect.Pointer {
+			push(cur.ElemType)
+		}
 	}
 	return
 }
@@ -4340,20 +4353,16 @@ func (m *Machine) MakeMethodCallable(ifc Iface, method Method) Value {
 // when a struct is defined before its methods) remain reachable.
 // Returns (Method, true) on hit.
 func (m *Machine) MethodByName(t *Type, name string) (Method, bool) {
-	for cur := t; cur != nil; cur = cur.Base {
-		types, n := ifaceMethodTypes(cur)
-		for _, mt := range types[:n] {
-			for id, method := range mt.Methods {
-				if method.Index < 0 || id >= len(m.MethodNames) {
-					continue
-				}
-				if m.MethodNames[id] == name {
-					return method, true
-				}
+	// ifaceMethodTypes already walks the Base chain.
+	types, n := ifaceMethodTypes(t)
+	for _, mt := range types[:n] {
+		for id, method := range mt.Methods {
+			if method.Index < 0 || id >= len(m.MethodNames) {
+				continue
 			}
-		}
-		if cur.Base == nil {
-			break
+			if m.MethodNames[id] == name {
+				return method, true
+			}
 		}
 	}
 	return Method{}, false

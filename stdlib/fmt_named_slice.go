@@ -67,8 +67,11 @@ func (w *compositeFmtArg) Format(s fmt.State, verb rune) {
 
 // elem returns the i-th element wrapped as a display bridge -- the same
 // wrapping a standalone value receives flowing into an interface{} arg.
+// Exportable yields an addressable, read-only-flag-cleared view of the slice
+// element so the interpreted display method can read its (possibly unexported)
+// fields without tripping reflect's "value obtained using unexported field".
 func (w *compositeFmtArg) elem(i int) any {
-	ev := reflect.ValueOf(w.slice.Index(i).Interface())
+	ev := vm.Exportable(w.slice.Index(i))
 	if rv := w.m.BridgeForAny(vm.Iface{Typ: w.elemTyp, Val: vm.FromReflect(ev)}); rv.IsValid() && rv.CanInterface() {
 		return rv.Interface()
 	}

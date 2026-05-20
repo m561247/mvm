@@ -387,4 +387,13 @@ func init() {
 
 	vm.RegisterArgProxy(reflect.DeepEqual, 0, PassthroughIface)
 	vm.RegisterArgProxy(reflect.DeepEqual, 1, PassthroughIface)
+
+	// sort.Slice* take the slice as `any` and drive it through reflect.Swapper /
+	// reflect.ValueOf, so the raw slice must reach them unwrapped. Without these
+	// the any-arg display bridging (which wraps a slice whose element type
+	// defines String/Error/Format/GoString into a fmt wrapper) would hand sort a
+	// *wrapper pointer, panicking with "reflect: call of Swapper on ptr Value".
+	vm.RegisterArgProxy(sort.Slice, 0, PassthroughIface)
+	vm.RegisterArgProxy(sort.SliceStable, 0, PassthroughIface)
+	vm.RegisterArgProxy(sort.SliceIsSorted, 0, PassthroughIface)
 }

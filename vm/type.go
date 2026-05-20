@@ -169,15 +169,19 @@ func (t *Type) Implements(iface *Type) bool {
 }
 
 // ResolveMethodType returns the Type whose Methods[id] holds the resolved entry.
+// It scans typ, its ElemType, and the Base chain (via ifaceMethodTypes) so a
+// struct-field shallow copy resolves methods reachable only through Base -- the
+// same coverage as MethodByName, keeping interface satisfaction (Implements,
+// type assertions) consistent with method dispatch.
 func (t *Type) ResolveMethodType(id int) *Type {
 	if id < 0 {
 		return nil
 	}
-	if id < len(t.Methods) && t.Methods[id].IsResolved() {
-		return t
-	}
-	if t.ElemType != nil && id < len(t.ElemType.Methods) && t.ElemType.Methods[id].IsResolved() {
-		return t.ElemType
+	types, n := ifaceMethodTypes(t)
+	for _, mt := range types[:n] {
+		if id < len(mt.Methods) && mt.Methods[id].IsResolved() {
+			return mt
+		}
 	}
 	return nil
 }
