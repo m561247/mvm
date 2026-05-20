@@ -929,30 +929,13 @@ func (m *Machine) Run() (err error) {
 					// bridge) see live state. The local fp/ip remain
 					// authoritative; this is a one-way push.
 					m.mem, m.fp, m.ip = mem, fp, ip+1
-					// For spread calls (f(s...)), unwrap Iface values inside
-					// the variadic slice and use CallSlice.
-					var out []reflect.Value
+					// Invoke the native func/method, converting any Go panic
+					// into an mvm panic so an interpreted recover() can catch it.
 					hook := lookupNativeMethodHook(proxyRecvType, proxyMethod)
-					switch {
-					case hook != nil && c.B&CallSpreadFlag == 0:
-						out = hook(m, proxyRecv, in)
-					case c.B&CallSpreadFlag != 0:
-						last := in[narg-1]
-						if last.Kind() == reflect.Interface && !last.IsNil() {
-							last = last.Elem()
-						}
-						for i := range last.Len() {
-							elem := last.Index(i)
-							if elem.Kind() == reflect.Interface && !elem.IsNil() {
-								if ifc, ok := elem.Interface().(Iface); ok {
-									elem.Set(ifc.Val.Reflect())
-								}
-							}
-						}
-						in[narg-1] = last
-						out = rv.CallSlice(in)
-					default:
-						out = rv.Call(in)
+					out, panicked := m.invokeNative(hook, proxyRecv, rv, in, c.B&CallSpreadFlag != 0)
+					if panicked {
+						ip = panicAddr
+						continue
 					}
 					nout := funcType.NumOut()
 					for i, v := range out {
@@ -3262,6 +3245,66 @@ func (rs *runnerState) releaseRunner(m *Machine) {
 	m.panicking = false
 	m.panicVal = Value{}
 	rs.pool.Put(m)
+}
+
+// invokeNative runs a native func/method call (a hook, CallSlice, or Call),
+// recovering any Go panic. On a recoverable panic it sets the machine's panic
+// state (so the caller jumps to panicAddr and an interpreted recover() can
+// catch it) and returns panicked=true. A clean-exit signal -- an error that is
+// not a runtime.Error, e.g. *interp.ExitError from a virtualized os.Exit -- is
+// re-panicked so Run's recoverPanic terminates the program rather than letting
+// recover() swallow it.
+func (m *Machine) invokeNative(hook NativeMethodHook, proxyRecv, rv reflect.Value, in []reflect.Value, spread bool) (out []reflect.Value, panicked bool) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		// An mvm panic that escaped a nested re-entrant Run via a native
+		// callback (e.g. a sort.Slice comparator panicked): re-establish it
+		// with its original value so an outer interpreted recover() sees it.
+		if pe, ok := r.(*PanicError); ok {
+			m.panicking = true
+			m.panicVal = FromReflect(reflect.ValueOf(pe.Raw))
+			panicked = true
+			return
+		}
+		// Clean-exit signal must not be interceptable by recover(); re-panic
+		// so it propagates to Run's recoverPanic.
+		if e, ok := r.(error); ok {
+			if _, isRuntime := r.(runtime.Error); !isRuntime {
+				panic(e)
+			}
+		}
+		// Genuine native panic (runtime.Error, or a value like the string from
+		// strings.Builder.Grow); make it catchable by interpreted recover().
+		m.panicking = true
+		m.panicVal = FromReflect(reflect.ValueOf(r))
+		panicked = true
+	}()
+	switch {
+	case hook != nil && !spread:
+		return hook(m, proxyRecv, in), false
+	case spread:
+		// For spread calls (f(s...)), unwrap Iface values inside the variadic
+		// slice and use CallSlice.
+		last := in[len(in)-1]
+		if last.Kind() == reflect.Interface && !last.IsNil() {
+			last = last.Elem()
+		}
+		for i := range last.Len() {
+			elem := last.Index(i)
+			if elem.Kind() == reflect.Interface && !elem.IsNil() {
+				if ifc, ok := elem.Interface().(Iface); ok {
+					elem.Set(ifc.Val.Reflect())
+				}
+			}
+		}
+		in[len(in)-1] = last
+		return rv.CallSlice(in), false
+	default:
+		return rv.Call(in), false
+	}
 }
 
 // makeCallFunc wraps a mvm function value in a reflect.MakeFunc adapter
