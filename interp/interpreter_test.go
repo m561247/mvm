@@ -3034,6 +3034,37 @@ func TestPanic(t *testing.T) {
 			type Stringer interface { String() string }
 			var x Stringer
 			x.String()`, err: "panic: runtime error: invalid memory address or nil pointer dereference"},
+		{n: "panic_in_native_callback", src: `
+			// A panic raised in an mvm method that native code invokes through an
+			// interface (here io.Reader, via bytes.Buffer.ReadFrom) must be catchable
+			// by an interpreted recover().
+			import "bytes"
+			type panicReader struct{}
+			func (panicReader) Read(p []byte) (int, error) { panic("oops") }
+			s := ""
+			func f() {
+				defer func() { s = recover().(string) }()
+				var buf bytes.Buffer
+				buf.ReadFrom(panicReader{})
+			}
+			f()
+			s`, res: "oops"},
+		{n: "panic_error_from_native", src: `
+			// A native function that panics with a plain error value (not a runtime.Error)
+			// must stay catchable by an interpreted recover().
+			import "bytes"
+			type negReader struct{}
+			func (negReader) Read(p []byte) (int, error) { return -1, nil }
+			s := ""
+			func f() {
+				defer func() {
+					if e, ok := recover().(error); ok { s = e.Error() }
+				}()
+				var buf bytes.Buffer
+				buf.ReadFrom(negReader{})
+			}
+			f()
+			s`, res: "bytes.Buffer: reader returned negative count from Read"},
 	})
 }
 

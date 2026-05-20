@@ -3331,15 +3331,16 @@ func (m *Machine) invokeNative(hook NativeMethodHook, proxyRecv, rv reflect.Valu
 			panicked = true
 			return
 		}
-		// Clean-exit signal must not be interceptable by recover(); re-panic
-		// so it propagates to Run's recoverPanic.
-		if e, ok := r.(error); ok {
-			if _, isRuntime := r.(runtime.Error); !isRuntime {
-				panic(e)
-			}
+		// Clean-exit signal (e.g. a virtualized os.Exit) must not be
+		// interceptable by recover(); re-panic so it propagates to Run's
+		// recoverPanic. A genuine native panic(err) -- e.g. bytes.Buffer's
+		// errNegativeRead -- is NOT a clean exit and must stay catchable.
+		if _, ok := r.(CleanExit); ok {
+			panic(r)
 		}
-		// Genuine native panic (runtime.Error, or a value like the string from
-		// strings.Builder.Grow); make it catchable by interpreted recover().
+		// Genuine native panic (runtime.Error, a plain error value, or a value
+		// like the string from strings.Builder.Grow); make it catchable by
+		// interpreted recover().
 		m.panicking = true
 		m.panicVal = FromReflect(reflect.ValueOf(r))
 		panicked = true
@@ -3445,7 +3446,7 @@ func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Val
 	m.fp = 0
 
 	if err := m.Run(); err != nil {
-		return nil, err
+		return nil, m.reentrantRunErr(err)
 	}
 	return m.collectReturns(funcType, nret), nil
 }
@@ -3468,9 +3469,23 @@ func (m *Machine) callPooled(fval Value, funcType reflect.Type, args []reflect.V
 	m.fp = 0
 
 	if err := m.Run(); err != nil {
-		return nil, err
+		return nil, m.reentrantRunErr(err)
 	}
 	return m.collectReturns(funcType, nret), nil
+}
+
+// reentrantRunErr maps the error from a re-entrant Run (one driven by CallFunc
+// or callPooled from a native callback) to the value the native caller should
+// re-panic. An unrecovered mvm panic leaves m.panicking set after the frame is
+// torn down; surface it as a *PanicError carrying the raw value so the caller's
+// invokeNative recover re-establishes it as an mvm panic that an interpreted
+// recover() can catch. The frame is already unwound here (m.ip == 0), so the
+// raw value is all the context worth preserving.
+func (m *Machine) reentrantRunErr(runErr error) error {
+	if m.panicking {
+		return &PanicError{Raw: m.panicVal.Interface()}
+	}
+	return runErr
 }
 
 // collectReturns coerces the top nret stack values to funcType's return

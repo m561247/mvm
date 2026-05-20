@@ -184,6 +184,16 @@ type StackFrame struct {
 	TopLevel bool // synthetic frame for the top-level entry sequence (init / Eval driver)
 }
 
+// CleanExit marks an error value as an intentional, non-crash program
+// termination signal (e.g. interp.ExitError from a virtualized os.Exit).
+// Such a value bypasses interpreted recover() -- mirroring Go, where recover()
+// cannot intercept os.Exit -- and propagates to the top-level Run, which
+// returns it to the host. Defined here so vm can recognize the signal without
+// importing the package that defines the concrete type.
+type CleanExit interface {
+	CleanExit()
+}
+
 // PanicError wraps a raw Go panic that escaped the VM (e.g. a reflect.Convert
 // panic from inside the interpreter loop) with mvm-level diagnostic context.
 // Frames is captured synchronously at the moment of the panic, before the

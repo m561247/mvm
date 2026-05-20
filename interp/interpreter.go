@@ -29,6 +29,11 @@ type ExitError struct{ Code int }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
 
+// CleanExit marks ExitError as vm.CleanExit so the VM propagates it past any
+// interpreted recover() (mirroring Go, where recover cannot intercept os.Exit)
+// instead of treating it as a recoverable native panic.
+func (e *ExitError) CleanExit() {}
+
 var (
 	debug              = os.Getenv("MVM_DEBUG") != ""
 	traceLine, traceOp = ParseTraceModes(os.Getenv("MVM_TRACE"))
