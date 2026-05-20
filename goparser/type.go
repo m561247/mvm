@@ -528,7 +528,7 @@ func (p *Parser) parseFuncParams(argBlock Token, out Tokens) (typ *vm.Type, inNa
 	if len(out) > 0 && out[0].Tok == lang.BraceBlock {
 		// BraceBlock at start of out is a function body or composite literal, not a return type.
 		out = nil
-	} else if len(out) == 1 && out[0].Tok == lang.ParenBlock {
+	} else if len(out) > 0 && out[0].Tok == lang.ParenBlock {
 		if out, err = p.scanBlock(out[0].Token, false); err != nil {
 			return nil, nil, nil, err
 		}
