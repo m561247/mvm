@@ -2248,7 +2248,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Slice:
 			var coll *symbol.Symbol
-			if stack[len(stack)-3].IsInt() {
+			if t.Arg[0].(bool) { // 3-index slice a[low:high:max]
 				coll = stack[len(stack)-4]
 				c.emit(t, vm.Slice3)
 				stack = stack[:len(stack)-4]
@@ -2258,14 +2258,18 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				stack = stack[:len(stack)-3]
 			}
 			// Slicing a slice/string yields the same named type; only an
-			// array or *array operand produces a fresh []T result.
-			resType := coll.Type
-			rtype := coll.Type.Rtype
-			if rtype.Kind() == reflect.Pointer && rtype.Elem().Kind() == reflect.Array {
-				rtype = rtype.Elem()
-			}
-			if rtype.Kind() == reflect.Array {
-				resType = &vm.Type{Rtype: reflect.SliceOf(rtype.Elem())}
+			// array or *array operand produces a fresh []T result. Use Vtype
+			// so an untyped operand (e.g. a string const) resolves via its
+			// Value instead of nil-dereferencing coll.Type.
+			resType := symbol.Vtype(coll)
+			if resType != nil {
+				rtype := resType.Rtype
+				if rtype.Kind() == reflect.Pointer && rtype.Elem().Kind() == reflect.Array {
+					rtype = rtype.Elem()
+				}
+				if rtype.Kind() == reflect.Array {
+					resType = &vm.Type{Rtype: reflect.SliceOf(rtype.Elem())}
+				}
 			}
 			push(&symbol.Symbol{Kind: symbol.Value, Type: resType})
 

@@ -145,8 +145,9 @@ func newInt(i, pos int) Token                  { return newToken(lang.Int, strco
 func newColon(pos int) Token                   { return newToken(lang.Colon, "", pos) }
 func newFieldColon(name string, pos int) Token { return newToken(lang.Colon, "", pos, name) }
 
-func newLen(i, pos int) Token { return newToken(lang.Len, "", pos, i) }
-func newSlice(pos int) Token  { return newToken(lang.Slice, "", pos) }
+func newLen(i, pos int) Token            { return newToken(lang.Len, "", pos, i) }
+func newSlice(pos int, three bool) Token { return newToken(lang.Slice, "", pos, three) }
+
 func newTypeAssert(typ *vm.Type, pos, okForm int) Token {
 	return newToken(lang.TypeAssert, typ.String(), pos, okForm, typ)
 }

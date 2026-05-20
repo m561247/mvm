@@ -635,7 +635,8 @@ func (p *Parser) parseBlock(t Token, typ string) (result Tokens, err error) {
 
 	if tokens.Index(lang.Colon) >= 0 {
 		// Slice expression, a[low : high] or a[low : high : max].
-		for i, sub := range tokens.Split(lang.Colon) {
+		parts := tokens.Split(lang.Colon)
+		for i, sub := range parts {
 			if i > 2 {
 				return nil, errors.New("expected ']', found ':'")
 			}
@@ -655,7 +656,7 @@ func (p *Parser) parseBlock(t Token, typ string) (result Tokens, err error) {
 			}
 			result = append(result, toks...)
 		}
-		result = append(result, newSlice(t.Pos))
+		result = append(result, newSlice(t.Pos, len(parts) == 3))
 		return result, err
 	}
 
