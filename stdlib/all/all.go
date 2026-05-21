@@ -10,4 +10,5 @@ import (
 
 	_ "github.com/mvm-sh/mvm/stdlib/gobx"  // init all bindings
 	_ "github.com/mvm-sh/mvm/stdlib/jsonx" // init all bindings
+	_ "github.com/mvm-sh/mvm/stdlib/xmlx"  // init all bindings
 )
