@@ -34,6 +34,11 @@ func init() {
 	Values["internal/testenv"] = map[string]reflect.Value{
 		"Builder":               reflect.ValueOf(func() string { return "" }),
 		"GOROOT":                reflect.ValueOf(func(testing.TB) string { return findGoroot() }),
+		"GoToolPath":            reflect.ValueOf(func(testing.TB) string { return findGoroot() + "/bin/go" }),
+		"GoTool":                reflect.ValueOf(func() (string, error) { return findGoroot() + "/bin/go", nil }),
+		"HasGoBuild":            reflect.ValueOf(func() bool { return true }),
+		"MustHaveGoBuild":       reflect.ValueOf(func(testing.TB) {}),
+		"MustHaveGoRun":         reflect.ValueOf(func(testing.TB) {}),
 		"OptimizationOff":       reflect.ValueOf(func() bool { return false }),
 		"SkipIfOptimizationOff": reflect.ValueOf(func(testing.TB) {}),
 		"SkipFlaky":             reflect.ValueOf(func(testing.TB, int) {}),

@@ -407,13 +407,21 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 	// param name with shared type from the right (e.g. `(UUID, error)` where
 	// UUID is defined in another file not yet parsed).
 	sawTypeOnly := false
+	sawNamed := false
 	for i := len(list) - 1; i >= 0; i-- {
 		t := list[i]
 		if len(t) == 0 {
 			continue
 		}
 		param := ""
-		if p.hasFirstParam(t) {
+		// Once a named param/field appears to the right, a lone ident that
+		// also names a type (so hasFirstParam reports "type-only") must still
+		// be a NAME sharing the trailing type, not an embedded type.
+		treatAsParam := p.hasFirstParam(t)
+		if !treatAsParam && sawNamed && !sawTypeOnly && len(t) == 1 && t[0].Tok == lang.Ident {
+			treatAsParam = true
+		}
+		if treatAsParam {
 			origName := t[0].Str
 			if flag == parseTypeVar {
 				// Top-level vars want the canonical pkgKey; pkgKey itself
@@ -450,6 +458,7 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 					types = append([]*vm.Type{types[0]}, types...)
 					p.addSymVar(i, len(list), param, types[0], flag)
 					vars = append([]string{param}, vars...)
+					sawNamed = true
 					continue
 				}
 			}
@@ -473,6 +482,8 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 		vars = append([]string{param}, vars...)
 		if param == "" {
 			sawTypeOnly = true
+		} else {
+			sawNamed = true
 		}
 	}
 	return types, vars, variadic, err

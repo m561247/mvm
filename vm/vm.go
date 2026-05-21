@@ -52,6 +52,7 @@ const (
 	CallImm                // [a1 .. ai] -- [r1 .. rj] ; $1=dataIdx of func, $2=narg<<16|nret
 	CallImmFast            // like CallImm; emitted when no callee param has reflect Kind Struct or Array so detachByValueArgs can be elided
 	Cap                    // -- x ; x = cap(mem[sp-$0])
+	Clear                  // x -- ; clear(x): delete all map entries or zero all slice elements
 	Convert                // v -- v' ; v' = convert(v, type at mem[$1]); optional $2 = stack depth offset
 	CopySlice              // dst src -- n ; n = copy(dst, src)
 	DeferPush              // func [a0..an-1] -- func [a0..an-1] [packed prevHead retIP] ; register deferred call on stack; $0=narg, $1=1 if native
@@ -2294,6 +2295,9 @@ func (m *Machine) Run() (err error) {
 		case DeleteMap:
 			mem[sp-1].ref.SetMapIndex(mem[sp].Reflect(), reflect.Value{})
 			sp--
+		case Clear:
+			clearValue(mem[sp].Reflect())
+			sp--
 		case Cap:
 			if sp+1 >= len(mem) {
 				mem = growStack(mem, sp, 1)
@@ -3120,6 +3124,16 @@ func (m *Machine) reflectForSend(val Value, elemType reflect.Type) reflect.Value
 // InterfaceBridges, then single-method Bridges, then concrete unwrap.
 func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value {
 	if len(m.MethodNames) > 0 {
+		// Prefer the richest registered interface bridge the value fully
+		// implements and that still satisfies targetType, so capabilities
+		// beyond the target survive the native type assertion (e.g. a value
+		// implementing crypto.MessageSigner passed to a crypto.Signer
+		// parameter must still answer signer.(MessageSigner)).
+		if bridgePtrType := m.bestInterfaceBridge(ifc, targetType); bridgePtrType != nil {
+			if w := m.wrapIfaceMulti(ifc, bridgePtrType); w.IsValid() {
+				return w
+			}
+		}
 		if bridgePtrType, ok := InterfaceBridges[targetType]; ok {
 			if w := m.wrapIfaceMulti(ifc, bridgePtrType); w.IsValid() {
 				return w
@@ -3144,6 +3158,76 @@ func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value 
 		}
 	}
 	return val
+}
+
+// ifaceProvidedMethods returns the set of method names the interpreted
+// value supplies. A pointer-receiver method only counts when the value's
+// static type is a pointer, matching Go's method-set rules.
+func (m *Machine) ifaceProvidedMethods(ifc Iface) map[string]bool {
+	if ifc.Typ == nil {
+		return nil
+	}
+	provided := make(map[string]bool)
+	methodTypes, n := ifaceMethodTypes(ifc.Typ)
+	isPtr := ifc.Typ.Rtype != nil && ifc.Typ.Rtype.Kind() == reflect.Pointer
+	for _, mt := range methodTypes[:n] {
+		for id, method := range mt.Methods {
+			if method.Index < 0 || id >= len(m.MethodNames) {
+				continue
+			}
+			if method.PtrRecv && !isPtr {
+				continue
+			}
+			provided[m.MethodNames[id]] = true
+		}
+	}
+	return provided
+}
+
+// bestInterfaceBridge returns the registered InterfaceBridges entry whose
+// interface declares the most methods such that the interface satisfies
+// targetType and the interpreted value provides every one of those methods.
+// This preserves richer capabilities (e.g. crypto.MessageSigner) when the
+// native parameter only requires a sub-interface (crypto.Signer). Returns
+// nil for empty-interface targets (handled by the display-bridge path) or
+// when no fully-implemented bridge exists.
+func (m *Machine) bestInterfaceBridge(ifc Iface, targetType reflect.Type) reflect.Type {
+	if targetType.Kind() != reflect.Interface || targetType.NumMethod() == 0 {
+		return nil
+	}
+	// provided is built lazily: the common case (no registered bridge
+	// satisfies targetType, e.g. error / fmt.Stringer) returns before
+	// allocating it or walking the value's method set.
+	var provided map[string]bool
+	var best reflect.Type
+	bestN := 0
+	for ifaceType, bridgePtrType := range InterfaceBridges {
+		nm := ifaceType.NumMethod()
+		if nm <= bestN || !ifaceType.Implements(targetType) {
+			continue
+		}
+		if provided == nil {
+			if provided = m.ifaceProvidedMethods(ifc); len(provided) == 0 {
+				return nil
+			}
+		}
+		if !interfaceMethodsCovered(ifaceType, provided) {
+			continue
+		}
+		best, bestN = bridgePtrType, nm
+	}
+	return best
+}
+
+// interfaceMethodsCovered reports whether provided contains every method
+// name declared by ifaceType.
+func interfaceMethodsCovered(ifaceType reflect.Type, provided map[string]bool) bool {
+	for i := range ifaceType.NumMethod() {
+		if !provided[ifaceType.Method(i).Name] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
@@ -3594,6 +3678,15 @@ func (m *Machine) newGoroutine(fval Value, args []Value) {
 	go func() { _ = child.Run() }()
 }
 
+// clearValue implements the clear builtin: it empties a map (deletes all
+// entries) or zeroes every element of a slice. A nil map or slice is a
+// no-op, matching Go.
+func clearValue(rv reflect.Value) {
+	if rv = unwrapIface(rv); rv.IsValid() {
+		rv.Clear()
+	}
+}
+
 func (m *Machine) execBuiltinDeferred(op Op, base, narg int, mem []Value) {
 	switch op {
 	case Println, Print:
@@ -3612,6 +3705,8 @@ func (m *Machine) execBuiltinDeferred(op Op, base, narg int, mem []Value) {
 		mem[base].ref.SetMapIndex(mem[base+1].Reflect(), reflect.Value{})
 	case CopySlice:
 		reflect.Copy(mem[base].ref, mem[base+1].ref)
+	case Clear:
+		clearValue(mem[base].Reflect())
 	default:
 		panic(fmt.Sprintf("unsupported deferred builtin opcode: %v", op))
 	}

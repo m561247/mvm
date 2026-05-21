@@ -26,6 +26,7 @@ var builtinDeferOp = map[string]vm.Op{
 	"close":   vm.ChanClose,
 	"delete":  vm.DeleteMap,
 	"copy":    vm.CopySlice,
+	"clear":   vm.Clear,
 }
 
 // Compiler represents the state of a compiler.
@@ -2935,6 +2936,15 @@ func (c *Compiler) compileBuiltin(
 		pop() // delete symbol
 		c.emit(t, vm.DeleteMap)
 		c.emit(t, vm.Pop, 1) // delete is void; discard stale map value
+		return true, nil
+
+	case "clear":
+		if narg != 1 {
+			return true, errors.New("invalid argument count for clear")
+		}
+		pop() // map or slice
+		pop() // clear symbol
+		c.emit(t, vm.Clear)
 		return true, nil
 
 	case "new":
