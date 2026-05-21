@@ -16,6 +16,7 @@ package jsonx
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,6 +151,16 @@ func decodeInto(m *vm.Machine, data []byte, dst reflect.Value, typ *vm.Type) err
 			} else if ifc != nil {
 				return invokeUnmarshal(m, "UnmarshalText", text, *ifc, method)
 			}
+		}
+	}
+	// Native bridged named type (e.g. json.RawMessage, time.Time) whose native
+	// method set mvm's interpreted registry can't see. Hand the field to native
+	// encoding/json, which honours UnmarshalJSON / UnmarshalText.
+	if dst.CanAddr() {
+		rt := typ.Rtype
+		if rt.Implements(jsonUnmarshalerType) || reflect.PointerTo(rt).Implements(jsonUnmarshalerType) ||
+			rt.Implements(textUnmarshalerType) || reflect.PointerTo(rt).Implements(textUnmarshalerType) {
+			return json.Unmarshal(data, dst.Addr().Interface())
 		}
 	}
 	switch typ.Rtype.Kind() {
@@ -435,6 +446,16 @@ func encodeIfaceTo(buf *bytes.Buffer, m *vm.Machine, ifc vm.Iface) error {
 	if !rv.IsValid() {
 		buf.WriteString("null")
 		return nil
+	}
+	// Native bridged named type with its own json.Marshaler / TextMarshaler
+	// (e.g. json.RawMessage, time.Time), invisible to mvm's interpreted registry.
+	if it := rv.Type(); it.Implements(jsonMarshalerType) || it.Implements(textMarshalerType) {
+		return nativeMarshal(buf, rv.Interface())
+	}
+	if rv.CanAddr() {
+		if pt := reflect.PointerTo(rv.Type()); pt.Implements(jsonMarshalerType) || pt.Implements(textMarshalerType) {
+			return nativeMarshal(buf, rv.Addr().Interface())
+		}
 	}
 	switch ifc.Typ.Rtype.Kind() {
 	case reflect.Struct:
@@ -734,6 +755,11 @@ func isEmptyValue(v reflect.Value) bool {
 
 var (
 	ifaceRtype = reflect.TypeOf(vm.Iface{})
+
+	jsonMarshalerType   = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	textMarshalerType   = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 
 	encoderTypeV    = vm.FromReflect(reflect.ValueOf((*Encoder)(nil)))
 	decoderTypeV    = vm.FromReflect(reflect.ValueOf((*Decoder)(nil)))
