@@ -110,6 +110,94 @@ func TestUsesInternalStubs(t *testing.T) {
 	}
 }
 
+// TestBridgedStdlibInternalReflectliteResolves verifies the internal/reflectlite
+// bridge (stdlib/internal_stubs.go) lets a test file importing it load. The
+// errors package source (mvm-sh/std mirror) imports internal/reflectlite from
+// wrap.go; before the bridge, `mvm test errors` failed with
+// "stat internal/reflectlite: no such file or directory". reflectlite's used
+// surface is a strict subset of reflect, so the bridge re-exports reflect.
+func TestBridgedStdlibInternalReflectliteResolves(t *testing.T) {
+	mapFS := fstest.MapFS{
+		"strings/reflectlite_test.go": &fstest.MapFile{Data: []byte(`package strings_test
+
+import (
+	"internal/reflectlite"
+	"testing"
+)
+
+func TestUsesReflectlite(t *testing.T) {
+	rt := reflectlite.TypeOf("x")
+	if rt.Kind() == reflectlite.Ptr || rt.Kind() == reflectlite.Interface {
+		t.Fatal("string is neither pointer nor interface")
+	}
+	if !reflectlite.ValueOf("x").IsValid() {
+		t.Fatal("ValueOf produced invalid value")
+	}
+	if reflectlite.TypeOf((*error)(nil)).Elem() == nil {
+		t.Fatal("nil error element type")
+	}
+}
+`)},
+	}
+
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	i.SetTestSourceFS(mapFS)
+	i.SetIncludeTests(true)
+	if _, err := i.Eval("strings", ""); err != nil {
+		t.Fatalf("loading strings tests: %v\nstderr: %s", err, stderr.String())
+	}
+	if !slices.Contains(i.FuncNames("Test"), "TestUsesReflectlite") {
+		t.Errorf("test file importing internal/reflectlite was not loaded; stderr: %s", stderr.String())
+	}
+}
+
+// TestMirrorSourcedPkgExternalTestsRun covers the loader path for
+// `mvm test errors` / `mvm test cmp`: a package with source on the stdlib FS
+// (the mvm-sh/std mirror) whose tests are external (package X_test). The
+// mirror's src.zip strips _test.go, so LoadPackageSources, finding the source
+// but no test files, serves the external X_test files from testSrcFS as a
+// standalone unit (their `import "X"` resolves X via the normal chain).
+func TestMirrorSourcedPkgExternalTestsRun(t *testing.T) {
+	mirrorFS := fstest.MapFS{
+		"mymir/mymir.go": &fstest.MapFile{Data: []byte(`package mymir
+
+func Hello() string { return "hi" }
+`)},
+	}
+	testFS := fstest.MapFS{
+		"mymir/mymir_test.go": &fstest.MapFile{Data: []byte(`package mymir_test
+
+import (
+	"mymir"
+	"testing"
+)
+
+func TestHello(t *testing.T) {
+	if mymir.Hello() != "hi" {
+		t.Fatal("Hello broken")
+	}
+}
+`)},
+	}
+
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values) // so the external test's `import "testing"` resolves
+	i.SetStdlibFS(mirrorFS)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	i.SetTestSourceFS(testFS)
+	i.SetIncludeTests(true)
+	if _, err := i.Eval("mymir", ""); err != nil {
+		t.Fatalf("loading mymir tests: %v\nstderr: %s", err, stderr.String())
+	}
+	if !slices.Contains(i.FuncNames("Test"), "TestHello") {
+		t.Errorf("external test for mirror-sourced package was not loaded; got %v", i.FuncNames("Test"))
+	}
+}
+
 // TestBridgedStdlibSkipFiles verifies SetTestSkipFiles excludes named test
 // files from a bridged-stdlib load. This backs `mvm test`'s drop-on-compile-
 // error retry: a file that can't compile against the bridge (e.g. one using

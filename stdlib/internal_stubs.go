@@ -31,6 +31,19 @@ func init() {
 	Values["internal/sysinfo"] = map[string]reflect.Value{
 		"CPUName": reflect.ValueOf(func() string { return "" }),
 	}
+	// internal/reflectlite is a real subset of reflect (used by errors/wrap.go
+	// when the errors package is loaded from source, e.g. `mvm test errors`).
+	// Unlike the stubs above, this is a faithful re-export of reflect, not a
+	// no-op shim. reflectlite.Ptr is the deprecated alias; reflect.Ptr exists.
+	Values["internal/reflectlite"] = map[string]reflect.Value{
+		"TypeOf":    reflect.ValueOf(reflect.TypeOf),
+		"ValueOf":   reflect.ValueOf(reflect.ValueOf),
+		"Type":      reflect.ValueOf((*reflect.Type)(nil)),
+		"Value":     reflect.ValueOf((*reflect.Value)(nil)),
+		"Kind":      reflect.ValueOf((*reflect.Kind)(nil)),
+		"Ptr":       reflect.ValueOf(reflect.Pointer),
+		"Interface": reflect.ValueOf(reflect.Interface),
+	}
 	Values["internal/testenv"] = map[string]reflect.Value{
 		"Builder":               reflect.ValueOf(func() string { return "" }),
 		"GOROOT":                reflect.ValueOf(func(testing.TB) string { return findGoroot() }),

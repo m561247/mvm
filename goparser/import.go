@@ -64,9 +64,13 @@ func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]Pac
 		return nil, err
 	}
 	var out []PackageSource
+	sawTestFile := false
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
+		}
+		if strings.HasSuffix(e.Name(), "_test.go") {
+			sawTestFile = true
 		}
 		if !includeTests && strings.HasSuffix(e.Name(), "_test.go") {
 			continue
@@ -83,6 +87,18 @@ func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]Pac
 			continue
 		}
 		out = append(out, PackageSource{Name: e.Name(), Content: src})
+	}
+	// Mirror-sourced packages (errors, cmp) ship source via stdlibfs (src.zip),
+	// which strips _test.go, so their tests must come from testSrcFS. When the
+	// source FS contributed no test files, serve the package's external
+	// (package X_test) tests as a standalone unit: their `import "X"` resolves X
+	// through the normal chain -- a bridge (errors) or the just-found mirror
+	// source via importSrc (cmp). Internal (package X) tests for mirror packages
+	// still need X's symbols in scope and remain unsupported (separate gap).
+	if includeTests && p.testSrcFS != nil && !sawTestFile {
+		if ext, terr := p.loadBridgedTestSources(importPath); terr == nil && len(ext) > 0 {
+			return ext, nil
+		}
 	}
 	// When loading tests, filter out external _test.go files (those declaring
 	// `package X_test` instead of `package X`). Go's testing tool compiles
