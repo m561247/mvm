@@ -38,6 +38,9 @@ import (
 
 func init() {
 	vm.RegisterArgProxy(xml.Unmarshal, 1, newUnmarshalProxy)
+	vm.RegisterArgProxy(xml.Marshal, 0, newMarshalProxy)
+	vm.RegisterArgProxy(xml.MarshalIndent, 0, newMarshalProxy)
+	vm.RegisterArgProxyMethod((*xml.Encoder)(nil), "Encode", 0, newMarshalProxy)
 }
 
 // unmarshalProxy wraps a mvm Iface so native encoding/xml reflection
@@ -58,10 +61,237 @@ func (p *unmarshalProxy) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) 
 // contains an interpreted UnmarshalXML; otherwise it defers to the default
 // any-bridging so native encoding/xml decodes exactly as before.
 func newUnmarshalProxy(m *vm.Machine, ifc vm.Iface) reflect.Value {
-	if ifc.Typ != nil && containsCustom(m, ifc.Typ) {
+	if ifc.Typ != nil && containsUnmarshaler(m, ifc.Typ) {
 		return reflect.ValueOf(&unmarshalProxy{m: m, ifc: ifc})
 	}
 	return m.BridgeForAny(ifc)
+}
+
+// marshalProxy wraps a mvm Iface so native encoding/xml reflection discovers
+// an xml.Marshaler whose MarshalXML re-enters the xmlx encode walker driving
+// the native encoder with full Iface metadata.
+type marshalProxy struct {
+	m   *vm.Machine
+	ifc vm.Iface
+}
+
+// MarshalXML implements xml.Marshaler. Native xml derives start.Name from this
+// proxy's Go type name, so rootStart restores the real element name first.
+func (p *marshalProxy) MarshalXML(enc *xml.Encoder, _ xml.StartElement) error {
+	rv := p.ifc.Val.Reflect()
+	e := &encoder{m: p.m, custom: map[*vm.Type]bool{}}
+	return e.marshalElement(enc, rootStart(p.ifc.Typ, rv), rv, p.ifc.Typ)
+}
+
+// newMarshalProxy installs the proxy only when ifc's type transitively contains
+// an interpreted MarshalXML/MarshalText; otherwise it defers to the default
+// any-bridging so native encoding/xml marshals exactly as before.
+func newMarshalProxy(m *vm.Machine, ifc vm.Iface) reflect.Value {
+	if ifc.Typ != nil && containsMarshaler(m, ifc.Typ) {
+		return reflect.ValueOf(&marshalProxy{m: m, ifc: ifc})
+	}
+	return m.BridgeForAny(ifc)
+}
+
+// encoder threads the machine and a per-Marshal memo of containsMarshaler
+// answers through the walk (see decoder for the caching-scope rationale).
+type encoder struct {
+	m      *vm.Machine
+	custom map[*vm.Type]bool
+}
+
+// marshalElement encodes rv (typed via mvm type typ) as the element named by
+// start.
+func (e *encoder) marshalElement(enc *xml.Encoder, start xml.StartElement, rv reflect.Value, typ *vm.Type) error {
+	if !rv.IsValid() {
+		return nil
+	}
+	if typ == nil {
+		return enc.EncodeElement(rv.Interface(), start)
+	}
+	if typ.Rtype.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil
+		}
+		return e.marshalElement(enc, start, rv.Elem(), typ.ElemType)
+	}
+	// Interpreted MarshalXML: dispatch, handing it the native encoder + start.
+	if method, ok := e.m.MethodByName(typ, "MarshalXML"); ok {
+		recv := marshalReceiver(typ, rv, method)
+		args := []reflect.Value{reflect.ValueOf(enc), reflect.ValueOf(start)}
+		return dispatchErrMethod(e.m, "MarshalXML", xmlMarshalFnType, args, recv, method)
+	}
+	// Interpreted MarshalText (encoding.TextMarshaler): native xml wraps the
+	// returned text in the element.
+	if method, ok := e.m.MethodByName(typ, "MarshalText"); ok {
+		recv := marshalReceiver(typ, rv, method)
+		text, err := dispatchMarshalText(e.m, recv, method)
+		if err != nil {
+			return err
+		}
+		return enc.EncodeElement(string(text), start)
+	}
+	// No custom marshaler below: let native xml encode the whole subtree
+	// (byte-identical to the native bridge).
+	if !e.hasCustom(typ) {
+		return enc.EncodeElement(rv.Interface(), start)
+	}
+	switch typ.Rtype.Kind() {
+	case reflect.Struct:
+		return e.marshalStruct(enc, start, rv, typ)
+	case reflect.Slice, reflect.Array:
+		for i := range rv.Len() {
+			if err := e.marshalElement(enc, start, rv.Index(i), typ.ElemType); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return enc.EncodeElement(rv.Interface(), start)
+	}
+}
+
+// marshalStruct hand-walks a struct's element fields, emitting each as a child
+// element of start. Only reached for structs that transitively contain a custom
+// marshaler. Attribute, chardata, nested-path, and XMLName fields are not
+// emitted here (same limits as the decode walk).
+func (e *encoder) marshalStruct(enc *xml.Encoder, start xml.StartElement, rv reflect.Value, typ *vm.Type) error {
+	if err := enc.EncodeToken(start); err != nil {
+		return err
+	}
+	rtype := typ.Rtype
+	for i := range rtype.NumField() {
+		sf := rtype.Field(i)
+		if !sf.IsExported() || sf.Type == xmlNameType {
+			continue
+		}
+		name, isElem := parseXMLTag(sf.Tag.Get("xml"))
+		if !isElem || strings.Contains(name, ">") {
+			continue
+		}
+		if name == "" {
+			name = sf.Name
+		}
+		fv := rv.Field(i)
+		var ftyp *vm.Type
+		if i < len(typ.Fields) {
+			ftyp = typ.Fields[i]
+		}
+		child := xml.StartElement{Name: xml.Name{Local: name}}
+		ft := fv.Type()
+		if ft.Kind() == reflect.Slice && ft.Elem().Kind() != reflect.Uint8 {
+			var elemTyp *vm.Type
+			if ftyp != nil {
+				elemTyp = ftyp.ElemType
+			}
+			for j := range fv.Len() {
+				if err := e.marshalElement(enc, child, fv.Index(j), elemTyp); err != nil {
+					return err
+				}
+			}
+		} else if err := e.marshalElement(enc, child, fv, ftyp); err != nil {
+			return err
+		}
+	}
+	return enc.EncodeToken(start.End())
+}
+
+// hasCustom is the per-Marshal memoized form of containsMarshaler (see
+// decoder.hasCustom for why only top-level answers are cached).
+func (e *encoder) hasCustom(typ *vm.Type) bool {
+	if typ == nil {
+		return false
+	}
+	if res, ok := e.custom[typ]; ok {
+		return res
+	}
+	res := containsMarshaler(e.m, typ)
+	e.custom[typ] = res
+	return res
+}
+
+// rootStart derives the element start for a top-level marshaled value,
+// replacing the proxy-derived name native xml supplies. It mirrors native
+// xml's name precedence for the common cases: a struct's XMLName field
+// (runtime value, else tag), otherwise the type name.
+func rootStart(typ *vm.Type, rv reflect.Value) xml.StartElement {
+	for typ != nil && typ.Rtype.Kind() == reflect.Pointer {
+		typ = typ.ElemType
+		// typ and rv deref in lockstep, but rv may bottom out first (nil link).
+		if rv.Kind() == reflect.Pointer {
+			if rv.IsNil() {
+				rv = reflect.Value{}
+			} else {
+				rv = rv.Elem()
+			}
+		}
+	}
+	if typ == nil {
+		return xml.StartElement{}
+	}
+	if typ.Rtype.Kind() == reflect.Struct {
+		for i := range typ.Rtype.NumField() {
+			sf := typ.Rtype.Field(i)
+			if sf.Type != xmlNameType {
+				continue
+			}
+			if rv.IsValid() && rv.Kind() == reflect.Struct {
+				if n, ok := rv.Field(i).Interface().(xml.Name); ok && n.Local != "" {
+					return xml.StartElement{Name: n}
+				}
+			}
+			if tag, _ := parseXMLTag(sf.Tag.Get("xml")); tag != "" {
+				return xml.StartElement{Name: xmlNameFromTag(tag)}
+			}
+			break
+		}
+	}
+	return xml.StartElement{Name: xml.Name{Local: typ.Name}}
+}
+
+// xmlNameFromTag splits an XMLName tag ("namespace local" or "local") into a Name.
+func xmlNameFromTag(tag string) xml.Name {
+	if i := strings.LastIndex(tag, " "); i >= 0 {
+		return xml.Name{Space: tag[:i], Local: tag[i+1:]}
+	}
+	return xml.Name{Local: tag}
+}
+
+// marshalReceiver builds the Iface receiver for a marshal method.
+// MakeMethodCallable does not auto-address, so a pointer-receiver method needs
+// a pointer Val.
+func marshalReceiver(typ *vm.Type, rv reflect.Value, method vm.Method) vm.Iface {
+	if method.PtrRecv {
+		if rv.CanAddr() {
+			return vm.Iface{Typ: typ, Val: vm.FromReflect(rv.Addr())}
+		}
+		p := reflect.New(rv.Type())
+		p.Elem().Set(rv)
+		return vm.Iface{Typ: typ, Val: vm.FromReflect(p)}
+	}
+	return vm.Iface{Typ: typ, Val: vm.FromReflect(rv)}
+}
+
+// dispatchMarshalText dispatches a func() ([]byte, error) MarshalText method.
+func dispatchMarshalText(m *vm.Machine, ifc vm.Iface, method vm.Method) ([]byte, error) {
+	fval := m.MakeMethodCallable(ifc, method)
+	out, err := m.CallFunc(fval, textMarshalFnType, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) != 2 {
+		return nil, fmt.Errorf("MarshalText: expected 2 returns, got %d", len(out))
+	}
+	var data []byte
+	if out[0].IsValid() && !out[0].IsZero() {
+		data = out[0].Bytes()
+	}
+	if out[1].IsValid() && !out[1].IsNil() {
+		if e, ok := out[1].Interface().(error); ok {
+			return data, e
+		}
+	}
+	return data, nil
 }
 
 // decoder threads the machine and a per-Unmarshal memo of containsCustom
@@ -110,7 +340,7 @@ func (d *decoder) decodeElement(dec *xml.Decoder, start xml.StartElement, dst re
 		}
 		if recv != nil {
 			args := []reflect.Value{reflect.ValueOf(dec), reflect.ValueOf(start)}
-			return invokeUnmarshal(d.m, "UnmarshalXML", xmlUnmarshalFnType, args, *recv, method)
+			return dispatchErrMethod(d.m, "UnmarshalXML", xmlUnmarshalFnType, args, *recv, method)
 		}
 	}
 	// Interpreted UnmarshalText (encoding.TextUnmarshaler): native xml feeds
@@ -127,7 +357,7 @@ func (d *decoder) decodeElement(dec *xml.Decoder, start xml.StartElement, dst re
 				return err
 			}
 			args := []reflect.Value{reflect.ValueOf([]byte(text))}
-			return invokeUnmarshal(d.m, "UnmarshalText", textUnmarshalFnType, args, *recv, method)
+			return dispatchErrMethod(d.m, "UnmarshalText", textUnmarshalFnType, args, *recv, method)
 		}
 	}
 	// No custom unmarshaler anywhere below: let native xml decode the whole
@@ -295,11 +525,15 @@ func pointerReceiver(typ *vm.Type, dst reflect.Value) (*vm.Iface, error) {
 var (
 	xmlUnmarshalFnType  = reflect.TypeOf((func(*xml.Decoder, xml.StartElement) error)(nil))
 	textUnmarshalFnType = reflect.TypeOf((func([]byte) error)(nil))
+	xmlMarshalFnType    = reflect.TypeOf((func(*xml.Encoder, xml.StartElement) error)(nil))
+	textMarshalFnType   = reflect.TypeOf((func() ([]byte, error))(nil))
+	xmlNameType         = reflect.TypeOf(xml.Name{})
 )
 
-// invokeUnmarshal dispatches an error-returning unmarshal method (UnmarshalXML
-// or UnmarshalText) through the VM. name is used only for the arity error.
-func invokeUnmarshal(m *vm.Machine, name string, fnType reflect.Type, args []reflect.Value, ifc vm.Iface, method vm.Method) error {
+// dispatchErrMethod dispatches a single-error-return method (UnmarshalXML,
+// UnmarshalText, MarshalXML) through the VM. name is used only for the arity
+// error.
+func dispatchErrMethod(m *vm.Machine, name string, fnType reflect.Type, args []reflect.Value, ifc vm.Iface, method vm.Method) error {
 	fval := m.MakeMethodCallable(ifc, method)
 	out, err := m.CallFunc(fval, fnType, args)
 	if err != nil {
@@ -318,7 +552,7 @@ func invokeUnmarshal(m *vm.Machine, name string, fnType reflect.Type, args []ref
 
 // --- custom-unmarshaler detection ---
 
-// hasCustom is the per-Unmarshal memoized form of containsCustom. Only
+// hasCustom is the per-Unmarshal memoized form of containsUnmarshaler. Only
 // top-level answers are cached: sub-results computed mid-cycle can be wrong,
 // since a node's answer may depend on an ancestor not yet resolved.
 func (d *decoder) hasCustom(typ *vm.Type) bool {
@@ -328,43 +562,50 @@ func (d *decoder) hasCustom(typ *vm.Type) bool {
 	if res, ok := d.custom[typ]; ok {
 		return res
 	}
-	res := containsCustom(d.m, typ)
+	res := containsUnmarshaler(d.m, typ)
 	d.custom[typ] = res
 	return res
 }
 
-// containsCustom reports whether typ or any transitively reachable field,
-// element, key, or embedded type defines an interpreted UnmarshalXML or
-// UnmarshalText. The mvm type graph forms pointer cycles for recursive
-// types, so a pointer-keyed visited set terminates.
-func containsCustom(m *vm.Machine, typ *vm.Type) bool {
-	return containsCustomWalk(m, typ, map[*vm.Type]bool{})
+// containsUnmarshaler / containsMarshaler report whether typ or any
+// transitively reachable field, element, key, or embedded type defines the
+// corresponding interpreted custom (un)marshal methods. The mvm type graph
+// forms pointer cycles for recursive types, so a pointer-keyed visited set
+// terminates.
+func containsUnmarshaler(m *vm.Machine, typ *vm.Type) bool {
+	return graphHasMethod(m, typ, map[*vm.Type]bool{}, "UnmarshalXML", "UnmarshalText")
 }
 
-func containsCustomWalk(m *vm.Machine, typ *vm.Type, seen map[*vm.Type]bool) bool {
+func containsMarshaler(m *vm.Machine, typ *vm.Type) bool {
+	return graphHasMethod(m, typ, map[*vm.Type]bool{}, "MarshalXML", "MarshalText")
+}
+
+// graphHasMethod reports whether typ or any reachable type has an interpreted
+// method named a or b.
+func graphHasMethod(m *vm.Machine, typ *vm.Type, seen map[*vm.Type]bool, a, b string) bool {
 	if typ == nil || seen[typ] {
 		return false
 	}
 	seen[typ] = true
-	if _, ok := m.MethodByName(typ, "UnmarshalXML"); ok {
+	if _, ok := m.MethodByName(typ, a); ok {
 		return true
 	}
-	if _, ok := m.MethodByName(typ, "UnmarshalText"); ok {
+	if _, ok := m.MethodByName(typ, b); ok {
 		return true
 	}
 	for _, f := range typ.Fields {
-		if containsCustomWalk(m, f, seen) {
+		if graphHasMethod(m, f, seen, a, b) {
 			return true
 		}
 	}
-	if containsCustomWalk(m, typ.ElemType, seen) {
+	if graphHasMethod(m, typ.ElemType, seen, a, b) {
 		return true
 	}
-	if containsCustomWalk(m, typ.KeyType, seen) {
+	if graphHasMethod(m, typ.KeyType, seen, a, b) {
 		return true
 	}
 	for _, e := range typ.Embedded {
-		if containsCustomWalk(m, e.Type, seen) {
+		if graphHasMethod(m, e.Type, seen, a, b) {
 			return true
 		}
 	}
