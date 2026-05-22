@@ -352,13 +352,44 @@ when the target is a named non-closure function, the compiler removes the
 preceding `GetGlobal` and encodes the globals index directly in the
 instruction, avoiding one stack read.
 
-### Panic / defer / recover
+### Panics, defer, recover, and diagnostics
 
 - `DeferPush` saves a sentinel frame pointing to a deferred function.
 - `Panic` sets `panicking = true` and unwinds, calling deferred functions.
 - `Recover` clears the panic state if called inside a deferred function.
 - `DeferRet` is emitted at function exit to run deferred functions in LIFO
   order.
+
+**Diagnostics: `PanicError`.** When a raw Go panic (nil deref, divide by
+zero, a `reflect.Convert` mismatch, an explicit interpreted `panic(...)`)
+escapes the VM, `recoverPanic` wraps it in a `*PanicError` (`vm/debug.go`)
+that carries the panic value, the source `Pos` and bytecode `IP` of the
+faulting instruction, the captured call frames, and the `DebugInfo`
+snapshot. `capturePanic` builds it *before* the stack unwinds, so
+`PanicError.Error()` can render a header, a source snippet with a caret,
+and an `mvm stack:` trace that interleaves interpreted frames (with
+`file:line:col` and function name) and `-- via ... [native] --` markers
+for reentrant native calls. Symbolization reuses `DebugInfo.FuncAt` and
+`Sources.Snippet`, so a program that never panics pays nothing.
+
+**Clean-exit passthrough.** `recoverPanic` does a *shape* check rather
+than a type check: any recovered value that is an `error` but not a
+`runtime.Error` is propagated unwrapped, and anything implementing the
+`CleanExit` marker interface bypasses interpreted `recover()` entirely
+and reaches the top-level `Run`. This is how `*interp.ExitError` (from
+the virtualized `os.Exit` / `log.Fatal*` bindings) surfaces as a clean
+signal instead of a crash, while keeping `vm` free of any `interp`
+dependency. Genuine `runtime.Error` crashes keep the full `capturePanic`
+diagnostics. See
+[ADR-018](../decisions/ADR-018-virtualized-process-exit.md) and
+[interp.md](interp.md#process-exit-virtualization).
+
+**Nil-func guard.** Function code never lives at code index 0 (that slot
+holds the program-entry `Jump`), so a resolved call target of
+`nilFuncAddr = 0` means the func value was nil or a global slot was
+corrupt. `Call`/`CallImm` panic with a Go nil-func deref in that case
+rather than jumping to 0, which would re-run the program (or `_testmain`)
+and recurse without bound.
 
 ### Native Go interop (WrapFunc / CallFunc)
 

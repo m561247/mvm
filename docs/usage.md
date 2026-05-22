@@ -164,6 +164,8 @@ mvm test ./pkg                      # run tests in a local package directory
 mvm test github.com/google/uuid     # fetch a remote module and run its tests
 mvm test ./pkg -v                   # verbose output
 mvm test ./pkg -run TestFoo         # run only matching tests
+mvm test ./pkg -bench .             # run benchmarks
+mvm test -stat ./pkg                # print compile/execute stats after the run
 mvm test -v                         # current directory, verbose
 ```
 
@@ -175,14 +177,21 @@ The target is either:
   through the Go module proxy and held in memory -- see [Remote imports](#remote-imports).
   Its package is loaded as a whole so cross-file references resolve.
 
-Test flags use the same names as `go test` (`-v`, `-run REGEX`, `-count N`,
-`-short`, ...); mvm adds the `-test.` prefix `testing.Main` expects before
-running. They follow the target (or stand alone when the target is omitted), so
-the target, when given, comes first: `mvm test ./pkg -run TestFoo`, not
-`mvm test -run TestFoo ./pkg`. Tests run in source-declaration order, not
+`Test*`, `Benchmark*`, and `Example*` functions are all recognized.
+Benchmarks run only when `-bench REGEX` is given.
+Examples are executed and their output validated against the trailing
+`// Output:` comment.
+
+Test flags use the same names as `go test` (`-v`, `-run REGEX`, `-bench REGEX`,
+`-count N`, `-short`, ...); mvm adds the `-test.` prefix `testing.Main` expects
+before running. They follow the target (or stand alone when the target is
+omitted), so the target, when given, comes first: `mvm test ./pkg -run TestFoo`,
+not `mvm test -run TestFoo ./pkg`. Tests run in source-declaration order, not
 alphabetical order.
 
-`-x` enables execution tracing here too.
+The mvm-specific flags `-x` (execution tracing) and `-stat` (compile/execute
+statistics, printed just before the `PASS`/`FAIL` line) come *before* the
+target.
 
 ## Execution tracing
 

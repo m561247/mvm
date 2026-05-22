@@ -231,6 +231,28 @@ performs the operation.
 frame with a `DeferRet` handler. `recover` clears the panic state inside a
 deferred function.
 
+A raw Go panic that escapes the VM (nil deref, divide by zero, an
+explicit interpreted `panic`) is wrapped in a `vm.PanicError` captured
+before the stack unwinds, so it renders a source snippet with a caret and
+an `mvm stack:` trace that interleaves interpreted and reentrant native
+frames. See [vm](modules/vm.md#panics-defer-recover-and-diagnostics).
+
+## Process exit virtualization
+
+Interpreted code that exits the process -- `os.Exit`, `log.Fatal*`, and
+native bridges such as `testing.Main` -- must not terminate the host: it
+would kill the REPL and leave embedders no catchable signal. The
+interpreter rebinds those entry points so they `panic` an
+`*interp.ExitError`, which the VM's recover path propagates unwrapped (it
+implements the `vm.CleanExit` marker, distinct from a `PanicError`
+crash). `Eval` returns it like any error; `errors.As` recovers the code;
+the `mvm` CLI translates it back into a host `os.Exit(code)`. The same
+mechanism lets `mvm test` drive `testing.MainStart(...).Run()` directly
+and read back the exit code. See
+[ADR-018](decisions/ADR-018-virtualized-process-exit.md),
+[ADR-019](decisions/ADR-019-test-runner-mainstart-driver.md), and
+[interp](modules/interp.md#process-exit-virtualization).
+
 ## Debug / trap support
 
 Mvm provides an in-process debugger triggered by `trap()`, a builtin

@@ -53,7 +53,7 @@ to end on real Go programs.
 ### Stdlib patch pass
 
 `patchStdlibOverrides` runs once, on the first `Eval` call (guarded by
-`Interp.stdlibPatched`). It performs two jobs:
+`Interp.stdlibPatched`). It performs three jobs:
 
 1. **`patchFmtBindings`** overrides `fmt.Print`, `fmt.Printf`, and
    `fmt.Println` in the parser's package registry with closures that call
@@ -72,6 +72,16 @@ to end on real Go programs.
    code resolves the import. See
    [ADR-012](../decisions/ADR-012-package-patchers-arg-proxies.md).
 
+3. **`installExitVirtualization`** rebinds `os.Exit` and `log.Fatal*` in
+   the parser's package registry so interpreted exit paths surface as a
+   typed error instead of terminating the host.
+   `os.Exit(code)` becomes `panic(&ExitError{Code: code})`; `log.Fatal*`
+   logs through the configured logger, then panics with code 1.
+   Each rebind is guarded by an `ok` check, so packages the embedder did
+   not import are left alone.
+   See [Process exit virtualization](#process-exit-virtualization) below
+   and [ADR-018](../decisions/ADR-018-virtualized-process-exit.md).
+
 ### Method names for interface bridging
 
 After each `Compile`, `Eval` copies the compiler's reverse method-ID mapping
@@ -88,6 +98,30 @@ names, and per-function local variable mappings. The builder is only
 invoked if the program hits a `trap()` call, so there is no cost for
 normal execution.
 
+### Process exit virtualization
+
+Interpreted code that exits the process (`os.Exit`, `log.Fatal*`, and
+native bridges such as `testing.Main`) must not kill the host: it would
+take down the REPL and give embedders no catchable signal.
+`installExitVirtualization` (above) makes those paths `panic` an
+`*ExitError`:
+
+```go
+type ExitError struct{ Code int }
+func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
+func (e *ExitError) CleanExit()    {} // marks it as vm.CleanExit
+```
+
+`ExitError` implements `vm.CleanExit`, so the VM's recover path
+propagates it unwrapped to the top level instead of wrapping it as a
+crash (`*vm.PanicError`) -- see
+[vm.md](vm.md#panics-defer-recover-and-diagnostics).
+`Eval` (and therefore `Run`) returns it like any other error; callers
+recover the code with `errors.As`.
+The `main()` CLI translates `*ExitError` back into a host
+`os.Exit(code)`, so the user-facing exit status is unchanged.
+See [ADR-018](../decisions/ADR-018-virtualized-process-exit.md).
+
 ## CLI entry point (`main.go`)
 
 The mvm binary dispatches on the first CLI argument:
@@ -95,17 +129,25 @@ The mvm binary dispatches on the first CLI argument:
 | Argument | Action |
 |----------|--------|
 | (none) | `run` with no args -- enter the REPL |
-| `run` | Run a Go source file, evaluate `-e "<expr>"`, or enter the REPL |
+| `run` | Run a Go source file or remote `main` package, evaluate `-e "<expr>"`, or enter the REPL |
 | `test` | Run Go tests in a target package (see below) |
+| `version`, `-v`, `--version` | Print module version, Go toolchain, and OS/arch |
 | `-h`, `--help`, `help` | Print usage |
 | anything else | Treated as `run` with all args passed through |
+
+The `run` and `test` handlers live in `run_cmd.go` and `test_cmd.go`;
+`main.go` is just the dispatcher. When `run`'s target is an import path
+rather than a file, it fetches and executes the remote `main` package,
+forwarding trailing arguments as the program's `os.Args` (see
+[Remote imports](../usage.md#remote-imports)).
 
 `run` wraps stdout in a `newlineTracker` that appends a trailing newline
 if the program did not emit one, so the shell prompt is not overwritten.
 A leading `#!` line on the source file is stripped before evaluation so
 shebang-style scripts (`#!/usr/bin/env mvm`) work after `chmod +x`.
-`stdlib/jsonx` is imported for side effects so its `init()` registers the
-json patcher and arg proxies before any interpreter is constructed.
+`stdlib/all` is imported for side effects so the `jsonx`, `gobx`, and
+`xmlx` shadow `init()`s register their package patchers and arg proxies
+before any interpreter is constructed.
 
 Both `run` and `test` call `wireFS(i)` after constructing the
 interpreter. `wireFS` builds a single `*modfs.FS` honoring `GOPROXY`
@@ -131,12 +173,12 @@ unaltered.
 
 ### `mvm test`
 
-A lightweight `go test` analogue. Arguments are `mvm test [-x] [target]
-[test flags]`: `splitTestArgs` peels the mvm-owned leading flags (`-x`),
-takes the next non-flag token as the target, and treats the rest as test
-flags. The target may be a local directory (default `".") or a remote
-import path; both paths share a single synthesized `testing.Main` driver
-at the end.
+A lightweight `go test` analogue. Arguments are `mvm test [-x] [-stat]
+[target] [test flags]`: `splitTestArgs` peels the mvm-owned leading flags
+(`-x`, `-stat`, classified by `isMvmTestFlag`), takes the next non-flag
+token as the target, and treats the rest as test flags. The target may be
+a local directory (default `"."`) or a remote import path; both paths
+share a single synthesized driver at the end.
 
 | Target | Loader |
 |--------|--------|
@@ -152,19 +194,40 @@ because `SetIncludeTests(true)` flips a Parser flag that
 files. The flag is saved/restored by `importSrc` so transitive
 imports never pull in their own `_test.go` files.
 
-After loading, `runTestDriver` collects every `Test*` symbol via
-`i.FuncNames("Test")`, builds a single string of the form
+After loading, `runTestDriver` collects the three kinds of test function:
+`Test*` (via `i.FuncNames("Test")`, then filtered against `-run`/`-skip`
+by `filterTopLevelTests`), `Benchmark*`, and `Example*` (via
+`collectExamples`). It synthesizes and Eval's a final `_testmain` round
+of the form
 
 ```
-testing.Main(func(p, s string) (bool, error) { return true, nil },
-    []testing.InternalTest{{Name: "TestX", F: TestX}, ...}, nil, nil)
+mvmtest.Run(
+    []testing.InternalTest{{Name: "TestX", F: TestX}, ...},
+    []testing.InternalBenchmark{...},
+    []testing.InternalExample{...})
 ```
 
-and Eval's it in a final round. `os.Args` is overwritten beforehand with
-the test flags, run through `rewriteTestFlags` so the `go test` spellings
-(`-v`, `-run`, ...) become the `-test.*` names `testing.Main`'s flag
-parsing expects -- the same rewrite `go test` itself does in its CLI
-wrapper.
+`mvmtest.Run` is a host (native) closure that calls
+`testing.MainStart(statDeps{}, tests, benches, nil, examples).Run()`,
+records the returned exit code, then invokes the `-stat` flush.
+Driving `MainStart(...).Run()` directly -- rather than `testing.Main`,
+whose body is `os.Exit(MainStart(...).Run())` -- is what lets mvm run the
+full test lifecycle, get the exit code back, and flush `-stat` *after*
+the package `PASS`/`FAIL` line. `statDeps` (in `test_deps.go`) supplies
+the unexported `testDeps` argument `MainStart` requires; only its
+`MatchString` does real work, delegating to `regexp.MatchString` so
+`-run`/`-skip` matching stays native. `runTestDriver` returns
+`*interp.ExitError{Code: code}` for a non-zero exit, which `main()`
+translates into the host process status.
+
+`os.Args` is overwritten beforehand with the test flags, run through
+`rewriteTestFlags` so the `go test` spellings (`-v`, `-run`, ...) become
+the `-test.*` names testing's flag parsing expects -- the same rewrite
+`go test` itself does in its CLI wrapper. Benchmarks are passed
+unfiltered (testing gates them on `-bench`); fuzz targets are
+deliberately not passed. See
+[ADR-019](../decisions/ADR-019-test-runner-mainstart-driver.md) and
+[ADR-018](../decisions/ADR-018-virtualized-process-exit.md).
 
 The local-directory branch sequentially Eval's files, so cross-file
 references (e.g. a func in `a.go` referencing one in `b.go`) only

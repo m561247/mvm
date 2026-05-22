@@ -22,7 +22,7 @@ Try it in the browser at the [mvm playground](https://mvm.sh/playground).
 - Aims for full Go language compatibility
 - Embeddable in Go and C host programs (see [`examples/`](examples/))
 - pure Go, zero dependency
-- Integrated REPL, debugger (`trap()` builtin), and test runner
+- Integrated REPL, debugger (`trap()` builtin), and a `go test`-compatible runner (tests, benchmarks, and examples)
 - One single static binary, batteries included (full stdlib)
 
 ## Why mvm?
@@ -99,7 +99,9 @@ mvm -e 'http.ListenAndServe(":8080", http.FileServer(http.Dir(".")))'
 ## Build
 
 ```
-make test    # tests with race detector and coverage
+make fast    # quick inner loop: interp suite, -short + race detector
+make test    # full interp suite with the race detector
+make cover   # cross-package coverage profile
 make lint    # golangci-lint
 ```
 

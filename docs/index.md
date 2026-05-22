@@ -22,6 +22,7 @@ packages.
   synthetic `github.com/mvm-sh/std` module
 - [modfs](modules/modfs.md) -- in-memory `fs.FS` over the Go module proxy for dynamic network imports
 - [cmd/extract](modules/extract.md) -- generator for stdlib binding files
+- [cmd/mvmlint](modules/mvmlint.md) -- project-specific source linter built on mvm's own scanner
 
 ## Architecture
 
@@ -47,3 +48,5 @@ Architecture Decision Records:
 - [ADR-015: Absolute token positions throughout the pipeline](decisions/ADR-015-absolute-token-positions.md)
 - [ADR-016: Runtime introspection via *runtime.Func sentinels](decisions/ADR-016-runtime-introspection-bridge.md)
 - [ADR-017: Synthetic `std` module + stdlib redirect FS](decisions/ADR-017-std-module-redirect.md)
+- [ADR-018: Virtualized process exit via panic-based `ExitError`](decisions/ADR-018-virtualized-process-exit.md)
+- [ADR-019: `mvm test` drives `testing.MainStart(...).Run()` directly](decisions/ADR-019-test-runner-mainstart-driver.md)

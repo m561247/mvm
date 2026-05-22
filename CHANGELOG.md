@@ -6,8 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-22
+
 ### Added
 
+- `clear` builtin, the last builtin mvm was missing.
+  Works on maps and slices per the Go spec.
+- `comparable` is supported as a generic type constraint, alongside
+  broader improvements to generics parsing.
+- `mvm run <import-path>` fetches and executes a remote `main` package.
+  Trailing arguments are forwarded as the program's `os.Args`, the same
+  way a local `main` is run.
+- `mvm test` runs and validates `Example*` functions.
+  Their output is compared against the `// Output:` comment via
+  `go/doc`, in addition to running `Test*` and `Benchmark*`.
+- `mvm test -bench REGEX` runs benchmarks through native `testing`.
+- `-stat` prints compile and execute statistics, on both `run` and
+  `test`.
 - `interp.ExitError` lets embedders catch interpreted `os.Exit` and
   `log.Fatal*` as a typed error rather than having the host process
   terminate.
@@ -16,12 +31,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   The `mvm run` CLI translates the error back into a host `os.Exit(code)`
   so the user-facing exit status is unchanged.
   See ADR-018.
+- `cmd/mvmlint`, a small linter for mvm-specific code patterns.
+  Runs locally or as a remote main package
+  (`mvm github.com/mvm-sh/mvm/cmd/mvmlint .`).
+- Standard-library bridges for `encoding/gob`.
+- `encoding/xml` round-trips through the new `xmlx` shim.
+  Interpreted types implementing `xml.Marshaler`/`xml.Unmarshaler` and
+  `encoding.TextMarshaler`/`encoding.TextUnmarshaler` work through native
+  `encoding/xml` in both directions.
+- Native method hooks let stdlib bridges customize per-method behavior.
+- Composite interface bridges, where one interpreted type satisfies
+  several native interfaces at once, are supported.
+- Test infrastructure to run the Go standard library's own external
+  `_test.go` suites against mvm's reflect bridges, via a test overlay
+  and a GOROOT filesystem view.
 
 ### Changed
 
-- `interp.InstallStatsExitHook` is removed.
-  Exit virtualization is now unconditional and wired automatically on
-  first `Eval`, so the hook is no longer needed.
+- Exit virtualization (`os.Exit`, `log.Fatal*`) is now unconditional and
+  wired automatically on the first `Eval`.
+  See ADR-018.
 - `mvm test -stat` now prints the stats block *after* the test output
   (just before the package-level `PASS`/`FAIL` line) instead of before
   the driver runs.
@@ -29,7 +58,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   decrements an atomic counter; when the last test completes, mvm
   flushes `-stat` to stderr before native `testing.Main` reaches
   `os.Exit`.
-  See ADR-018.
+  See ADR-018 and ADR-019.
+- Load, parse, and compile errors report `file:line:col` with a source
+  snippet and a caret pointing at the offending token, instead of bare
+  messages or late panics.
+- Runtime panics print a unified stack that interleaves interpreted and
+  native (reentrant) frames.
+- `make test` runs the interp suite with the race detector only;
+  cross-package coverage moved to `make cover` (combining `-race` with
+  `-coverpkg=./...` was superlinear).
+  A new `make fast` target runs the suite with `-short` and the race
+  detector for a quick inner loop.
+
+### Fixed
+
+- Numerics: equality, conversion, and comparison are correct when mixing
+  untyped constants with floats; `numSet` handles the zero value; the
+  per-frame numeric-value cache stays consistent across frames.
+- Pointer receivers: method lookup on a dereferenced pointer receiver,
+  pointer-receiver resolution, and interface wrapping of pointer-only
+  method sets are fixed.
+- Type switches: the `TypeBranch` opcode and several interface-wrapper
+  edge cases are fixed.
+- Generics and inference: type information is no longer lost in
+  multi-return expressions, and inference works on func-typed
+  parameters.
+- Closures: multi-assignment of captured closure variables, and a case
+  where a closure was mis-qualified as a method, are fixed.
+- Functions: named-return (out-parameter) parsing, setting a returned
+  parameter inside a `defer`, and conversion of values returned from
+  native functions are fixed.
+- Native calls: panics raised inside native functions called from
+  interpreted code are caught and surfaced as mvm panics; a `Call` with
+  a nil function address now panics with a diagnostic instead of looping
+  forever.
+- Array slicing produces correct bounds.
+- Interface and method dispatch into native code, stdlib interface
+  bridges, and bridging a `Stringer` implemented on a struct field are
+  fixed.
+- `encoding/json` helper handles the cases needed to pass the stdlib
+  `encoding/json` test suite; `cmp` and `errors` internal dependencies
+  build for testing.
+- `crypto/ecdh` bridges pass the benchmark suite.
+- `vm.patchRtype` runs under a critical section, fixing a data race when
+  multiple goroutines trigger rtype patching concurrently.
+
+### Removed
+
+- `interp.InstallStatsExitHook`.
+  Exit virtualization is unconditional now (wired on first `Eval`), so
+  the hook is obsolete.
+  Embedders that called it should delete the call and catch exits via
+  `interp.ExitError` instead.
 
 ## [0.2.0] - 2026-05-18
 

@@ -14,7 +14,8 @@ standard library. It has three responsibilities:
    interfaces (`fmt.Stringer`, `io.Writer`, ...) at native call boundaries.
 3. **Host mvm-native shadows and patchers** for stdlib packages whose
    reflection-based walking would otherwise bypass interpreted methods
-   (currently `encoding/json` via `stdlib/jsonx`).
+   (`encoding/json` via `stdlib/jsonx`, `encoding/xml` via `stdlib/xmlx`,
+   `encoding/gob` via `stdlib/gobx`).
 
 ## Key types and functions
 
@@ -54,8 +55,9 @@ control the transitive-dependency footprint of an embedded mvm:
   ...). Each `syscall` binding is platform-specific
   (`syscall_<os>_<arch>.go`). ~170 files.
 - **`stdlib/all/`**: convenience aggregator. Blank-importing this
-  package pulls in `core + ext + jsonx` for the full set. Consumers
-  who want a smaller link footprint import `stdlib/core` directly.
+  package pulls in `core + ext + jsonx + gobx + xmlx` for the full set.
+  Consumers who want a smaller link footprint import `stdlib/core`
+  directly.
 
 The split lives in `cmd/extract/categories.go` (the `Core` map). See
 [ADR-013](../decisions/ADR-013-stdlib-core-ext-split.md).
@@ -217,7 +219,18 @@ required. See [ADR-012](../decisions/ADR-012-package-patchers-arg-proxies.md).
 Shadows provide mvm-aware replacements for reflect-walking stdlib
 packages where nested interpreted methods would otherwise be missed.
 
-Currently one shadow ships: [`stdlib/jsonx`](#stdlibjsonx).
+Three shadows ship, all following the same arg-proxy pattern:
+
+- [`stdlib/jsonx`](#stdlibjsonx) -- `encoding/json`.
+- `stdlib/xmlx` -- `encoding/xml`. Arg proxies on `xml.Unmarshal`,
+  `xml.Marshal`/`MarshalIndent`, and `(*xml.Encoder).Encode` let
+  interpreted `xml.Marshaler`/`Unmarshaler` and
+  `encoding.TextMarshaler`/`TextUnmarshaler` methods drive native
+  `encoding/xml` in both directions.
+- `stdlib/gobx` -- `encoding/gob`. Arg proxies on
+  `(*gob.Encoder).Encode` and `(*gob.Decoder).Decode` route interpreted
+  values through a walker that honours their `gob`/binary marshaling
+  methods.
 
 ## stdlib/jsonx
 
@@ -264,8 +277,8 @@ stdlib package:
 
 ## Open questions / TODOs
 
-- `encoding/xml`, `encoding/gob`, `text/template`: same reflect-walk
-  issue as JSON. Each would need its own shadow to honour interpreted
+- `text/template` / `html/template`: same reflect-walk issue as JSON,
+  XML, and gob. Each would need its own shadow to honour interpreted
   methods.
 - `fmt.Print*` already route to the Machine's writer via
   `interp.patchFmtBindings`. Nested `fmt.Stringer` / `fmt.Formatter`
