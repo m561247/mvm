@@ -98,6 +98,13 @@ def"`, err: "1:1: block not terminated"},
 	{n: "#39", src: "0XAB12", tok: `Int"0XAB12" Semicolon `},
 	{n: "#40", src: "0x1_2_3", tok: `Int"0x1_2_3" Semicolon `},
 
+	// Numbers: hexadecimal floats (p/P binary exponent).
+	{n: "#40a", src: "0x1p-1022", tok: `Float"0x1p-1022" Semicolon `},
+	{n: "#40b", src: "0x1.8p3", tok: `Float"0x1.8p3" Semicolon `},
+	{n: "#40c", src: "0x1.fp4", tok: `Float"0x1.fp4" Semicolon `},
+	{n: "#40d", src: "0x1P+8", tok: `Float"0x1P+8" Semicolon `},
+	{n: "#40e", src: "0x1p4 + 1", tok: `Float"0x1p4" Add Int"1" Semicolon `},
+
 	// Numbers: octal.
 	{n: "#41", src: "0o77", tok: `Int"0o77" Semicolon `},
 	{n: "#42", src: "0O17", tok: `Int"0O17" Semicolon `},

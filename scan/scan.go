@@ -348,8 +348,14 @@ func (sc *Scanner) getNum(src string) (s string, tok lang.Token) {
 		case isNum(r):
 			// ok
 		case r == '.' && !hasDot && !hasExp:
-			// Check this is not a method call (e.g. 123.String()).
-			if i+1 < len(src) && isNum(rune(src[i+1])) {
+			// Check this is not a method call (e.g. 123.String()). In a hex
+			// float the fractional part may use hex digits (e.g. 0x1.fp3).
+			var next byte
+			if i+1 < len(src) {
+				next = src[i+1]
+			}
+			hexFrac := isHex && ((next >= 'a' && next <= 'f') || (next >= 'A' && next <= 'F'))
+			if i+1 < len(src) && (isNum(rune(next)) || hexFrac) {
 				hasDot = true
 				tok = lang.Float
 			} else {
@@ -365,9 +371,19 @@ func (sc *Scanner) getNum(src string) (s string, tok lang.Token) {
 				s = src[:i+2]
 				continue
 			}
+		case (r == 'p' || r == 'P') && !hasExp && isHex:
+			// Hex floating-point literals use a 'p'/'P' binary exponent
+			// (e.g. 0x1p-1022, 0x1.8p3); the exponent digits are decimal.
+			hasExp = true
+			tok = lang.Float
+			if i+1 < len(src) && (src[i+1] == '+' || src[i+1] == '-') {
+				s = src[:i+2]
+				continue
+			}
 		case r == '+' || r == '-':
-			// Valid only right after 'e'/'E' exponent prefix.
-			if i < 2 || (src[i-1] != 'e' && src[i-1] != 'E') {
+			// Valid only right after an exponent prefix: 'e'/'E' (decimal) or
+			// 'p'/'P' (hex float).
+			if i < 2 || (src[i-1] != 'e' && src[i-1] != 'E' && src[i-1] != 'p' && src[i-1] != 'P') {
 				return s, tok
 			}
 		case r == 'x' || r == 'X' || r == 'o' || r == 'O':
