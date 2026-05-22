@@ -1,6 +1,7 @@
 package stdlib
 
 import (
+	"math"
 	"reflect"
 	"strings"
 )
@@ -20,6 +21,18 @@ import (
 // need a method attached to a native type, which mvm can't dispatch), so they
 // are left to `mvm test`'s drop-on-compile-error retry.
 var TestValues = map[string]map[string]reflect.Value{
+	"math": {
+		// export_test.go exposes the pure-Go implementations and the
+		// Payne-Hanek threshold/reducer. The first four are identical to the
+		// native exported funcs here (mvm has no asm variant), so map to those;
+		// the last two have no exported equivalent and are ported below.
+		"ExpGo":           reflect.ValueOf(math.Exp),
+		"Exp2Go":          reflect.ValueOf(math.Exp2),
+		"HypotGo":         reflect.ValueOf(math.Hypot),
+		"SqrtGo":          reflect.ValueOf(math.Sqrt),
+		"TrigReduce":      reflect.ValueOf(trigReduce),
+		"ReduceThreshold": reflect.ValueOf(float64(reduceThreshold)),
+	},
 	"strings": {
 		// export_test.go: StringFind(pattern, text) == Index(text, pattern).
 		"StringFind": reflect.ValueOf(func(pattern, text string) int {

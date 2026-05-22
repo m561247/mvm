@@ -3,6 +3,7 @@ package interp
 import (
 	"bytes"
 	"os"
+	"reflect"
 	"slices"
 	"testing"
 	"testing/fstest"
@@ -234,6 +235,53 @@ func TestBad(t *testing.T) {}
 	}
 	if slices.Contains(names, "TestBad") {
 		t.Errorf("TestBad is in the skip set and must not load; got %v", names)
+	}
+}
+
+// TestBridgedStdlibTestOverlayResolves verifies stdlib.TestOverlay() supplies a
+// bridged package's export_test.go-only symbols (math's ExpGo / Exp2Go /
+// HypotGo / SqrtGo / TrigReduce / ReduceThreshold) so an external test file
+// dot-importing the package and using them loads instead of failing
+// "undefined: ExpGo". Merges Values + TestOverlay the way newTestInterp does.
+func TestBridgedStdlibTestOverlayResolves(t *testing.T) {
+	mapFS := fstest.MapFS{
+		"math/overlay_test.go": &fstest.MapFile{Data: []byte(`package math_test
+
+import (
+	. "math"
+	"testing"
+)
+
+func TestOverlaySymbols(t *testing.T) {
+	_, _ = ExpGo, Exp2Go
+	_, _ = HypotGo, SqrtGo
+	_ = ReduceThreshold
+	if j, _ := TrigReduce(Pi); j > 8 {
+		t.Fatal("TrigReduce out of range")
+	}
+}
+`)},
+	}
+
+	vals := make(map[string]map[string]reflect.Value, len(stdlib.Values))
+	for k, v := range stdlib.Values {
+		vals[k] = v
+	}
+	for pkg, merged := range stdlib.TestOverlay() {
+		vals[pkg] = merged
+	}
+
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(vals)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	i.SetTestSourceFS(mapFS)
+	i.SetIncludeTests(true)
+	if _, err := i.Eval("math", ""); err != nil {
+		t.Fatalf("loading math tests with overlay: %v\nstderr: %s", err, stderr.String())
+	}
+	if !slices.Contains(i.FuncNames("Test"), "TestOverlaySymbols") {
+		t.Errorf("overlay test not loaded; got %v", i.FuncNames("Test"))
 	}
 }
 
