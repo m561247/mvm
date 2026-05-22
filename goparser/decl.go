@@ -176,15 +176,9 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		if !ok {
 			return nil, nil, 0, p.errAt(t, "symbol not found in package %s: %s", s.PkgPath, t.Str[1:])
 		}
-		cv, err := vmValueToConst(v)
+		cv, ctyp, err := constFromPkgValue(v)
 		if err != nil {
 			return nil, nil, 0, err
-		}
-		// Preserve named types (e.g. time.Duration) so arithmetic
-		// on typed constants keeps the correct result type.
-		var ctyp *vm.Type
-		if rt := v.Type(); rt.PkgPath() != "" {
-			ctyp = &vm.Type{Name: rt.Name(), Rtype: rt}
 		}
 		return cv, ctyp, 2, nil // consumes Ident (pkg) + Period
 
@@ -257,11 +251,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		if s.Kind != symbol.Const {
 			// A bridged constant reached through a bare name. Recover it from its reflect value.
 			if s.PkgPath != "" && s.Value.IsValid() {
-				if cv, cerr := vmValueToConst(s.Value); cerr == nil {
-					var ctyp *vm.Type
-					if rt := s.Value.Type(); rt.PkgPath() != "" {
-						ctyp = &vm.Type{Name: rt.Name(), Rtype: rt}
-					}
+				if cv, ctyp, cerr := constFromPkgValue(s.Value); cerr == nil {
 					return cv, ctyp, 1, nil
 				}
 			}
@@ -591,6 +581,22 @@ func vmValueToConst(v vm.Value) (constant.Value, error) {
 		return constant.MakeString(v.Reflect().String()), nil
 	}
 	return nil, fmt.Errorf("cannot use package value of kind %s as constant", k)
+}
+
+// constFromPkgValue folds an imported package value into a constant, preserving
+// a named type (e.g. time.Duration) so typed-constant arithmetic keeps the
+// right result type. Reached both via a package selector (pkg.X) and a
+// dot-imported bare name.
+func constFromPkgValue(v vm.Value) (constant.Value, *vm.Type, error) {
+	cv, err := vmValueToConst(v)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ctyp *vm.Type
+	if rt := v.Type(); rt.PkgPath() != "" {
+		ctyp = &vm.Type{Name: rt.Name(), Rtype: rt}
+	}
+	return cv, ctyp, nil
 }
 
 // Correspondence between language independent mvm tokens and Go stdlib tokens,
