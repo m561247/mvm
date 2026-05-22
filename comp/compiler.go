@@ -2827,6 +2827,10 @@ func (c *Compiler) compileBuiltin(
 	s *symbol.Symbol, narg int, t goparser.Token,
 	stack *[]*symbol.Symbol, push func(*symbol.Symbol), pop func() *symbol.Symbol, _ func() *symbol.Symbol,
 ) (bool, error) {
+	if s.Kind != symbol.Builtin && !strings.HasPrefix(s.Name, "unsafe.") {
+		// Catch user functions shadowing a builtin.
+		return false, nil
+	}
 	switch s.Name {
 	case "trap":
 		if narg != 0 {
