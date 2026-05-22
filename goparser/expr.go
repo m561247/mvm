@@ -592,7 +592,11 @@ func (p *Parser) emitGenericFunc(tmpl *genericTemplate, instToks Tokens, mname s
 			if _, _, ok := p.symGet(name); ok {
 				continue // already resolvable (e.g. a builtin or aliased target-pkg type).
 			}
-			p.SymSet(name, &symbol.Symbol{
+			// Temporary bare placeholder so the instantiated body's bare
+			// type-arg idents resolve; symGet-guarded above (only names not
+			// already present) and deleted after parseFunc on both the success
+			// and error paths, so it cannot clobber a real symbol.
+			p.SymSet(name, &symbol.Symbol{ // mvm:symkey-ok
 				Kind:  symbol.Type,
 				Name:  name,
 				Index: symbol.UnsetAddr,

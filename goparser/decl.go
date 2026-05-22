@@ -668,9 +668,9 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 		for k, v := range pkg.Values {
 			if rtype, ok := v.UnwrapType(); ok {
 				nv := vm.NewValue(rtype)
-				p.SymSet(k, &symbol.Symbol{Index: symbol.UnsetAddr, Name: k, Kind: symbol.Type, PkgPath: pp, Value: nv, Type: &vm.Type{Name: rtype.Name(), Rtype: rtype}})
+				p.SymSet(k, &symbol.Symbol{Index: symbol.UnsetAddr, Name: k, Kind: symbol.Type, PkgPath: pp, Value: nv, Type: &vm.Type{Name: rtype.Name(), Rtype: rtype}}) // mvm:symkey-ok: dot-import binds bare names
 			} else {
-				p.SymSet(k, &symbol.Symbol{Index: symbol.UnsetAddr, Name: k, Kind: symbol.Value, PkgPath: pp, Value: v})
+				p.SymSet(k, &symbol.Symbol{Index: symbol.UnsetAddr, Name: k, Kind: symbol.Value, PkgPath: pp, Value: v}) // mvm:symkey-ok: dot-import binds bare names
 			}
 		}
 	} else if n != "_" {

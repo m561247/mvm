@@ -119,7 +119,7 @@ func (p *Parser) parseTypeParamList(bt scan.Token) ([]typeParam, error) {
 	saved := make(map[string]*symbol.Symbol, len(raws))
 	for _, r := range raws {
 		saved[r.name] = p.Symbols[r.name]
-		p.Symbols[r.name] = &symbol.Symbol{
+		p.Symbols[r.name] = &symbol.Symbol{ // mvm:symkey-ok: transient type-param placeholder, restored in defer below
 			Kind: symbol.Type, Name: r.name,
 			Type: &vm.Type{Name: r.name, Rtype: vm.AnyRtype},
 		}
@@ -129,7 +129,7 @@ func (p *Parser) parseTypeParamList(bt scan.Token) ([]typeParam, error) {
 			if v == nil {
 				delete(p.Symbols, k)
 			} else {
-				p.Symbols[k] = v
+				p.Symbols[k] = v // mvm:symkey-ok: restoring the saved symbol
 			}
 		}
 	}()

@@ -136,7 +136,7 @@ func (c *Compiler) aliasTargetTopLevel(pkgPath string) {
 		if _, exists := c.Symbols[short]; exists {
 			continue
 		}
-		c.Symbols[short] = s
+		c.Symbols[short] = s // mvm:symkey-ok: deliberate bare-key alias for the test driver
 	}
 }
 

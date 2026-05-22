@@ -1,6 +1,7 @@
 # Static linting of Go source files. See .golangci.yaml for options.
 lint:
 	golangci-lint run
+	go run ./cmd/mvmlint .
 
 # Generate standard library bindings from Go toolchain source.
 # Also rebuilds the committed stdlib/src.zip from the sibling

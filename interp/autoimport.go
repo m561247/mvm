@@ -32,7 +32,7 @@ func (i *Interp) AutoImportPackages() {
 	}
 	for name, paths := range groups {
 		chosen := pickPreferredPath(name, paths)
-		i.SymSet(name, &symbol.Symbol{
+		i.SymSet(name, &symbol.Symbol{ // mvm:symkey-ok: REPL convenience binding of short package names
 			Kind:    symbol.Pkg,
 			PkgPath: chosen,
 			Index:   symbol.UnsetAddr,
