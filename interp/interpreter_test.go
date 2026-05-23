@@ -948,6 +948,25 @@ func TestStruct(t *testing.T) {
 		{n: "astype_nomatch", src: `import "errors"; type E struct{ s string }; func (e *E) Error() string { return e.s }; type F struct{ n int }; func (f *F) Error() string { return "f" }; var err error = &E{"boom"}; _, ok := errors.AsType[*F](err); ok`, res: "false"},
 		{n: "astype_unwrap_chain", src: `import "errors"; import "fmt"; type E struct{ s string }; func (e *E) Error() string { return e.s }; base := &E{"inner"}; w := fmt.Errorf("ctx: %w", base); v, ok := errors.AsType[*E](w); ok && v.s == "inner"`, res: "true"},
 
+		// An interpreted error with a custom Is(error)bool / As(any)bool must
+		// have that method dispatched by the native errors.Is / errors.As chain walk.
+		{n: "errors_is_custom_match", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrPermission)`, res: "true"},
+		{n: "errors_is_custom_nomatch", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrNotExist)`, res: "false"},
+		// SKIP (separate gap): passing the interpreted error through fmt.Errorf
+		// %w bridges it via the `any` (variadic) boundary, which uses only the
+		// single-method DisplayBridges, so the Error+Is composite is never
+		// selected and the custom Is is lost from the wrapped chain. The direct
+		// errors.Is path above works; only the through-`any` chain is affected.
+		{n: "errors_is_through_native_wrap", skip: true, src: `import "errors"; import "fmt"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; w := fmt.Errorf("ctx: %w", E{"x"}); errors.Is(w, fs.ErrPermission)`, res: "true"},
+		{n: "errors_as_custom_match", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "custom", Path: "/", Err: errors.New(e.s)}; return true }; var err error = E{"boom"}; var pe *fs.PathError; ok := errors.As(err, &pe); ok && pe.Path == "/"`, res: "true"},
+		{n: "errors_is_with_unwrap_method", src: `import "errors"; import "io/fs"; type E struct{ inner error }; func (e E) Error() string { return "e" }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; func (e E) Unwrap() error { return e.inner }; var err error = E{inner: errors.New("x")}; errors.Is(err, fs.ErrPermission)`, res: "true"},
+		{n: "errors_is_and_as_combined", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; func (e E) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "custom", Path: "/", Err: errors.New(e.s)}; return true }; var err error = E{"x"}; var pe *fs.PathError; errors.Is(err, fs.ErrPermission) && errors.As(err, &pe) && pe.Path == "/"`, res: "true"},
+		{n: "errors_as_with_unwrap_method", src: `import "errors"; import "io/fs"; type E struct{ inner error }; func (e E) Error() string { return "e" }; func (e E) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "custom", Path: "/", Err: errors.New("x")}; return true }; func (e E) Unwrap() error { return e.inner }; var err error = E{inner: errors.New("y")}; var pe *fs.PathError; errors.As(err, &pe) && pe.Path == "/"`, res: "true"},
+		// SKIP (documented gap): %T on an interpreted type shows the synthetic
+		// reflect.StructOf / bridge name, not the source type name. fmt computes
+		// %T from reflect.TypeOf before any Formatter, so it cannot be intercepted.
+		{n: "errors_pct_T_identity", skip: true, src: `import "fmt"; type E struct{ s string }; func (e E) Error() string { return e.s }; var err error = E{"x"}; fmt.Sprintf("%T", err)`, res: "main.E"},
+
 		// reflect.Value.MethodByName on a vm.Iface: mvm methods are invisible to
 		// Go reflect, so nativeMethodLookup intercepts and synthesises a bound method.
 		{n: "reflect_value_methodbyname_iface", src: `
