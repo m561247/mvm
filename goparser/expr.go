@@ -205,12 +205,13 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 						if err != nil {
 							return out, err
 						}
-						instToks, mname, err := p.instantiate(tmpl, typeArgs, nil)
+						typeArgSources := p.typeArgSourcesFor(typeArgs)
+						instToks, mname, err := p.instantiate(tmpl, typeArgs, typeArgSources)
 						if err != nil {
 							return out, err
 						}
 						out = out[:len(out)-1] // remove the generic name ident
-						if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, nil); err != nil {
+						if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, typeArgSources); err != nil {
 							return out, err
 						}
 					}
@@ -230,13 +231,14 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 								if err != nil {
 									return out, err
 								}
-								instToks, mname, err := p.instantiate(tmpl, typeArgs, nil)
+								typeArgSources := p.typeArgSourcesFor(typeArgs)
+								instToks, mname, err := p.instantiate(tmpl, typeArgs, typeArgSources)
 								if err != nil {
 									return out, err
 								}
 								out = out[:len(out)-1] // remove the pkg ident
 								ops = ops[:len(ops)-1] // remove the Period operator
-								if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, nil); err != nil {
+								if err := p.emitGenericFunc(tmpl, instToks, mname, t.Pos, &out, typeArgs, typeArgSources); err != nil {
 									return out, err
 								}
 							}

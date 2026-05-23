@@ -125,7 +125,7 @@ func (p *Parser) resolvePkgType(s *symbol.Symbol, name string, tok Token) (*vm.T
 	if rt.Kind() == reflect.Pointer {
 		rt = rt.Elem()
 	}
-	return &vm.Type{Name: rt.Name(), Rtype: rt}, nil
+	return &vm.Type{Name: rt.Name(), PkgPath: rt.PkgPath(), Rtype: rt}, nil
 }
 
 func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {

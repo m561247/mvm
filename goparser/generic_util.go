@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mvm-sh/mvm/lang"
+	"github.com/mvm-sh/mvm/symbol"
 	"github.com/mvm-sh/mvm/vm"
 )
 
@@ -53,14 +54,6 @@ func isSimpleIdent(s string) bool {
 	return len(s) > 0
 }
 
-// typeArgName builds a source-level, re-parseable name for a concrete type
-// argument. Named types use their declared name (so substituting them into a
-// generic body re-resolves to the same type). Compound types are reconstructed
-// from their element/key names rather than t.Rtype.String(): an interpreted
-// struct's Rtype.String() is an opaque placeholder (e.g. "struct { PO_1 int }",
-// see vm.placeholderFieldName) that would re-parse into a fresh, structurally
-// distinct anonymous struct - breaking reflect identity in the instantiated
-// body (e.g. slices.SortFunc over a []NamedStruct).
 func typeArgName(t *vm.Type) string {
 	if t.Name != "" {
 		if t.IsPtr() {
@@ -96,6 +89,59 @@ func typeArgSubst(t *vm.Type, source string) string {
 	return typeArgName(t)
 }
 
+func typeArgComposite(t *vm.Type, renderLeaf func(*vm.Type) string) string {
+	switch t.Rtype.Kind() {
+	case reflect.Pointer:
+		if t.ElemType != nil {
+			return "*" + typeArgComposite(t.ElemType, renderLeaf)
+		}
+	case reflect.Slice:
+		if t.ElemType != nil {
+			return "[]" + typeArgComposite(t.ElemType, renderLeaf)
+		}
+	case reflect.Array:
+		if t.ElemType != nil {
+			return "[" + strconv.Itoa(t.Rtype.Len()) + "]" + typeArgComposite(t.ElemType, renderLeaf)
+		}
+	case reflect.Map:
+		if t.KeyType != nil && t.ElemType != nil {
+			return "map[" + typeArgComposite(t.KeyType, renderLeaf) + "]" + typeArgComposite(t.ElemType, renderLeaf)
+		}
+	}
+	return renderLeaf(t)
+}
+
+func (p *Parser) typeArgSource(t *vm.Type) string {
+	return typeArgComposite(t, func(leaf *vm.Type) string {
+		if leaf.Name == "" {
+			return leaf.Rtype.String()
+		}
+		if leaf.PkgPath != "" {
+			if alias := p.aliasForPkgPath(leaf.PkgPath); alias != "" {
+				return alias + "." + leaf.Name
+			}
+		}
+		return leaf.Name
+	})
+}
+
+func (p *Parser) aliasForPkgPath(pkgPath string) string {
+	for _, s := range p.Symbols {
+		if s != nil && s.Kind == symbol.Pkg && s.PkgPath == pkgPath {
+			return s.Name
+		}
+	}
+	return ""
+}
+
+func (p *Parser) typeArgSourcesFor(typeArgs []*vm.Type) []string {
+	srcs := make([]string, len(typeArgs))
+	for i, t := range typeArgs {
+		srcs[i] = p.typeArgSource(t)
+	}
+	return srcs
+}
+
 func sanitizeMangled(s string) string {
 	ok := func(b byte) bool {
 		return b == '_' || b == '#' ||
@@ -120,12 +166,24 @@ func sanitizeMangled(s string) string {
 	return string(b)
 }
 
+func mangledTypeArgName(t *vm.Type) string {
+	return typeArgComposite(t, func(leaf *vm.Type) string {
+		if leaf.Name == "" {
+			return leaf.Rtype.String()
+		}
+		if leaf.PkgPath != "" {
+			return leaf.PkgPath + "." + leaf.Name
+		}
+		return leaf.Name
+	})
+}
+
 func mangledName(base string, typeArgs []*vm.Type) string {
 	var sb strings.Builder
 	sb.WriteString(base)
 	for _, t := range typeArgs {
 		sb.WriteByte('#')
-		sb.WriteString(sanitizeMangled(typeArgName(t)))
+		sb.WriteString(sanitizeMangled(mangledTypeArgName(t)))
 	}
 	return sb.String()
 }

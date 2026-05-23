@@ -511,31 +511,18 @@ func TestGenericImplicit(t *testing.T) {
 		{n: "chan", src: `func Id[T any](x T) T { return x }; c := make(chan int, 1); c <- 5; Id(<-c)`, res: "5"},
 		{n: "pointer", src: `func Id[T any](x T) T { return x }; a := 42; p := Id(&a); *p`, res: "42"},
 		{n: "deref", src: `func Id[T any](x T) T { return x }; a := 42; b := &a; Id(*b)`, res: "42"},
-		// Inference unwraps compound parameter shapes to bind type params.
 		{n: "infer_ptr", src: `func F[T any](x *T) T { return *x }; a := 42; F(&a)`, res: "42"},
 		{n: "infer_slice_of", src: `func F[T any](x []T) T { return x[0] }; F([]int{7, 8})`, res: "7"},
 		{n: "infer_ptr_slice", src: `func F[T any](x *[]T) int { return len(*x) }; a := []int{1, 2}; F(&a)`, res: "2"},
 		{n: "infer_map", src: `func F[K comparable, V any](m map[K]V, k K) V { return m[k] }; F(map[string]int{"a": 1}, "a")`, res: "1"},
 		{n: "infer_slice_ptr", src: `func F[T any](x []*T) T { return *x[0] }; a := 9; F([]*int{&a})`, res: "9"},
-		// Spread (f(s...)) in a variadic generic call binds T to the element
-		// type, not the whole slice (cmp.Or(vals...) in cmp's TestOr).
 		{n: "infer_variadic_spread", src: `func Or[T comparable](vals ...T) T { var z T; for _, v := range vals { if v != z { return v } }; return z }; s := []int{0, 2}; Or(s...)`, res: "2"},
-		// A pkg-qualified call used as a generic-call argument is typed via its
-		// return type (cmp.Or(strings.Compare(...)) in cmp's ExampleOr_sort).
 		{n: "infer_pkg_qualified_call_arg", src: `import "strings"; func First[T comparable](vals ...T) T { var z T; for _, v := range vals { if v != z { return v } }; return z }; First(strings.Compare("a", "b"))`, res: "-1"},
-		// A named struct passed as a compound type arg ([]O) must re-resolve to
-		// the real type, not an opaque placeholder, so reflect identity holds in
-		// the instantiated body (slices.SortFunc over []Struct in cmp).
 		{n: "infer_named_struct_compound_arg", src: `func swap2[S ~[]E, E any](s S) E { s[0], s[1] = s[1], s[0]; return s[0] }; type O struct{ N int }; swap2([]O{{1}, {2}}).N`, res: "2"},
-		// A func-literal arg whose body calls another generic must be typed from
-		// its signature only; a full body-parse during inference would discard
-		// the inner instantiation, leaving an empty func slot (cmp ExampleOr_sort).
 		{n: "infer_func_literal_inner_generic", src: `func sortish[S ~[]E, E any](s S, f func(a, b E) int) E { var z E; for _, v := range s { if f(v, z) != 0 { z = v } }; return z }; func id[T any](x T) T { return x }; sortish([]int{3, 1, 2}, func(a, b int) int { return id(a) - id(b) })`, res: "2"},
-		// A generic call used as an argument to another generic call: the inner
-		// instance's body must survive the outer call's type-inference parse
-		// (drained via pendingMethodDefs), not be emitted into a discarded buffer
-		// that leaves an empty func slot (cmp.Or(cmp.Compare(...)) in ExampleOr_sort).
 		{n: "infer_generic_call_as_arg", src: `func Or[T comparable](vals ...T) T { var z T; for _, v := range vals { if v != z { return v } }; return z }; func cmp3[T int](a, b T) int { if a < b { return -1 }; if a > b { return 1 }; return 0 }; Or(cmp3(1, 2), cmp3(3, 3))`, res: "-1"},
+		{n: "infer_pkg_qualified_ptr_type_pos", src: `import "bytes"; func zero[T any](x T) T { var z T; return z }; var p *bytes.Buffer; zero(p) == nil`, res: "true"},
+		{n: "infer_pkg_qualified_slice_type_pos", src: `import "bytes"; func first[T any](xs []T) T { var z T; if len(xs) == 0 { return z }; return xs[0] }; var p *bytes.Buffer; first([]*bytes.Buffer{p, nil}) == nil`, res: "true"},
 	})
 }
 
