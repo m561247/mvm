@@ -108,7 +108,10 @@ func (i *Interp) Eval(name, src string) (res reflect.Value, err error) {
 
 	i.TrimStack()
 	i.Push(i.Data[dataOffset:]...)
-	i.PushCode(i.Code[codeOffset:]...)
+	// start is the VM-code position of the freshly compiled code.
+	// It can sit past codeOffset because prior Evals left their per-Evals
+	// init/main call shims in m.code, and PopExit reclaims only the trailing Exit.
+	start := i.PushCode(i.Code[codeOffset:]...)
 	emitCall := func(fn string) {
 		if s, ok := i.Symbols[fn]; ok {
 			i.PushCode(vm.Instruction{Op: vm.Push, A: int32(i.Data[s.Index].Int())}) //nolint:gosec
@@ -120,7 +123,7 @@ func (i *Interp) Eval(name, src string) (res reflect.Value, err error) {
 	}
 	emitCall("main")
 	i.PushCode(vm.Instruction{Op: vm.Exit})
-	i.SetIP(max(codeOffset, i.Entry))
+	i.SetIP(max(start, i.Entry))
 	i.SetDebugInfo(func() *vm.DebugInfo { return i.BuildDebugInfo() })
 	if debug {
 		i.PrintData()
@@ -138,11 +141,6 @@ func (i *Interp) Eval(name, src string) (res reflect.Value, err error) {
 	return i.Top().Reflect(), err
 }
 
-// withSourceContext enriches a compile/load error with a source snippet and
-// caret when the error (or any error it wraps) carries a source offset via
-// ErrPos. This mirrors the runtime PanicError diagnostics for compile-time
-// failures, so `mvm test`, `mvm run`, and the REPL all point at the offending
-// line. Errors without a position pass through unchanged.
 func (i *Interp) withSourceContext(err error) error {
 	var ep interface{ ErrPos() int }
 	if !errors.As(err, &ep) {
@@ -154,9 +152,6 @@ func (i *Interp) withSourceContext(err error) error {
 	return err
 }
 
-// installExitVirtualization rebinds os.Exit and log.Fatal* so interpreted
-// code's exit paths surface as *ExitError from Eval rather than killing the
-// host process. No-op for packages the embedder did not import.
 func (i *Interp) installExitVirtualization() {
 	if pkg, ok := i.Packages["os"]; ok {
 		pkg.Values["Exit"] = vm.FromReflect(reflect.ValueOf(func(code int) {
@@ -179,10 +174,7 @@ func (i *Interp) installExitVirtualization() {
 	}
 }
 
-// FormatStats returns a multi-line summary of an Interp's accumulated work
-// for the -stat CLI flag. "packages" reports bridged stdlib (Package.Bin)
-// vs source-loaded (derived from i.Sources, since the entry-point target
-// is not added to i.Packages while transitive non-stdlib imports are).
+// FormatStats returns a multi-line summary of an Interp's accumulated work for the -stat CLI flag.
 func FormatStats(i *Interp) string {
 	totalLines, srcFiles := 0, 0
 	srcDirs := map[string]struct{}{}
