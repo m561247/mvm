@@ -274,6 +274,19 @@ func (c *Compiler) methodID(name string) int {
 	return id
 }
 
+// populateIfaceMethodIDs assigns global method IDs to an interface type's
+// IfaceMethods so vm.Type.Implements / ResolveMethodType can match interpreted
+// methods at runtime (type assertions and type switches). Idempotent: methodID
+// is deterministic and IDs are only assigned when unset (ID < 0). Call after
+// typ.EnsureIfaceMethods().
+func (c *Compiler) populateIfaceMethodIDs(typ *vm.Type) {
+	if typ.IsInterface() && len(typ.IfaceMethods) > 0 && typ.IfaceMethods[0].ID < 0 {
+		for i, im := range typ.IfaceMethods {
+			typ.IfaceMethods[i].ID = c.methodID(im.Name)
+		}
+	}
+}
+
 // MethodNames returns the reverse mapping of global method IDs to names.
 func (c *Compiler) MethodNames() []string {
 	names := make([]string, len(c.methodIDs))
@@ -859,11 +872,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			okForm := t.Arg[0].(int)
 			typ := t.Arg[1].(*vm.Type)
 			typ.EnsureIfaceMethods()
-			if typ.IsInterface() && len(typ.IfaceMethods) > 0 && typ.IfaceMethods[0].ID < 0 {
-				for i, im := range typ.IfaceMethods {
-					typ.IfaceMethods[i].ID = c.methodID(im.Name)
-				}
-			}
+			c.populateIfaceMethodIDs(typ)
 			pop() // interface value
 			push(&symbol.Symbol{Kind: symbol.Value, Type: typ})
 			if okForm == 1 {
@@ -880,6 +889,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			typeIdx := -1
 			if typ != nil {
 				typ.EnsureIfaceMethods()
+				c.populateIfaceMethodIDs(typ)
 				typeIdx = c.typeIndex(typ)
 			}
 			c.emit(t, vm.TypeBranch, c.resolveLabel(t, &fixList), typeIdx)

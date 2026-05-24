@@ -1474,11 +1474,27 @@ func (m *Machine) Run() (err error) {
 				// reflect placeholder for user-defined interfaces) since every type
 				// is assignable to `interface{}`.
 				matched := false
+				var wrapTyp *Type // non-nil => wrap result as Iface for interpreted-method dispatch
 				if !isNil {
 					if dstTyp.IsInterface() {
 						matched = dstTyp.NativeImplements(rv.Type())
 					} else {
 						matched = rv.Type().AssignableTo(dstTyp.Rtype) || dstTyp.NativeImplements(rv.Type())
+					}
+					// Interpreted concrete type round-tripped through native reflect (e.g.
+					// reflect.Value.Interface()): its synthetic rtype carries no native
+					// methods, so the checks above miss interpreted methods. Recover the
+					// *Type and consult mvm's method tables (mirrors IfaceCall above).
+					if !matched {
+						if ct := m.typeByRtype(rv.Type()); ct != nil {
+							if dstTyp.IsInterface() {
+								if ct.Implements(dstTyp) {
+									matched, wrapTyp = true, ct
+								}
+							} else if ct.SameAs(dstTyp) {
+								matched = true
+							}
+						}
 					}
 				}
 				// If the value is a bridge wrapper (e.g. *BridgeError wrapping an
@@ -1491,7 +1507,11 @@ func (m *Machine) Run() (err error) {
 					}
 				}
 				if matched {
-					mem[sp] = FromReflect(rv)
+					if wrapTyp != nil {
+						mem[sp] = Value{ref: reflect.ValueOf(Iface{Typ: wrapTyp, Val: FromReflect(rv)})}
+					} else {
+						mem[sp] = FromReflect(rv)
+					}
 					if okForm {
 						if sp+1 >= len(mem) {
 							mem = growStack(mem, sp, 1)
@@ -1594,9 +1614,21 @@ func (m *Machine) Run() (err error) {
 				// Native interface value (e.g. from json.Unmarshal map).
 				if dtyp != nil {
 					concrete := rv.Elem()
-					if dtyp.IsInterface() {
+					switch {
+					case dtyp.IsInterface() && dtyp.Rtype.NumMethod() > 0:
+						// Genuine native interface: its rtype carries the method set.
 						matched = concrete.Type().Implements(dtyp.Rtype)
-					} else {
+					case dtyp.IsInterface():
+						// Interpreted (or empty) interface target: dtyp.Rtype is the
+						// methodless interface{} placeholder, so reflect.Implements would
+						// false-positive. Recover the concrete *Type and consult mvm's
+						// method tables; fall back to a name-based check for native concretes.
+						if ct := m.typeByRtype(concrete.Type()); ct != nil {
+							matched = ct.Implements(dtyp)
+						} else {
+							matched = dtyp.NativeImplements(concrete.Type())
+						}
+					default:
 						matched = concrete.Type().AssignableTo(dtyp.Rtype)
 					}
 					// Bridge wrapper (e.g. *BridgeError) holding an interpreted
@@ -3440,12 +3472,32 @@ type typesIndex struct {
 func (t *typesIndex) lookup(globals []Value, rt reflect.Type) *Type {
 	t.once.Do(func() {
 		t.m = map[reflect.Type]*Type{}
+		// Rtypes mapping to two genuinely different *Types are ambiguous: reflect
+		// cannot mint a distinct named rtype for a defined type, so it reuses the
+		// base's rtype -- `type A int`/`type B int` both resolve to int's rtype, and
+		// `type Y X` (X a named struct) reuses X's reflect.StructOf rtype. A value
+		// round-tripped through native reflect has lost which one it was, so
+		// recovering "the" *Type would dispatch the wrong type's methods; declaring
+		// even an unused sibling thus makes the original decline. Decline (return
+		// nil) for such rtypes rather than guess. SameAs clones (same type, e.g.
+		// struct-field shallow copies) are not ambiguous.
+		ambiguous := map[reflect.Type]bool{}
 		for _, g := range globals {
-			if g.ref.IsValid() && g.ref.Type() == typePtrRtype {
-				if v, _ := g.ref.Interface().(*Type); v != nil && v.Rtype != nil {
-					t.m[v.Rtype] = v
-				}
+			if !g.ref.IsValid() || g.ref.Type() != typePtrRtype {
+				continue
 			}
+			v, _ := g.ref.Interface().(*Type)
+			if v == nil || v.Rtype == nil || ambiguous[v.Rtype] {
+				continue
+			}
+			if prev, ok := t.m[v.Rtype]; ok {
+				if prev != v && !prev.SameAs(v) {
+					delete(t.m, v.Rtype)
+					ambiguous[v.Rtype] = true
+				}
+				continue
+			}
+			t.m[v.Rtype] = v
 		}
 	})
 	return t.m[rt]

@@ -157,8 +157,13 @@ func (t *Type) Implements(iface *Type) bool {
 	// Native interface types (e.g. io.Reader) have their method set in Rtype,
 	// so reflect can check implementation.
 	nativeIface := iface.Rtype.NumMethod() > 0
+	// Go method-set rule: a value type T does not include *T's pointer-receiver
+	// methods. mvm registers pointer-receiver methods on the value type T (so *T's
+	// Methods slice may be empty), so a resolved PtrRecv method only counts toward
+	// satisfaction when t is itself a pointer type. Mirrors ifaceProvidedMethods.
+	isPtr := t.Rtype != nil && t.Rtype.Kind() == reflect.Pointer
 	for _, im := range iface.IfaceMethods {
-		if t.ResolveMethodType(im.ID) != nil {
+		if mt := t.ResolveMethodType(im.ID); mt != nil && (isPtr || !mt.Methods[im.ID].PtrRecv) {
 			continue
 		}
 		if nativeIface {

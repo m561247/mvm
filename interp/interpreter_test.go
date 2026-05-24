@@ -993,14 +993,13 @@ func TestStruct(t *testing.T) {
 		{n: "errors_multierror_embedded", skip: true, src: `import "errors"; import "fmt"; import "io/fs"; type base []error; func (b base) Error() string { return "b" }; func (b base) Unwrap() []error { return []error(b) }; type wrap struct{ base }; var err error = wrap{base{fmt.Errorf("w: %w", fs.ErrPermission)}}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 
 		// SKIP (fundamental gap): interpreted methods are invisible to NATIVE reflect.
-		// reflect.StructOf cannot synthesize methods, so reflect.TypeOf(T{}).NumMethod()
-		// is 0 and reflect.Zero(t).Interface().(I) fails (the assertion runs in native
-		// code on a methodless synthetic rtype, uninterceptable). This is why
-		// `mvm test math/big` TestAliasing panics: testing/quick can't discover the
-		// test's custom Generate methods via reflect and falls back to the generic
-		// struct generator. Note: direct any.(I) and reflect.Type.Implements DO work
-		// (mvm's own machinery). Same family as the interpreted-interface type-arg gap.
-		{n: "reflect_interpreted_method_via_iface_assert", skip: true, src: `
+		// Tier-1 value path: a type assertion on an interpreted value round-tripped
+		// through native reflect (reflect.Zero(t).Interface()) must recognize the
+		// interpreted type's methods. The TypeAssert opcode recovers the *Type via
+		// typeByRtype and consults vm.Type.Implements (the synthetic rtype itself
+		// carries no native methods). reflect.Type.NumMethod / reflect.Type.Implements
+		// remain Tier-2 gaps (still rtype-level).
+		{n: "reflect_interpreted_method_via_iface_assert", src: `
 import "reflect"
 type T struct{ X int }
 func (T) Hello() string { return "hi" }
@@ -1044,6 +1043,146 @@ f := func() string {
 	return rv.MethodByName("Hi").Call(nil)[0].String()
 }
 reflect.ValueOf(f).Call(nil)[0].String()`, res: "hi"},
+
+		// Tier-1: interface type assertion / type switch on an interpreted value
+		// obtained via native reflect (so it arrives as a native any holding the
+		// methodless synthetic rtype, not an mvm Iface). TypeAssert/TypeBranch recover
+		// the *Type via typeByRtype and dispatch the interpreted method.
+		{n: "reflect_assert_iface_okform", src: `
+import "reflect"
+type T struct{ x int }
+func (t T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+func f() string { x := reflect.ValueOf(T{5}).Interface(); s, ok := x.(Speaker); if !ok { return "no" }; return s.Hello() }
+f()`, res: "hi"},
+		{n: "reflect_assert_iface_panicform", src: `
+import "reflect"
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+reflect.ValueOf(T{}).Interface().(Speaker).Hello()`, res: "hi"},
+		{n: "reflect_assert_iface_ptr_receiver", src: `
+import "reflect"
+type T struct{ n int }
+func (t *T) Inc() int { t.n++; return t.n }
+type Inc interface{ Inc() int }
+func f() int { x := reflect.ValueOf(&T{5}).Interface(); if v, ok := x.(Inc); ok { return v.Inc() }; return -1 }
+f()`, res: "6"},
+		{n: "reflect_typeswitch_iface", src: `
+import "reflect"
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+func f() string { x := reflect.ValueOf(T{}).Interface(); switch v := x.(type) { case Speaker: return v.Hello(); default: return "def" } }
+f()`, res: "hi"},
+		{n: "reflect_assert_iface_negative", src: `
+import "reflect"
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Missing interface{ Nope() int }
+func f() bool { x := reflect.ValueOf(T{}).Interface(); _, ok := x.(Missing); return ok }
+f()`, res: "false"},
+		{n: "reflect_assert_concrete_from_any", src: `
+import "reflect"
+type T struct{ x int }
+func f() int { x := reflect.ValueOf(T{7}).Interface(); t, ok := x.(T); if !ok { return -1 }; return t.x }
+f()`, res: "7"},
+		{n: "reflect_zero_iface_assert", src: `
+import "reflect"
+type G struct{}
+func (g G) Generate() int { return 42 }
+type Generator interface{ Generate() int }
+func f() int { if g, ok := reflect.Zero(reflect.TypeOf(G{})).Interface().(Generator); ok { return g.Generate() }; return -1 }
+f()`, res: "42"},
+		// #1 regression: two defined types over the same primitive base share one
+		// rtype (reflect can't mint a distinct named rtype), so a reflect round-trip
+		// can't tell them apart. The recovery must DECLINE on that ambiguity rather
+		// than cross-dispatch the wrong sibling's method. Invariant: never returns the
+		// other type's tag (it may legitimately decline or, when unambiguous, recover).
+		{n: "reflect_rtype_collision_no_crossdispatch", src: `
+import "reflect"
+type Celsius float64
+func (c Celsius) Tag() string { return "C" }
+type Fahrenheit float64
+func (f Fahrenheit) Tag() string { return "F" }
+type Tagger interface{ Tag() string }
+func f() string {
+	cv := reflect.ValueOf(Celsius(0)).Interface()
+	fv := reflect.ValueOf(Fahrenheit(0)).Interface()
+	ct, cok := cv.(Tagger)
+	ft, fok := fv.(Tagger)
+	if cok && ct.Tag() == "F" { return "BUG-C" }
+	if fok && ft.Tag() == "C" { return "BUG-F" }
+	return "safe"
+}
+f()`, res: "safe"},
+		// Unambiguous defined-over-primitive (no sibling sharing the rtype) still
+		// recovers correctly, so the ambiguity guard does not over-decline.
+		{n: "reflect_defined_primitive_recovers", src: `
+import "reflect"
+type Celsius float64
+func (c Celsius) Tag() string { return "C" }
+type Tagger interface{ Tag() string }
+func f() string { cv := reflect.ValueOf(Celsius(0)).Interface(); if t, ok := cv.(Tagger); ok { return t.Tag() }; return "no" }
+f()`, res: "C"},
+		// Same ambiguity over a named STRUCT base: `type Y X` reuses X's reflect.StructOf
+		// rtype, so X and Y are non-SameAs siblings on one rtype (not just primitive
+		// bases). The recovery must DECLINE rather than cross-dispatch -- declaring Y
+		// (even just to give it its own Tag) makes a reflect round-tripped X/Y
+		// indistinguishable. Invariant: never returns the other type's tag.
+		{n: "reflect_struct_sibling_no_crossdispatch", src: `
+import "reflect"
+type X struct{ n int }
+func (x X) Tag() string { return "X" }
+type Y X
+func (y Y) Tag() string { return "Y" }
+type Tagger interface{ Tag() string }
+func f() string {
+	xv := reflect.ValueOf(X{}).Interface()
+	yv := reflect.ValueOf(Y{}).Interface()
+	xt, xok := xv.(Tagger)
+	yt, yok := yv.(Tagger)
+	if xok && xt.Tag() == "Y" { return "BUG-X" }
+	if yok && yt.Tag() == "X" { return "BUG-Y" }
+	return "safe"
+}
+f()`, res: "safe"},
+		// #3 regression: Go method-set rule -- a value type T does NOT satisfy an
+		// interface whose method has a pointer receiver; only *T does. Covered on the
+		// mvm-iface and reflect paths. The legit *T case must still satisfy.
+		{n: "ptr_recv_value_not_impl_mvmiface", src: `
+type T struct{ n int }
+func (t *T) Inc() int { t.n++; return t.n }
+type Inc interface{ Inc() int }
+func f() bool { var x interface{} = T{5}; _, ok := x.(Inc); return ok }
+f()`, res: "false"},
+		{n: "ptr_recv_value_not_impl_reflect", src: `
+import "reflect"
+type T struct{ n int }
+func (t *T) Inc() int { t.n++; return t.n }
+type Inc interface{ Inc() int }
+func f() bool { x := reflect.ValueOf(T{5}).Interface(); _, ok := x.(Inc); return ok }
+f()`, res: "false"},
+		{n: "ptr_recv_pointer_impl_mvmiface", src: `
+type T struct{ n int }
+func (t *T) Inc() int { t.n++; return t.n }
+type Inc interface{ Inc() int }
+func f() int { var x interface{} = &T{5}; if v, ok := x.(Inc); ok { return v.Inc() }; return -1 }
+f()`, res: "6"},
+		// SKIP (separate follow-on gap): the testing/quick pattern derives the type via
+		// reflect.TypeOf(closure).In(0). For an interpreted closure that rtype is a
+		// distinct, UNregistered synthetic rtype, so typeByRtype misses it and the
+		// interface assertion fails -- unless the canonical rtype was already
+		// materialized (e.g. a prior reflect.TypeOf(G{})). Needs closure reflect-type
+		// construction to reuse the registered *Type.Rtype for parameters.
+		{n: "reflect_closure_in0_iface_assert", skip: true, src: `
+import "reflect"
+type G struct{}
+func (g G) Generate() int { return 42 }
+type Generator interface{ Generate() int }
+func check(f interface{}) int { if g, ok := reflect.Zero(reflect.TypeOf(f).In(0)).Interface().(Generator); ok { return g.Generate() }; return -1 }
+func run() int { fn := func(g G) bool { return true }; return check(fn) }
+run()`, res: "42"},
 
 		// struct with embedded type that has methods and additional fields
 		// (reflect.StructOf panics if Anonymous=true on a type with methods in a multi-field struct)
@@ -2142,6 +2281,45 @@ type S struct { n int }
 func (s S) Get() int { return s.n }
 var g Getter = S{7}
 switch v := g.(type) { case S: v.Get() }`, res: "7"},
+
+		// Type switch whose CASE is an interpreted interface (not a concrete type):
+		// the compiler must populate IfaceMethod IDs for TypeSwitchJump so
+		// vm.Type.Implements can match. The single-type-with-binding form worked by
+		// accident (a side-emitted TypeAssert populated the IDs); these no-binding and
+		// multi-type forms regressed without the fix. Covered on both the mvm-iface
+		// and reflect-round-tripped (native any) paths.
+		{n: "iface_case_nobind", src: `
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+var x interface{} = T{}
+var r int
+switch x.(type) { case Speaker: r = 1; default: r = 2 }
+r`, res: "1"},
+		{n: "iface_case_multitype", src: `
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+type Other interface{ Nope() int }
+var x interface{} = T{}
+var r int
+switch x.(type) { case Other, Speaker: r = 1; default: r = 2 }
+r`, res: "1"},
+		{n: "iface_case_nomatch", src: `
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Other interface{ Nope() int }
+var x interface{} = T{}
+var r int
+switch x.(type) { case Other: r = 1; default: r = 2 }
+r`, res: "2"},
+		{n: "iface_case_reflect_nobind", src: `
+import "reflect"
+type T struct{}
+func (t T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+func f() int { x := reflect.ValueOf(T{}).Interface(); switch x.(type) { case Speaker: return 1; default: return 2 } }
+f()`, res: "1"},
 
 		{n: "ptr_type", src: `
 type T struct{ N int }
