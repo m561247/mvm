@@ -162,39 +162,8 @@ func appendSingleAssign(out Tokens, src Token, pos int) Tokens {
 }
 
 func (p *Parser) parseAssignMultiRHS(in Tokens, lhs, rhs []Tokens, aindex int, define bool) (out Tokens, err error) {
-	// For plain-ident non-define assignments (e.g. a, b = b, a), use a batched approach:
-	// emit all LHS first, then all RHS, then one Assign(n). This ensures all RHS values
-	// are captured before any assignment takes effect, preserving swap semantics.
-	if !define {
-		allSimple := true
-		for _, e := range lhs {
-			if len(e) != 1 || e[0].Tok != lang.Ident {
-				allSimple = false
-				break
-			}
-		}
-		if allSimple {
-			for _, e := range lhs {
-				toks, err := p.parseExpr(e, "")
-				if err != nil {
-					return out, err
-				}
-				out = append(out, toks...)
-			}
-			for _, e := range rhs {
-				toks, err := p.parseExpr(e, "")
-				if err != nil {
-					return out, err
-				}
-				out = append(out, toks...)
-			}
-			out = append(out, newToken(lang.Assign, "", in[aindex].Pos, len(lhs)))
-			return out, err
-		}
-	}
-	// For multi-assignment with non-simple LHS (e.g. s[0], s[1] = s[1], s[0]),
-	// capture all RHS values into temporaries first, then assign to LHS.
-	// This ensures all RHS are evaluated before any LHS is modified.
+	// Non-define multi-RHS assignment (e.g. a, b = b, a) capture every RHS value into
+	// a temporary first, then assign the temporaries to the LHS.
 	if !define && len(rhs) > 1 {
 		pos := in[aindex].Pos
 		// Phase 1: evaluate each RHS into a temporary variable.

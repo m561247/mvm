@@ -222,6 +222,13 @@ func TestAssign(t *testing.T) {
 		{n: "#25", src: "func f() int { a := [3]int{5,3,1}; a[0], a[2] = a[2], a[0]; return 100*a[0]+10*a[1]+a[2] }; f()", res: "135"},
 		// pointer deref tuple swap
 		{n: "#26", src: "func f() int { a, b := 1, 2; pa, pb := &a, &b; *pa, *pb = *pb, *pa; return a*10+b }; f()", res: "21"},
+		{n: "#27_ptr_swap", src: "func f() int { a, b := 1, 2; p, q := &a, &b; p, q = q, p; return *p*10+*q }; f()", res: "21"},
+		{n: "#28_structptr_swap", src: "func f() int { type T struct{v int}; x, y := T{1}, T{2}; p, q := &x, &y; p, q = q, p; return p.v*10+q.v }; f()", res: "21"},
+		{n: "#29_ptr_rotate", src: "func f() int { a, b, c := 1, 2, 3; p, q, r := &a, &b, &c; p, q, r = r, p, q; return *p*100+*q*10+*r }; f()", res: "312"},
+		{n: "#30_slice_swap", src: "func f() int { s, t := []int{1}, []int{2}; s, t = t, s; return s[0]*10+t[0] }; f()", res: "21"},
+		{n: "#31_string_swap", src: `func f() string { s, t := "a", "b"; s, t = t, s; return s+t }; f()`, res: "ba"},
+		{n: "#32_map_swap", src: `func f() int { m, n := map[string]int{"x":1}, map[string]int{"x":2}; m, n = n, m; return m["x"]*10+n["x"] }; f()`, res: "21"},
+		{n: "#33_iface_swap", src: "func f() int { var x, y interface{} = 1, 2; x, y = y, x; return x.(int)*10+y.(int) }; f()", res: "21"},
 		// Stdlib package interface-typed vars (e.g. crypto/rand.Reader) must keep
 		// their declared interface type when inferred via :=, otherwise the runtime
 		// assignment panics with "io.Reader is not assignable to rand.reader".
@@ -984,6 +991,23 @@ func TestStruct(t *testing.T) {
 		// closure returns a []error derived from the unexported embedded field).
 		// Embedded single-error Unwrap() error works; only the []error-return case fails.
 		{n: "errors_multierror_embedded", skip: true, src: `import "errors"; import "fmt"; import "io/fs"; type base []error; func (b base) Error() string { return "b" }; func (b base) Unwrap() []error { return []error(b) }; type wrap struct{ base }; var err error = wrap{base{fmt.Errorf("w: %w", fs.ErrPermission)}}; errors.Is(err, fs.ErrPermission)`, res: "true"},
+
+		// SKIP (fundamental gap): interpreted methods are invisible to NATIVE reflect.
+		// reflect.StructOf cannot synthesize methods, so reflect.TypeOf(T{}).NumMethod()
+		// is 0 and reflect.Zero(t).Interface().(I) fails (the assertion runs in native
+		// code on a methodless synthetic rtype, uninterceptable). This is why
+		// `mvm test math/big` TestAliasing panics: testing/quick can't discover the
+		// test's custom Generate methods via reflect and falls back to the generic
+		// struct generator. Note: direct any.(I) and reflect.Type.Implements DO work
+		// (mvm's own machinery). Same family as the interpreted-interface type-arg gap.
+		{n: "reflect_interpreted_method_via_iface_assert", skip: true, src: `
+import "reflect"
+type T struct{ X int }
+func (T) Hello() string { return "hi" }
+type Speaker interface{ Hello() string }
+t := reflect.TypeOf(T{})
+_, ok := reflect.Zero(t).Interface().(Speaker)
+ok`, res: "true"},
 
 		// reflect.Value.MethodByName on a vm.Iface: mvm methods are invisible to
 		// Go reflect, so nativeMethodLookup intercepts and synthesises a bound method.
