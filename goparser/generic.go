@@ -872,6 +872,10 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		}
 		return nil, 1
 
+	case id == lang.Len:
+		// Synthetic len(container) emitted for an omitted slice bound (a[r:]).
+		return p.Symbols["int"].Type, 1
+
 	case id == lang.Ident:
 		s, _, ok := p.Symbols.Get(t.Str, p.scope)
 		if !ok {
@@ -883,11 +887,13 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		narg := t.Arg[0].(int)
 		rest := in[:l]
 		totalLen := 1
+		var firstArgType *vm.Type // leftmost arg: the type for make/new
 		for range narg {
-			_, al := p.postfixType(rest)
+			at, al := p.postfixType(rest)
 			if al == 0 {
 				return nil, 0
 			}
+			firstArgType = at
 			totalLen += al
 			rest = rest[:len(rest)-al]
 		}
@@ -899,6 +905,15 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		totalLen++
 		switch fnTok.Tok {
 		case lang.Ident:
+			switch fnTok.Str {
+			case "make":
+				return firstArgType, totalLen
+			case "new":
+				if firstArgType == nil {
+					return nil, 0
+				}
+				return vm.PointerTo(firstArgType), totalLen
+			}
 			s, _, ok := p.Symbols.Get(fnTok.Str, p.scope)
 			if !ok {
 				return nil, 0
@@ -957,6 +972,36 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 			return containerTyp.Elem(), 1 + il + cl
 		case reflect.String:
 			return p.Symbols["uint8"].Type, 1 + il + cl
+		}
+		return nil, 0
+
+	case id == lang.Slice:
+		// x[lo:hi(:max)]: slicing a slice/string keeps x's type; an array yields
+		// []elem. Operands precede the op as [container, lo, hi(, max)].
+		nIdx := 2
+		if three, _ := t.Arg[0].(bool); three {
+			nIdx = 3
+		}
+		rest := in[:l]
+		total := 1
+		for range nIdx {
+			_, al := p.postfixType(rest)
+			if al == 0 {
+				return nil, 0
+			}
+			total += al
+			rest = rest[:len(rest)-al]
+		}
+		containerTyp, cl := p.postfixType(rest)
+		if containerTyp == nil {
+			return nil, 0
+		}
+		total += cl
+		switch containerTyp.Rtype.Kind() {
+		case reflect.Slice, reflect.String:
+			return containerTyp, total
+		case reflect.Array:
+			return vm.SliceOf(containerTyp.Elem()), total
 		}
 		return nil, 0
 
