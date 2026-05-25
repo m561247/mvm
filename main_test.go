@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -164,8 +165,8 @@ func runMvmTest(t *testing.T, bin string, args ...string) (int, string) {
 	t.Helper()
 	out, err := exec.Command(bin, append([]string{"test"}, args...)...).CombinedOutput() //nolint:gosec // bin is buildMvm's t.TempDir output
 	if err != nil {
-		ee, ok := err.(*exec.ExitError)
-		if !ok {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
 			t.Fatalf("unexpected error: %v\n%s", err, out)
 		}
 		return ee.ExitCode(), string(out)
@@ -274,7 +275,7 @@ func TestRunMultiFile(t *testing.T) {
 	}
 	// Both orderings must resolve the cross-file reference and print "abc".
 	for _, order := range [][]string{{aGo, bGo}, {bGo, aGo}} {
-		out, err := exec.Command(bin, append([]string{"run"}, order...)...).CombinedOutput() //nolint:gosec // bin from t.TempDir
+		out, err := exec.Command(bin, append([]string{"run"}, order...)...).CombinedOutput() // bin from t.TempDir
 		if err != nil {
 			t.Fatalf("run %v: %v\n%s", order, err, out)
 		}

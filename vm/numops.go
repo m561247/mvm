@@ -12,12 +12,12 @@ type integer interface {
 
 type float interface{ ~float32 | ~float64 }
 
-func add[T integer](a, b uint64) uint64 { return uint64(T(a) + T(b)) } //nolint:gosec
-func sub[T integer](a, b uint64) uint64 { return uint64(T(a) - T(b)) } //nolint:gosec
-func mul[T integer](a, b uint64) uint64 { return uint64(T(a) * T(b)) } //nolint:gosec
-func div[T integer](a, b uint64) uint64 { return uint64(T(a) / T(b)) } //nolint:gosec
-func rem[T integer](a, b uint64) uint64 { return uint64(T(a) % T(b)) } //nolint:gosec
-func neg[T integer](a uint64) uint64    { return uint64(-T(a)) }       //nolint:gosec
+func add[T integer](a, b uint64) uint64 { return uint64(T(a) + T(b)) }
+func sub[T integer](a, b uint64) uint64 { return uint64(T(a) - T(b)) }
+func mul[T integer](a, b uint64) uint64 { return uint64(T(a) * T(b)) }
+func div[T integer](a, b uint64) uint64 { return uint64(T(a) / T(b)) }
+func rem[T integer](a, b uint64) uint64 { return uint64(T(a) % T(b)) }
+func neg[T integer](a uint64) uint64    { return uint64(-T(a)) }
 
 func addf[T float](a, b uint64) uint64 {
 	return math.Float64bits(float64(T(math.Float64frombits(a)) + T(math.Float64frombits(b))))
@@ -51,17 +51,17 @@ func putf32(f float32) uint64 { return math.Float64bits(float64(f)) }
 func truncToKind(n uint64, k reflect.Kind) uint64 {
 	switch k {
 	case reflect.Int8:
-		return uint64(int64(int8(n))) //nolint:gosec
+		return uint64(int64(int8(n)))
 	case reflect.Int16:
-		return uint64(int64(int16(n))) //nolint:gosec
+		return uint64(int64(int16(n)))
 	case reflect.Int32:
-		return uint64(int64(int32(n))) //nolint:gosec
+		return uint64(int64(int32(n)))
 	case reflect.Uint8:
-		return uint64(uint8(n)) //nolint:gosec
+		return uint64(uint8(n))
 	case reflect.Uint16:
-		return uint64(uint16(n)) //nolint:gosec
+		return uint64(uint16(n))
 	case reflect.Uint32:
-		return uint64(uint32(n)) //nolint:gosec
+		return uint64(uint32(n))
 	}
 	return n
 }

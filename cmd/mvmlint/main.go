@@ -433,7 +433,7 @@ func main() {
 
 	total := 0
 	for _, f := range files {
-		b, err := os.ReadFile(f) //nolint:gosec // dev tool linting repo-local source paths
+		b, err := os.ReadFile(f) // dev tool linting repo-local source paths
 		if err != nil {
 			continue
 		}

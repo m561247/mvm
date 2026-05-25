@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"unsafe" // to allow setting unexported struct fields //nolint:depguard
+	"unsafe" // to allow setting unexported struct fields
 )
 
 // Op is a VM opcode (bytecode instruction).
@@ -482,7 +482,7 @@ func traceIndent(mem []Value, fp int) string {
 	d := 0
 	for fp > 0 && fp-1 < len(mem) {
 		d++
-		fp = int(mem[fp-1].num &^ (1 << 63)) //nolint:gosec
+		fp = int(mem[fp-1].num &^ (1 << 63))
 	}
 	d-- // discard Eval driver frame
 	if d <= 0 {
@@ -537,12 +537,12 @@ func stackTop(mem []Value, sp, fp, n int) string {
 		case fp - 3:
 			fmt.Fprintf(&sb, "%d:deferHead=%d", i, v.num)
 		case fp - 2:
-			retIP := int(int32(v.num)) //nolint:gosec
+			retIP := int(int32(v.num))
 			nret := int((v.num >> 32) & retNretMask)
 			fb := int(v.num >> 48)
 			fmt.Fprintf(&sb, "%d:ret=%d,nret=%d,fb=%d", i, retIP, nret, fb)
 		case fp - 1:
-			prevFP := int(v.num &^ (1 << 63)) //nolint:gosec
+			prevFP := int(v.num &^ (1 << 63))
 			heap := v.num>>63 != 0
 			if heap {
 				fmt.Fprintf(&sb, "%d:prevFP=%d,heap", i, prevFP)
@@ -616,14 +616,14 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 			if dstKind >= reflect.Uint && dstKind <= reflect.Uintptr {
 				bits = uint64(f)
 			} else {
-				bits = uint64(int64(f)) //nolint:gosec
+				bits = uint64(int64(f))
 			}
 		case isFloat(dstKind):
 			// int -> float.
 			if srcKind >= reflect.Uint && srcKind <= reflect.Uintptr {
 				bits = math.Float64bits(float64(bits))
 			} else {
-				bits = math.Float64bits(float64(int64(bits))) //nolint:gosec
+				bits = math.Float64bits(float64(int64(bits)))
 			}
 		}
 		// Truncate to target width for sub-word types.
@@ -631,21 +631,21 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 		case reflect.Int:
 			mem[idx] = Value{num: bits, ref: zint}
 		case reflect.Int8:
-			mem[idx] = Value{num: uint64(int8(bits)), ref: zint8} //nolint:gosec
+			mem[idx] = Value{num: uint64(int8(bits)), ref: zint8}
 		case reflect.Int16:
-			mem[idx] = Value{num: uint64(int16(bits)), ref: zint16} //nolint:gosec
+			mem[idx] = Value{num: uint64(int16(bits)), ref: zint16}
 		case reflect.Int32:
-			mem[idx] = Value{num: uint64(int32(bits)), ref: zint32} //nolint:gosec
+			mem[idx] = Value{num: uint64(int32(bits)), ref: zint32}
 		case reflect.Int64:
 			mem[idx] = Value{num: bits, ref: zint64}
 		case reflect.Uint:
 			mem[idx] = Value{num: bits, ref: zuint}
 		case reflect.Uint8:
-			mem[idx] = Value{num: uint64(uint8(bits)), ref: zuint8} //nolint:gosec
+			mem[idx] = Value{num: uint64(uint8(bits)), ref: zuint8}
 		case reflect.Uint16:
-			mem[idx] = Value{num: uint64(uint16(bits)), ref: zuint16} //nolint:gosec
+			mem[idx] = Value{num: uint64(uint16(bits)), ref: zuint16}
 		case reflect.Uint32:
-			mem[idx] = Value{num: uint64(uint32(bits)), ref: zuint32} //nolint:gosec
+			mem[idx] = Value{num: uint64(uint32(bits)), ref: zuint32}
 		case reflect.Uint64:
 			mem[idx] = Value{num: bits, ref: zuint64}
 		case reflect.Float32:
@@ -656,7 +656,7 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 
 	case isNum(srcKind) && dstKind == reflect.String:
 		// int/rune -> string (e.g. string(65) -> "A").
-		mem[idx] = Value{ref: reflect.ValueOf(string(rune(int64(v.num))))} //nolint:gosec
+		mem[idx] = Value{ref: reflect.ValueOf(string(rune(int64(v.num))))}
 
 	case srcKind == reflect.String && dstKind == reflect.Slice && dstType.Elem().Kind() == reflect.Uint8:
 		// string -> []byte.
@@ -676,7 +676,7 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 		case reflect.Pointer, reflect.UnsafePointer:
 			up = v.ref.UnsafePointer()
 		case reflect.Uintptr:
-			up = unsafe.Pointer(uintptr(v.num)) //nolint:gosec,govet
+			up = unsafe.Pointer(uintptr(v.num)) //nolint:govet
 		}
 		nv := reflect.New(dstType).Elem()
 		nv.SetPointer(up)
@@ -687,7 +687,7 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 		// unsafe.Pointer -> *T or uintptr.
 		up := v.ref.UnsafePointer()
 		if dstKind == reflect.Uintptr {
-			mem[idx] = Value{num: uint64(uintptr(up)), ref: reflect.Zero(dstType)} //nolint:gosec
+			mem[idx] = Value{num: uint64(uintptr(up)), ref: reflect.Zero(dstType)}
 		} else {
 			mem[idx] = FromReflect(reflect.NewAt(dstType.Elem(), up))
 		}
@@ -741,7 +741,7 @@ func finalizeReturns(mem []Value, ofp, newBase, nret int) {
 }
 
 func (m *Machine) handleRecover(fp, sp int, mem []Value, deferRetAddr int) (int, []Value) {
-	if m.panicking && int(int32(mem[fp-2].num)) == deferRetAddr { //nolint:gosec
+	if m.panicking && int(int32(mem[fp-2].num)) == deferRetAddr {
 		m.panicking = false
 		pv := m.panicVal
 		if pv.IsValid() && !pv.IsIface() {
@@ -822,7 +822,7 @@ const (
 )
 
 func packRetIP(retIP, nret, frameBase int) uint64 {
-	return uint64(uint32(retIP)) | uint64(nret&retNretMask)<<32 | uint64(frameBase)<<48 //nolint:gosec
+	return uint64(uint32(retIP)) | uint64(nret&retNretMask)<<32 | uint64(frameBase)<<48
 }
 
 func growStack(mem []Value, sp, need int) []Value {
@@ -849,7 +849,7 @@ func (m *Machine) Run() (err error) {
 	m.code = append(m.code, Instruction{Op: DeferRet}, Instruction{Op: PanicUnwind}, Instruction{Op: Exit})
 	deferRetAddr := sentBase
 	panicAddr := m.panicAddr()
-	deferRetBits := uint64(deferRetAddr) //nolint:gosec
+	deferRetBits := uint64(deferRetAddr)
 
 	mem, ip, fp := m.mem, m.ip, m.fp
 	sp := len(mem) - 1
@@ -933,7 +933,7 @@ func (m *Machine) Run() (err error) {
 			// values directly without setting up a call frame).
 			if isNum(fval.ref.Kind()) { //nolint:gocritic
 				// Plain int code address stored inline in num.
-				nip = int(fval.num) //nolint:gosec
+				nip = int(fval.num)
 				m.heap = nil
 			} else if isClosure {
 				nip = clo.Code
@@ -1009,7 +1009,7 @@ func (m *Machine) Run() (err error) {
 					}
 					break
 				}
-				nip = int(fval.num) //nolint:gosec
+				nip = int(fval.num)
 				m.heap = nil
 			}
 			if nip == nilFuncAddr {
@@ -1018,7 +1018,7 @@ func (m *Machine) Run() (err error) {
 				continue
 			}
 			nret := int(c.B &^ CallSpreadFlag)
-			fpVal := uint64(fp) //nolint:gosec
+			fpVal := uint64(fp)
 			if prevHeap != nil {
 				m.heapFrames = append(m.heapFrames, prevHeap)
 				fpVal |= heapSavedFlag
@@ -1049,15 +1049,15 @@ func (m *Machine) Run() (err error) {
 		case CallImm:
 			narg := int(c.B) >> 16
 			nret := int(c.B) & 0xFFFF
-			fpVal := uint64(fp) //nolint:gosec
+			fpVal := uint64(fp)
 			if m.heap != nil {
 				// preserve caller closure context
 				m.heapFrames = append(m.heapFrames, m.heap)
 				fpVal |= heapSavedFlag
 				m.heap = nil
 			}
-			nip := int(m.globals[int(c.A)].num) //nolint:gosec
-			if nip == nilFuncAddr {             // defense in depth: nil/corrupt global slot
+			nip := int(m.globals[int(c.A)].num)
+			if nip == nilFuncAddr { // defense in depth: nil/corrupt global slot
 				m.raiseNilDeref()
 				ip = m.stageUnwind(ip, fp, mem)
 				continue
@@ -1091,14 +1091,14 @@ func (m *Machine) Run() (err error) {
 			// Struct or Array, so detachByValueArgs would be a no-op.
 			narg := int(c.B) >> 16
 			nret := int(c.B) & 0xFFFF
-			fpVal := uint64(fp) //nolint:gosec
+			fpVal := uint64(fp)
 			if m.heap != nil {
 				m.heapFrames = append(m.heapFrames, m.heap)
 				fpVal |= heapSavedFlag
 				m.heap = nil
 			}
-			nip := int(m.globals[int(c.A)].num) //nolint:gosec
-			if nip == nilFuncAddr {             // defense in depth: nil/corrupt global slot
+			nip := int(m.globals[int(c.A)].num)
+			if nip == nilFuncAddr { // defense in depth: nil/corrupt global slot
 				m.raiseNilDeref()
 				ip = m.stageUnwind(ip, fp, mem)
 				continue
@@ -1176,49 +1176,49 @@ func (m *Machine) Run() (err error) {
 		case GetLocalAddIntImm:
 			sp++
 			v := mem[int(c.A)+fp-1]
-			v.num = uint64(int(v.num) + int(c.B)) //nolint:gosec
+			v.num = uint64(int(v.num) + int(c.B))
 			v.ref = zint
 			mem[sp] = v
 		case GetLocalSubIntImm:
 			sp++
 			v := mem[int(c.A)+fp-1]
-			v.num = uint64(int(v.num) - int(c.B)) //nolint:gosec
+			v.num = uint64(int(v.num) - int(c.B))
 			v.ref = zint
 			mem[sp] = v
 		case GetLocalMulIntImm:
 			sp++
 			v := mem[int(c.A)+fp-1]
-			v.num = uint64(int(v.num) * int(c.B)) //nolint:gosec
+			v.num = uint64(int(v.num) * int(c.B))
 			v.ref = zint
 			mem[sp] = v
 		case GetLocalLowerIntImm:
 			sp++
-			mem[sp] = boolVal(int(mem[int(c.A)+fp-1].num) < int(c.B)) //nolint:gosec
+			mem[sp] = boolVal(int(mem[int(c.A)+fp-1].num) < int(c.B))
 		case GetLocalLowerUintImm:
 			sp++
-			mem[sp] = boolVal(uint(mem[int(c.A)+fp-1].num) < uint(int(c.B))) //nolint:gosec
+			mem[sp] = boolVal(uint(mem[int(c.A)+fp-1].num) < uint(int(c.B)))
 		case GetLocalGreaterIntImm:
 			sp++
-			mem[sp] = boolVal(int(mem[int(c.A)+fp-1].num) > int(c.B)) //nolint:gosec
+			mem[sp] = boolVal(int(mem[int(c.A)+fp-1].num) > int(c.B))
 		case GetLocalGreaterUintImm:
 			sp++
-			mem[sp] = boolVal(uint(mem[int(c.A)+fp-1].num) > uint(int(c.B))) //nolint:gosec
+			mem[sp] = boolVal(uint(mem[int(c.A)+fp-1].num) > uint(int(c.B)))
 		case GetLocalReturn:
 			sp++
 			mem[sp] = mem[int(c.A)+fp-1]
 			retIPInfo := mem[fp-2].num
 			frameBase := int(retIPInfo >> 48)
-			ip = int(int32(retIPInfo)) //nolint:gosec
+			ip = int(int32(retIPInfo))
 			ofp := fp
 			fpVal := mem[fp-1].num
 			if fpVal&heapSavedFlag != 0 {
-				fp = int(fpVal &^ heapSavedFlag) //nolint:gosec
+				fp = int(fpVal &^ heapSavedFlag)
 				top := len(m.heapFrames) - 1
 				m.heap = m.heapFrames[top]
 				m.heapFrames[top] = nil // clear for GC
 				m.heapFrames = m.heapFrames[:top]
 			} else {
-				fp = int(fpVal) //nolint:gosec
+				fp = int(fpVal)
 				m.heap = nil
 			}
 			newBase := ofp - frameBase
@@ -1234,23 +1234,23 @@ func (m *Machine) Run() (err error) {
 			continue
 		case LowerIntImmJumpFalse:
 			sp--
-			if int(mem[sp+1].num) >= int(c.B) { //nolint:gosec
+			if int(mem[sp+1].num) >= int(c.B) {
 				ip += int(c.A)
 				continue
 			}
 		case LowerIntImmJumpTrue:
 			sp--
-			if int(mem[sp+1].num) < int(c.B) { //nolint:gosec
+			if int(mem[sp+1].num) < int(c.B) {
 				ip += int(c.A)
 				continue
 			}
 		case GetLocalLowerIntImmJumpFalse:
-			if int(mem[int(c.B>>16)+fp-1].num) >= int(int16(c.B)) { //nolint:gosec
+			if int(mem[int(c.B>>16)+fp-1].num) >= int(int16(c.B)) {
 				ip += int(c.A)
 				continue
 			}
 		case GetLocalLowerIntImmJumpTrue:
-			if int(mem[int(c.B>>16)+fp-1].num) < int(int16(c.B)) { //nolint:gosec
+			if int(mem[int(c.B>>16)+fp-1].num) < int(int16(c.B)) {
 				ip += int(c.A)
 				continue
 			}
@@ -1428,7 +1428,7 @@ func (m *Machine) Run() (err error) {
 			if outcome == outNative {
 				break
 			}
-			codeAddr := int(m.globals[method.Index].num) //nolint:gosec
+			codeAddr := int(m.globals[method.Index].num)
 			// Build a closure with the concrete receiver as Heap[0], replacing the
 			// interface value on the stack. Same result as HeapAlloc+Get+Swap+MkClosure.
 			// For promoted methods, extract the embedded field as receiver.
@@ -1679,7 +1679,7 @@ func (m *Machine) Run() (err error) {
 			m.setFuncField(forceSettable(fieldByAB(mem[sp-1].ref, int(c.A), int(c.B))), mem[sp])
 			sp--
 		case FieldFset:
-			m.setFuncField(forceSettable(mem[sp-2].ref.Field(int(mem[sp-1].num))), mem[sp]) //nolint:gosec
+			m.setFuncField(forceSettable(mem[sp-2].ref.Field(int(mem[sp-1].num))), mem[sp])
 			sp -= 2
 		case FieldRefSet:
 			m.setFuncField(forceSettable(mem[sp-1].ref), mem[sp])
@@ -1744,7 +1744,7 @@ func (m *Machine) Run() (err error) {
 			}
 		case Next2:
 			if k, v, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, reflect.Value, bool))(); ok {
-				kAddr, vAddr := int(int16(c.B)), int(int16(c.B>>16)) //nolint:gosec
+				kAddr, vAddr := int(int16(c.B)), int(int16(c.B>>16))
 				m.assignSlot(&m.globals[kAddr], FromReflect(k))
 				m.assignSlot(&m.globals[vAddr], FromReflect(v))
 			} else {
@@ -1753,7 +1753,7 @@ func (m *Machine) Run() (err error) {
 			}
 		case Next2Local:
 			if k, v, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, reflect.Value, bool))(); ok {
-				kAddr, vAddr := int(int16(c.B)), int(int16(c.B>>16)) //nolint:gosec
+				kAddr, vAddr := int(int16(c.B)), int(int16(c.B>>16))
 				m.assignSlot(&mem[fp-1+kAddr], FromReflect(k))
 				m.assignSlot(&mem[fp-1+vAddr], FromReflect(v))
 			} else {
@@ -1774,7 +1774,7 @@ func (m *Machine) Run() (err error) {
 				mem = growStack(mem, sp, 1)
 			}
 			sp++
-			mem[sp] = Value{num: uint64(int(c.A)), ref: zint} //nolint:gosec
+			mem[sp] = Value{num: uint64(int(c.A)), ref: zint}
 		case Pull:
 			v := mem[sp]
 			if c.A != 0 {
@@ -1858,7 +1858,7 @@ func (m *Machine) Run() (err error) {
 			chanType := reflect.ChanOf(reflect.BothDir, elemType)
 			bufSize := int(c.B)
 			if bufSize < 0 {
-				bufSize = int(mem[sp].num) //nolint:gosec
+				bufSize = int(mem[sp].num)
 				sp--
 			}
 			if sp+1 >= len(mem) {
@@ -1928,7 +1928,7 @@ func (m *Machine) Run() (err error) {
 					}
 				}
 			}
-			mem[sp] = Value{num: uint64(chosen), ref: zint} //nolint:gosec
+			mem[sp] = Value{num: uint64(chosen), ref: zint}
 
 		case Print:
 			n := int(c.A)
@@ -1958,7 +1958,7 @@ func (m *Machine) Run() (err error) {
 				}
 				vimag = cnv(mem[sp])
 				vreal = cnv(mem[sp-1])
-				kind  = reflect.Kind(c.A) //nolint:gosec
+				kind  = reflect.Kind(c.A)
 				out   Value
 			)
 			switch kind {
@@ -1981,7 +1981,7 @@ func (m *Machine) Run() (err error) {
 		case Real:
 			var (
 				ref  = mem[sp].ref
-				kind = reflect.Kind(c.A) //nolint:gosec
+				kind = reflect.Kind(c.A)
 				v    Value
 			)
 			switch kind {
@@ -1997,7 +1997,7 @@ func (m *Machine) Run() (err error) {
 		case Imag:
 			var (
 				ref  = mem[sp].ref
-				kind = reflect.Kind(c.A) //nolint:gosec
+				kind = reflect.Kind(c.A)
 				v    Value
 			)
 			switch kind {
@@ -2011,10 +2011,10 @@ func (m *Machine) Run() (err error) {
 			mem[sp] = v
 
 		case Min:
-			sp = minMax(mem, sp, int(c.A), reflect.Kind(c.B), false) //nolint:gosec
+			sp = minMax(mem, sp, int(c.A), reflect.Kind(c.B), false)
 
 		case Max:
-			sp = minMax(mem, sp, int(c.A), reflect.Kind(c.B), true) //nolint:gosec
+			sp = minMax(mem, sp, int(c.A), reflect.Kind(c.B), true)
 
 		case WrapFunc:
 			// Wrap the mvm func value on the stack in a reflect.MakeFunc for native Go callbacks.
@@ -2049,19 +2049,19 @@ func (m *Machine) Run() (err error) {
 			nret := int((retIPInfo >> 32) & retNretMask)
 			frameBase := int(retIPInfo >> 48)
 			// If there are pending defers in this frame, dispatch the top one (LIFO).
-			dh := int(mem[fp-3].num) //nolint:gosec
+			dh := int(mem[fp-3].num)
 			if dh != 0 {
 				packed := mem[dh-2].num
-				narg := int(packed >> 2)       //nolint:gosec
-				isX := int(packed & 3)         //nolint:gosec
-				prevHead := int(mem[dh-1].num) //nolint:gosec
+				narg := int(packed >> 2)
+				isX := int(packed & 3)
+				prevHead := int(mem[dh-1].num)
 				funcVal := mem[dh-narg-3]
 				retBase := dh - narg - 3
 				if isX == 2 {
-					m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, mem) //nolint:gosec
+					m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, mem)
 					clear(mem[retBase+nret : sp+1])
 					sp = retBase + nret - 1
-					mem[fp-3].num = uint64(prevHead) //nolint:gosec
+					mem[fp-3].num = uint64(prevHead)
 					continue
 				}
 				if isX == 1 {
@@ -2080,11 +2080,11 @@ func (m *Machine) Run() (err error) {
 					}
 					clear(mem[retBase+nret : sp+1])
 					sp = retBase + nret - 1
-					mem[fp-3].num = uint64(prevHead) //nolint:gosec
-					continue                         // re-check for more defers
+					mem[fp-3].num = uint64(prevHead)
+					continue // re-check for more defers
 				}
 				// VM function: pack ip and nret into the returnIP slot, then call.
-				mem[dh].num = uint64(ip) | uint64(nret)<<32 //nolint:gosec
+				mem[dh].num = uint64(ip) | uint64(nret)<<32
 				prevHeap := m.heap
 				nip := m.resolveIPAndHeap(funcVal)
 				if nip == nilFuncAddr {
@@ -2109,7 +2109,7 @@ func (m *Machine) Run() (err error) {
 					copy(mem[sp+1:], mem[dh-narg-2:dh-2])
 					sp += n
 				}
-				defFPVal := uint64(fp) //nolint:gosec
+				defFPVal := uint64(fp)
 				if prevHeap != nil {
 					m.heapFrames = append(m.heapFrames, prevHeap)
 					defFPVal |= heapSavedFlag
@@ -2126,17 +2126,17 @@ func (m *Machine) Run() (err error) {
 				continue
 			}
 			// No pending defers: normal frame teardown.
-			ip = int(int32(retIPInfo)) //nolint:gosec
+			ip = int(int32(retIPInfo))
 			ofp := fp
 			fpVal := mem[fp-1].num
 			if fpVal&heapSavedFlag != 0 {
-				fp = int(fpVal &^ heapSavedFlag) //nolint:gosec
+				fp = int(fpVal &^ heapSavedFlag)
 				top := len(m.heapFrames) - 1
 				m.heap = m.heapFrames[top]
 				m.heapFrames[top] = nil // clear for GC
 				m.heapFrames = m.heapFrames[:top]
 			} else {
-				fp = int(fpVal) //nolint:gosec
+				fp = int(fpVal)
 				m.heap = nil
 			}
 			newBase := ofp - frameBase
@@ -2160,14 +2160,14 @@ func (m *Machine) Run() (err error) {
 			sp = newBase + nret - 1
 			continue
 		case Slice:
-			low := int(mem[sp-1].num) //nolint:gosec
-			high := int(mem[sp].num)  //nolint:gosec
+			low := int(mem[sp-1].num)
+			high := int(mem[sp].num)
 			mem[sp-2] = Value{ref: derefArray(mem[sp-2].ref).Slice(low, high)}
 			sp -= 2
 		case Slice3:
-			low := int(mem[sp-2].num)  //nolint:gosec
-			high := int(mem[sp-1].num) //nolint:gosec
-			hi := int(mem[sp].num)     //nolint:gosec
+			low := int(mem[sp-2].num)
+			high := int(mem[sp-1].num)
+			hi := int(mem[sp].num)
 			mem[sp-3] = Value{ref: derefArray(mem[sp-3].ref).Slice3(low, high, hi)}
 			sp -= 3
 		case Stop:
@@ -2205,13 +2205,13 @@ func (m *Machine) Run() (err error) {
 			case k >= reflect.Uint && k <= reflect.Uintptr:
 				mem[sp-1].num = truncToKind(mem[sp-1].num, k) >> mem[sp].num
 			case k == reflect.Int8:
-				mem[sp-1].num = uint64(int64(int8(mem[sp-1].num)) >> mem[sp].num) //nolint:gosec
+				mem[sp-1].num = uint64(int64(int8(mem[sp-1].num)) >> mem[sp].num)
 			case k == reflect.Int16:
-				mem[sp-1].num = uint64(int64(int16(mem[sp-1].num)) >> mem[sp].num) //nolint:gosec
+				mem[sp-1].num = uint64(int64(int16(mem[sp-1].num)) >> mem[sp].num)
 			case k == reflect.Int32:
-				mem[sp-1].num = uint64(int64(int32(mem[sp-1].num)) >> mem[sp].num) //nolint:gosec
+				mem[sp-1].num = uint64(int64(int32(mem[sp-1].num)) >> mem[sp].num)
 			default:
-				mem[sp-1].num = uint64(int64(mem[sp-1].num) >> mem[sp].num) //nolint:gosec
+				mem[sp-1].num = uint64(int64(mem[sp-1].num) >> mem[sp].num)
 			}
 			resetNumRef(&mem[sp-1])
 			sp--
@@ -2221,40 +2221,40 @@ func (m *Machine) Run() (err error) {
 
 		// Bit manipulation.
 		case Clz32:
-			mem[sp].num = uint64(bits.LeadingZeros32(uint32(mem[sp].num))) //nolint:gosec
+			mem[sp].num = uint64(bits.LeadingZeros32(uint32(mem[sp].num)))
 			mem[sp].ref = zint
 		case Clz64:
-			mem[sp].num = uint64(bits.LeadingZeros64(mem[sp].num)) //nolint:gosec
+			mem[sp].num = uint64(bits.LeadingZeros64(mem[sp].num))
 			mem[sp].ref = zint
 		case Ctz32:
-			mem[sp].num = uint64(bits.TrailingZeros32(uint32(mem[sp].num))) //nolint:gosec
+			mem[sp].num = uint64(bits.TrailingZeros32(uint32(mem[sp].num)))
 			mem[sp].ref = zint
 		case Ctz64:
-			mem[sp].num = uint64(bits.TrailingZeros64(mem[sp].num)) //nolint:gosec
+			mem[sp].num = uint64(bits.TrailingZeros64(mem[sp].num))
 			mem[sp].ref = zint
 		case Popcnt32:
-			mem[sp].num = uint64(bits.OnesCount32(uint32(mem[sp].num))) //nolint:gosec
+			mem[sp].num = uint64(bits.OnesCount32(uint32(mem[sp].num)))
 			mem[sp].ref = zint
 		case Popcnt64:
-			mem[sp].num = uint64(bits.OnesCount64(mem[sp].num)) //nolint:gosec
+			mem[sp].num = uint64(bits.OnesCount64(mem[sp].num))
 			mem[sp].ref = zint
 		case Rotl32:
-			k := int(mem[sp].num) //nolint:gosec
+			k := int(mem[sp].num)
 			sp--
-			mem[sp].num = uint64(bits.RotateLeft32(uint32(mem[sp].num), k)) //nolint:gosec
+			mem[sp].num = uint64(bits.RotateLeft32(uint32(mem[sp].num), k))
 			resetNumRef(&mem[sp])
 		case Rotl64:
-			k := int(mem[sp].num) //nolint:gosec
+			k := int(mem[sp].num)
 			sp--
 			mem[sp].num = bits.RotateLeft64(mem[sp].num, k)
 			resetNumRef(&mem[sp])
 		case Rotr32:
-			k := int(mem[sp].num) //nolint:gosec
+			k := int(mem[sp].num)
 			sp--
-			mem[sp].num = uint64(bits.RotateLeft32(uint32(mem[sp].num), -k)) //nolint:gosec
+			mem[sp].num = uint64(bits.RotateLeft32(uint32(mem[sp].num), -k))
 			resetNumRef(&mem[sp])
 		case Rotr64:
-			k := int(mem[sp].num) //nolint:gosec
+			k := int(mem[sp].num)
 			sp--
 			mem[sp].num = bits.RotateLeft64(mem[sp].num, -k)
 			resetNumRef(&mem[sp])
@@ -2367,7 +2367,7 @@ func (m *Machine) Run() (err error) {
 			mem[sp] = ValueOf(m.heap[int(c.A)])
 		case MkClosure:
 			n := int(c.A)
-			codeAddr := int(mem[sp-n].num) //nolint:gosec
+			codeAddr := int(mem[sp-n].num)
 			heap := make([]*Value, n)
 			for i := range n {
 				heap[i] = mem[sp-n+1+i].ref.Interface().(*Value)
@@ -2384,10 +2384,10 @@ func (m *Machine) Run() (err error) {
 			case n < 0:
 				// make([]T, len[, cap]): size args are on the stack.
 				nSizeArgs := -n
-				sLen := int(mem[sp-nSizeArgs+1].num) //nolint:gosec
+				sLen := int(mem[sp-nSizeArgs+1].num)
 				sCap := sLen
 				if nSizeArgs == 2 {
-					sCap = int(mem[sp].num) //nolint:gosec
+					sCap = int(mem[sp].num)
 				}
 				sp -= nSizeArgs - 1
 				mem[sp] = Value{ref: reflect.MakeSlice(sliceType, sLen, sCap)}
@@ -2460,7 +2460,7 @@ func (m *Machine) Run() (err error) {
 			sp++
 			mem[sp] = Value{ref: reflect.New(typ)}
 		case Index:
-			idx := int(mem[sp].num) //nolint:gosec
+			idx := int(mem[sp].num)
 			ref := reflect.Indirect(mem[sp-1].ref)
 			if ref.Kind() == reflect.String {
 				mem[sp-1] = Value{num: uint64(ref.String()[idx]), ref: zuint8}
@@ -2469,12 +2469,12 @@ func (m *Machine) Run() (err error) {
 			}
 			sp--
 		case IndexAddr:
-			idx := int(mem[sp].num) //nolint:gosec
+			idx := int(mem[sp].num)
 			ref := reflect.Indirect(mem[sp-1].ref)
 			mem[sp-1] = Value{ref: ref.Index(idx).Addr()}
 			sp--
 		case IndexSet:
-			idx := int(mem[sp-1].num) //nolint:gosec
+			idx := int(mem[sp-1].num)
 			slot := reflect.Indirect(mem[sp-2].ref).Index(idx)
 			m.setFuncField(slot, mem[sp])
 			sp -= 2
@@ -2800,7 +2800,7 @@ func (m *Machine) Run() (err error) {
 
 		// Per-type Greater.
 		case GreaterInt, GreaterInt8, GreaterInt16, GreaterInt32, GreaterInt64:
-			mem[sp-1] = boolVal(int64(mem[sp-1].num) > int64(mem[sp].num)) //nolint:gosec
+			mem[sp-1] = boolVal(int64(mem[sp-1].num) > int64(mem[sp].num))
 			sp--
 		case GreaterUint, GreaterUint8, GreaterUint16, GreaterUint32, GreaterUint64:
 			mem[sp-1] = boolVal(mem[sp-1].num > mem[sp].num)
@@ -2811,7 +2811,7 @@ func (m *Machine) Run() (err error) {
 
 		// Per-type Lower.
 		case LowerInt, LowerInt8, LowerInt16, LowerInt32, LowerInt64:
-			mem[sp-1] = boolVal(int64(mem[sp-1].num) < int64(mem[sp].num)) //nolint:gosec
+			mem[sp-1] = boolVal(int64(mem[sp-1].num) < int64(mem[sp].num))
 			sp--
 		case LowerUint, LowerUint8, LowerUint16, LowerUint32, LowerUint64:
 			mem[sp-1] = boolVal(mem[sp-1].num < mem[sp].num)
@@ -2822,22 +2822,22 @@ func (m *Machine) Run() (err error) {
 
 		// Immediate operand ops: right-hand constant is in Arg[0].
 		case AddIntImm:
-			mem[sp].num = uint64(int(mem[sp].num) + int(c.A)) //nolint:gosec
+			mem[sp].num = uint64(int(mem[sp].num) + int(c.A))
 			mem[sp].ref = zint
 		case SubIntImm:
-			mem[sp].num = uint64(int(mem[sp].num) - int(c.A)) //nolint:gosec
+			mem[sp].num = uint64(int(mem[sp].num) - int(c.A))
 			mem[sp].ref = zint
 		case MulIntImm:
-			mem[sp].num = uint64(int(mem[sp].num) * int(c.A)) //nolint:gosec
+			mem[sp].num = uint64(int(mem[sp].num) * int(c.A))
 			mem[sp].ref = zint
 		case GreaterIntImm:
-			mem[sp] = boolVal(int(mem[sp].num) > int(c.A)) //nolint:gosec
+			mem[sp] = boolVal(int(mem[sp].num) > int(c.A))
 		case GreaterUintImm:
-			mem[sp] = boolVal(uint(mem[sp].num) > uint(int(c.A))) //nolint:gosec
+			mem[sp] = boolVal(uint(mem[sp].num) > uint(int(c.A)))
 		case LowerIntImm:
-			mem[sp] = boolVal(int(mem[sp].num) < int(c.A)) //nolint:gosec
+			mem[sp] = boolVal(int(mem[sp].num) < int(c.A))
 		case LowerUintImm:
-			mem[sp] = boolVal(uint(mem[sp].num) < uint(int(c.A))) //nolint:gosec
+			mem[sp] = boolVal(uint(mem[sp].num) < uint(int(c.A)))
 
 		case DeferRet:
 			mem, sp, ip = m.deferRet(mem, fp, sp)
@@ -2855,7 +2855,7 @@ func (m *Machine) Run() (err error) {
 
 func (m *Machine) restoreFP(fpVal uint64) int {
 	if fpVal&heapSavedFlag != 0 {
-		fp := int(fpVal &^ heapSavedFlag) //nolint:gosec
+		fp := int(fpVal &^ heapSavedFlag)
 		top := len(m.heapFrames) - 1
 		m.heap = m.heapFrames[top]
 		m.heapFrames[top] = nil // clear for GC
@@ -2863,7 +2863,7 @@ func (m *Machine) restoreFP(fpVal uint64) int {
 		return fp
 	}
 	m.heap = nil
-	return int(fpVal) //nolint:gosec
+	return int(fpVal)
 }
 
 func unwrapIface(rv reflect.Value) reflect.Value {
@@ -2891,7 +2891,7 @@ func isNativeFunc(rv reflect.Value) bool {
 func (m *Machine) resolveIPAndHeap(funcVal Value) int {
 	if isNum(funcVal.ref.Kind()) {
 		m.heap = nil
-		return int(funcVal.num) //nolint:gosec
+		return int(funcVal.num)
 	}
 	if clo, ok := funcVal.ref.Interface().(Closure); ok {
 		m.heap = clo.Heap
@@ -2901,7 +2901,7 @@ func (m *Machine) resolveIPAndHeap(funcVal Value) int {
 	if iv, ok := funcVal.ref.Interface().(int); ok {
 		return iv
 	}
-	return int(funcVal.num) //nolint:gosec
+	return int(funcVal.num)
 }
 
 func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, int) {
@@ -2925,62 +2925,62 @@ func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, i
 	}
 	// Push 3-slot header: packed(narg/isX), prevHead link, returnIP placeholder.
 	// isX uses 2 bits: 0=VM func, 1=native reflect func, 2=builtin opcode.
-	prevHead := int(mem[fp-3].num) //nolint:gosec
+	prevHead := int(mem[fp-3].num)
 	if sp+3 >= len(mem) {
 		mem = growStack(mem, sp, 3)
 	}
-	mem[sp+1] = Value{num: uint64(narg<<2 | isX)} //nolint:gosec
-	mem[sp+2] = Value{num: uint64(prevHead)}      //nolint:gosec
-	mem[sp+3] = Value{}                           // returnIP placeholder, filled by Return
+	mem[sp+1] = Value{num: uint64(narg<<2 | isX)}
+	mem[sp+2] = Value{num: uint64(prevHead)}
+	mem[sp+3] = Value{} // returnIP placeholder, filled by Return
 	sp += 3
-	mem[fp-3].num = uint64(sp) //nolint:gosec // dh = index of returnIP slot
+	mem[fp-3].num = uint64(sp) // dh = index of returnIP slot
 	return mem, sp
 }
 
 func (m *Machine) deferRet(mem []Value, fp, sp int) ([]Value, int, int) {
 	mem = mem[:sp+1]
-	dh := int(mem[fp-3].num)        //nolint:gosec
-	narg := int(mem[dh-2].num >> 2) //nolint:gosec
+	dh := int(mem[fp-3].num)
+	narg := int(mem[dh-2].num >> 2)
 	val := mem[dh].num
-	returnIP := int(int32(val & 0xFFFFFFFF)) //nolint:gosec
-	nret := int(val >> 32)                   //nolint:gosec
-	prevHead := int(mem[dh-1].num)           //nolint:gosec
+	returnIP := int(int32(val & 0xFFFFFFFF))
+	nret := int(val >> 32)
+	prevHead := int(mem[dh-1].num)
 	retBase := dh - narg - 3
 	copy(mem[retBase:], mem[dh+1:dh+1+nret]) // move return values down
 	clear(mem[retBase+nret:])                // clear stale slots
 	mem = mem[:retBase+nret]
-	mem[fp-3].num = uint64(prevHead) //nolint:gosec
+	mem[fp-3].num = uint64(prevHead)
 	sp = len(mem) - 1
 	mem = mem[:cap(mem)]
 	return mem, sp, returnIP
 }
 
 func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (bool, error) {
-	deferRetBits := uint64(panicAddr - 1) //nolint:gosec
+	deferRetBits := uint64(panicAddr - 1)
 	*mem = (*mem)[:*sp+1]
 	if *fp == 0 {
 		// Top-level panic: no call frame to unwind.
 		m.mem, m.ip, m.fp = *mem, 0, 0
 		return true, m.escapeErr()
 	}
-	dh := int((*mem)[*fp-3].num) //nolint:gosec
+	dh := int((*mem)[*fp-3].num)
 	if dh != 0 {
 		packed := (*mem)[dh-2].num
-		narg := int(packed >> 2)          //nolint:gosec
-		isX := int(packed & 3)            //nolint:gosec
-		prevHead := int((*mem)[dh-1].num) //nolint:gosec
+		narg := int(packed >> 2)
+		isX := int(packed & 3)
+		prevHead := int((*mem)[dh-1].num)
 		funcVal := (*mem)[dh-narg-3]
 		retBase := dh - narg - 3
 		popDefer := func() (bool, error) {
 			clear((*mem)[retBase:])
 			*mem = (*mem)[:retBase]
-			(*mem)[*fp-3].num = uint64(prevHead) //nolint:gosec
+			(*mem)[*fp-3].num = uint64(prevHead)
 			*sp = len(*mem) - 1
 			*mem = (*mem)[:cap(*mem)]
 			return false, nil
 		}
 		if isX == 2 {
-			m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, *mem) //nolint:gosec
+			m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, *mem)
 			return popDefer()
 		}
 		if isX == 1 {
@@ -2998,7 +2998,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		// VM defer: store panicAddr as return address, push frame.
 		retIPInfo := (*mem)[*fp-2].num
 		nret := int((retIPInfo >> 32) & retNretMask)
-		(*mem)[dh].num = uint64(uint32(panicAddr)) | uint64(nret)<<32 //nolint:gosec
+		(*mem)[dh].num = uint64(uint32(panicAddr)) | uint64(nret)<<32
 		prevHeap := m.heap
 		nip := m.resolveIPAndHeap(funcVal)
 		if nip == nilFuncAddr {
@@ -3014,7 +3014,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		base := len(*mem)
 		*mem = append(*mem, funcVal)
 		*mem = append(*mem, (*mem)[dh-narg-2:dh-2]...)
-		defFPVal := uint64(*fp) //nolint:gosec
+		defFPVal := uint64(*fp)
 		if prevHeap != nil {
 			m.heapFrames = append(m.heapFrames, prevHeap)
 			defFPVal |= heapSavedFlag
@@ -3032,7 +3032,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		retIPInfo := (*mem)[*fp-2].num
 		nret := int((retIPInfo >> 32) & retNretMask)
 		frameBase := int(retIPInfo >> 48)
-		*ip = int(int32(retIPInfo)) //nolint:gosec
+		*ip = int(int32(retIPInfo))
 		ofp := *fp
 		*fp = m.restoreFP((*mem)[*fp-1].num)
 		newBase := ofp - frameBase
@@ -3199,11 +3199,11 @@ func minMax(mem []Value, sp, n int, kind reflect.Kind, isMax bool) int {
 	case kind >= reflect.Int && kind <= reflect.Int64:
 		for i := best + 1; i <= sp; i++ {
 			if isMax {
-				if int64(mem[i].num) > int64(mem[best].num) { //nolint:gosec
+				if int64(mem[i].num) > int64(mem[best].num) {
 					best = i
 				}
 			} else {
-				if int64(mem[i].num) < int64(mem[best].num) { //nolint:gosec
+				if int64(mem[i].num) < int64(mem[best].num) {
 					best = i
 				}
 			}
@@ -3757,7 +3757,7 @@ func (m *Machine) CallFunc(fval Value, funcType reflect.Type, args []reflect.Val
 	narg := funcType.NumIn()
 	nret := funcType.NumOut()
 	callIP := len(m.code)
-	m.code = append(m.code, Instruction{Op: Call, A: int32(narg), B: int32(nret)}) //nolint:gosec
+	m.code = append(m.code, Instruction{Op: Call, A: int32(narg), B: int32(nret)})
 	m.code = append(m.code, Instruction{Op: Exit})
 	m.ip = callIP
 	m.fp = 0
@@ -3780,7 +3780,7 @@ func (m *Machine) callPooled(fval Value, funcType reflect.Type, args []reflect.V
 	narg := funcType.NumIn()
 	nret := funcType.NumOut()
 	callIP := len(m.code)
-	m.code = append(m.code, Instruction{Op: Call, A: int32(narg), B: int32(nret)}) //nolint:gosec
+	m.code = append(m.code, Instruction{Op: Call, A: int32(narg), B: int32(nret)})
 	m.code = append(m.code, Instruction{Op: Exit})
 	m.ip = callIP
 	m.fp = 0
@@ -3874,13 +3874,13 @@ func (m *Machine) newGoroutine(fval Value, args []Value) (panicked bool) {
 	var nip int
 	var heap []*Value
 	if isNum(fval.ref.Kind()) {
-		nip = int(fval.num) //nolint:gosec
+		nip = int(fval.num)
 	} else if clo, ok := fval.ref.Interface().(Closure); ok {
 		nip, heap = clo.Code, clo.Heap
 	} else if iv, ok := fval.ref.Interface().(int); ok {
 		nip = iv
 	} else {
-		nip = int(fval.num) //nolint:gosec
+		nip = int(fval.num)
 	}
 	if nip == nilFuncAddr {
 		// go of a nil func: panic synchronously, else the spawned goroutine
@@ -4036,7 +4036,7 @@ func appendValues(sb *strings.Builder, lv []Value) {
 }
 
 func funcValuePtr(fv reflect.Value) uintptr {
-	return *(*uintptr)(fv.Addr().UnsafePointer()) //nolint:gosec
+	return *(*uintptr)(fv.Addr().UnsafePointer())
 }
 
 func forceSettable(fv reflect.Value) reflect.Value {
@@ -4175,7 +4175,7 @@ func setNumReflect(rv reflect.Value, num uint64) {
 	case reflect.Bool:
 		rv.SetBool(num != 0)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		rv.SetInt(int64(num)) //nolint:gosec
+		rv.SetInt(int64(num))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		rv.SetUint(num)
 	case reflect.Float32, reflect.Float64:
@@ -4642,7 +4642,7 @@ func (m *Machine) makeBridgeClosureImpl(ifc Iface, method Method, fnType reflect
 }
 
 func (m *Machine) makeMethodCell(ifc Iface, method Method) (*Value, Value) {
-	codeAddr := int(m.globals[method.Index].num) //nolint:gosec
+	codeAddr := int(m.globals[method.Index].num)
 	cell := new(Value)
 	*cell = ifc.Val
 	if path := method.Path; path != nil {

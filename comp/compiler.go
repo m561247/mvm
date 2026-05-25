@@ -515,12 +515,12 @@ func (c *Compiler) emit(t goparser.Token, op vm.Op, arg ...int) {
 		_, file, line, _ := runtime.Caller(1)
 		fmt.Fprintf(os.Stderr, "%s:%d: %v emit %v %v\n", path.Base(file), line, t, op, arg)
 	}
-	inst := vm.Instruction{Op: op, Pos: vm.Pos(t.Pos)} //nolint:gosec
+	inst := vm.Instruction{Op: op, Pos: vm.Pos(t.Pos)}
 	if len(arg) > 0 {
-		inst.A = int32(arg[0]) //nolint:gosec
+		inst.A = int32(arg[0])
 	}
 	if len(arg) > 1 {
-		inst.B = int32(arg[1]) //nolint:gosec
+		inst.B = int32(arg[1])
 	}
 	// Field/FieldSet encode a variable-length field index path in A, B.
 	// Unused trailing B must be -1 so the VM can distinguish path length.
@@ -738,7 +738,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if uerr != nil {
 					return err
 				}
-				n64 = int64(u64) //nolint:gosec
+				n64 = int64(u64)
 			}
 			n := int(n64)
 			intTyp := c.Symbols["int"].Type
@@ -1401,7 +1401,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				switch ts.Type.Rtype.Kind() {
 				case reflect.Struct:
 					if ks.Value.CanInt() {
-						fieldIdx := int(ks.Value.Int()) //nolint:gosec
+						fieldIdx := int(ks.Value.Int())
 						if fieldIdx < len(ts.Type.Fields) {
 							ft := ts.Type.Fields[fieldIdx]
 							if ft != nil && ft.Rtype.Kind() == reflect.Func {
@@ -1472,14 +1472,14 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 		case lang.Composite:
 			sliceLen := t.Arg[0].(int)
 			if sliceLen > 0 {
-				idx := int32(c.Symbols[t.Str].Index) //nolint:gosec
+				idx := int32(c.Symbols[t.Str].Index)
 				// Skip Fnews already claimed by a nested composite of the
 				// same type (B != 0 marks the patched length); without this,
 				// `[]E{x, &T{Errors: []E{y}}}` re-patches the inner []E's
 				// Fnew and leaves the outer one at length 0.
 				for i := len(c.Code) - 1; i >= 0; i-- {
 					if c.Code[i].Op == vm.Fnew && c.Code[i].A == idx && c.Code[i].B == 0 {
-						c.Code[i].B = int32(sliceLen) //nolint:gosec
+						c.Code[i].B = int32(sliceLen)
 						break
 					}
 				}
@@ -1923,7 +1923,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						// Patch the Grow instruction with max expression depth for bounds-check-free GetLocal.
 						if len(growPos) > 0 {
 							gp := growPos[len(growPos)-1]
-							c.Code[gp].B = int32(maxExprDepth[len(maxExprDepth)-1]) //nolint:gosec
+							c.Code[gp].B = int32(maxExprDepth[len(maxExprDepth)-1])
 							growPos = growPos[:len(growPos)-1]
 							maxExprDepth = maxExprDepth[:len(maxExprDepth)-1]
 							hasDefer = hasDefer[:len(hasDefer)-1]
@@ -2642,7 +2642,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			return fmt.Errorf("label not found: %q", t.Str)
 		}
 		loc := t.Arg[0].(int)
-		c.Code[loc].A = int32(int(s.Value.Int()) - loc) //nolint:gosec // relative code position
+		c.Code[loc].A = int32(int(s.Value.Int()) - loc) // relative code position
 	}
 	return err
 }
@@ -2722,7 +2722,7 @@ func (c *Compiler) fuseGetLocal(op vm.Op, imm int) bool {
 		return false
 	}
 	c.Code[len(c.Code)-1].Op = op
-	c.Code[len(c.Code)-1].B = int32(imm) //nolint:gosec
+	c.Code[len(c.Code)-1].B = int32(imm)
 	return true
 }
 
@@ -2761,7 +2761,7 @@ func (c *Compiler) fuseCmpJump(t goparser.Token, fixList *goparser.Tokens,
 		t.Arg = []any{loc} // fixup at the fused instruction's position
 		*fixList = append(*fixList, t)
 	} else {
-		jumpOff = int32(int(s.Value.Int()) - loc) //nolint:gosec
+		jumpOff = int32(int(s.Value.Int()) - loc)
 	}
 	prev.Op = fused
 	prev.A = jumpOff
@@ -2953,10 +2953,10 @@ func numericOp(base vm.Op, typ *vm.Type) vm.Op {
 		panic("numericOp: nil type")
 	}
 	k := typ.Rtype.Kind()
-	if int(k) >= len(vm.NumKindOffset) || vm.NumKindOffset[k] < 0 { //nolint:gosec
+	if int(k) >= len(vm.NumKindOffset) || vm.NumKindOffset[k] < 0 {
 		panic(fmt.Sprintf("numericOp: non-numeric kind %v", k))
 	}
-	return base + vm.Op(vm.NumKindOffset[k]) //nolint:gosec
+	return base + vm.Op(vm.NumKindOffset[k])
 }
 
 func (c *Compiler) emitArithmeticOp(t goparser.Token, right *symbol.Symbol, typ *vm.Type, baseOp, immOp, fuseOp, strOp vm.Op) {
@@ -3473,7 +3473,7 @@ func (c *Compiler) compileBuiltin(
 		}
 
 		push(&symbol.Symbol{Type: c.Symbols[kind.String()].Type})
-		c.emit(t, vm.Complex, int(kind)) //nolint:gosec
+		c.emit(t, vm.Complex, int(kind))
 		return true, nil
 
 	case "real", "imag":
@@ -3500,7 +3500,7 @@ func (c *Compiler) compileBuiltin(
 			return true, fmt.Errorf("invalid argument for %s (%s)", s.Name, kind)
 		}
 		push(&symbol.Symbol{Type: c.Symbols[kind.String()].Type})
-		c.emit(t, op, int(kind)) //nolint:gosec
+		c.emit(t, op, int(kind))
 		return true, nil
 
 	case "min", "max":
@@ -3520,7 +3520,7 @@ func (c *Compiler) compileBuiltin(
 		if s.Name == "max" {
 			op = vm.Max
 		}
-		c.emit(t, op, narg, int(argSym.Type.Rtype.Kind())) //nolint:gosec
+		c.emit(t, op, narg, int(argSym.Type.Rtype.Kind()))
 		return true, nil
 
 	case "unsafe.Sizeof", "unsafe.Alignof":
@@ -3535,7 +3535,7 @@ func (c *Compiler) compileBuiltin(
 		if s.Name == "unsafe.Sizeof" {
 			val = argSym.Type.Rtype.Size()
 		} else {
-			val = uintptr(argSym.Type.Rtype.Align()) //nolint:gosec
+			val = uintptr(argSym.Type.Rtype.Align())
 		}
 		pop() // argument
 		pop() // fn symbol

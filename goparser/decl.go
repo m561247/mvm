@@ -297,7 +297,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 				if op == "Sizeof" {
 					val = rt.Size()
 				} else {
-					val = uintptr(rt.Align()) //nolint:gosec
+					val = uintptr(rt.Align())
 				}
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, consumed, nil
 			}
@@ -370,7 +370,7 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 				if fname == "Sizeof" {
 					val = argTyp.Rtype.Size()
 				} else {
-					val = uintptr(argTyp.Rtype.Align()) //nolint:gosec
+					val = uintptr(argTyp.Rtype.Align())
 				}
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, totalLen + 2 /* Ident + Period */, nil
 			}
@@ -457,7 +457,7 @@ func OverflowsType(cv constant.Value, typ *vm.Type) bool {
 	if i.Kind() != constant.Int {
 		return false // not an integer constant; truncation is a separate concern
 	}
-	bits := uint(typ.Rtype.Size()) * 8 //nolint:gosec // type sizes are small
+	bits := uint(typ.Rtype.Size()) * 8 // type sizes are small
 	if unsigned {
 		if constant.Sign(i) < 0 {
 			return true
@@ -616,7 +616,7 @@ func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
 		}
 		// go/constant has no ToUint; extract int64 bits for correct wraparound.
 		v, _ := constant.Int64Val(constant.ToInt(cv))
-		return constant.MakeUint64(uint64(v)) //nolint:gosec // intentional wraparound
+		return constant.MakeUint64(uint64(v)) // intentional wraparound
 	case rt.Kind() == reflect.Float32 || rt.Kind() == reflect.Float64:
 		return constant.ToFloat(cv)
 	case rt.Kind() == reflect.Complex64 || rt.Kind() == reflect.Complex128:
@@ -624,7 +624,7 @@ func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
 	case rt.Kind() == reflect.String:
 		if cv.Kind() == constant.Int {
 			v, _ := constant.Int64Val(cv)
-			return constant.MakeString(string(rune(v))) //nolint:gosec // intentional int-to-rune conversion
+			return constant.MakeString(string(rune(v))) // intentional int-to-rune conversion
 		}
 		return cv
 	}
@@ -727,7 +727,7 @@ func FoldBinary(op lang.Token, x constant.Value, xtyp *vm.Type, y constant.Value
 		// values produced by unary ^ on unsigned constants. Reinterpret as unsigned.
 		if op == lang.Shr && xtyp != nil && isUnsignedKind(xtyp.Rtype.Kind()) {
 			v, _ := constant.Int64Val(cv)
-			cv = constant.MakeUint64(uint64(v)) //nolint:gosec // reinterpret signed bits as unsigned
+			cv = constant.MakeUint64(uint64(v)) // reinterpret signed bits as unsigned
 		}
 		return cv, xtyp, true
 	}

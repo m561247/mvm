@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ func runCmd(arg []string) error {
 	rflag.Var(&trace, "x", "trace mode (bare -x = line; -x=op, -x=all, -x=line,op)")
 	rflag.BoolVar(&stat, "stat", false, "print compile/run statistics on exit")
 	if err := rflag.Parse(arg); err != nil {
-		if err == flag.ErrHelp { // -h already printed usage
+		if errors.Is(err, flag.ErrHelp) { // -h already printed usage
 			return nil
 		}
 		return err

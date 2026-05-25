@@ -1,14 +1,19 @@
 version: "2"
 linters:
   enable:
+    - copyloopvar
     - errcheck
+    - errorlint
+    - gocheckcompilerdirectives
     - gocritic
     - godot
     - gosec
     - govet
     - ineffassign
+    - makezero
     - misspell
 #    - modernize
+    - nolintlint
     - perfsprint
     - prealloc
     - predeclared
@@ -17,11 +22,19 @@ linters:
     - staticcheck
     - unconvert
     - unused
+    - wastedassign
+  settings:
+    gosec:
+      # G115 (integer overflow conversion) fires on every width conversion in
+      # the VM's value packing; pervasive false positives, suppressed wholesale.
+      excludes:
+        - G115
+    nolintlint:
+      require-specific: true # //nolint must name the linter(s) it suppresses
+      allow-unused: false # flag //nolint directives that suppress nothing
   exclusions:
     presets:
       - common-false-positives
-    paths:
-      - stdlib/src
 formatters:
   enable:
     - gofumpt

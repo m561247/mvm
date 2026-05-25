@@ -59,7 +59,7 @@ func asWalk(err error, targetVal reflect.Value, targetType reflect.Type) bool {
 		if x, ok := err.(interface{ As(any) bool }); ok && x.As(targetVal.Interface()) {
 			return true
 		}
-		switch x := err.(type) {
+		switch x := err.(type) { //nolint:errorlint // this IS the As/Unwrap walker
 		case interface{ Unwrap() error }:
 			err = x.Unwrap()
 		case interface{ Unwrap() []error }:

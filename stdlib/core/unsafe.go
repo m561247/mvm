@@ -22,7 +22,7 @@ func unsafeOffsetof(any) uintptr { panic("unsafe.Offsetof: not intercepted") }
 // Add/String/StringData are callable; Slice/SliceData are intercepted in
 // comp.compileBuiltin (to set the pointer-element-dependent result type),
 // so the stubs use reflect on `any` for their generic parameters.
-func unsafeAdd(p unsafe.Pointer, n int) unsafe.Pointer { return unsafe.Add(p, n) } //nolint:gosec
+func unsafeAdd(p unsafe.Pointer, n int) unsafe.Pointer { return unsafe.Add(p, n) }
 func unsafeString(p *byte, n int) string               { return unsafe.String(p, n) }
 func unsafeStringData(s string) *byte                  { return unsafe.StringData(s) }
 
@@ -47,9 +47,9 @@ func unsafeSliceData(s any) any {
 		if rv.IsNil() {
 			return reflect.Zero(ptrType).Interface()
 		}
-		return reflect.NewAt(elemType, unsafe.Pointer(rv.Pointer())).Interface() //nolint:gosec
+		return reflect.NewAt(elemType, unsafe.Pointer(rv.Pointer())).Interface()
 	}
-	return reflect.NewAt(elemType, unsafe.Pointer(rv.Index(0).UnsafeAddr())).Interface() //nolint:gosec
+	return reflect.NewAt(elemType, unsafe.Pointer(rv.Index(0).UnsafeAddr())).Interface()
 }
 
 func init() {

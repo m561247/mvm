@@ -160,7 +160,7 @@ func mvmCallers(m *vm.Machine, skip int, pcs []uintptr) int {
 // DebugInfo on demand; mvmCallers hoists the result before the
 // WalkCallStack loop so each frame doesn't re-trigger the rebuild.
 func internSentinel(m *vm.Machine, di *vm.DebugInfo, f vm.StackFrame) *runtime.Func {
-	key := frameKey{M: m, IP: f.IP, Pos: uint32(f.Pos)} //nolint:gosec
+	key := frameKey{M: m, IP: f.IP, Pos: uint32(f.Pos)}
 	if v, ok := sentinelByFrame.Load(key); ok {
 		return v.(*runtime.Func)
 	}

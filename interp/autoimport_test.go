@@ -26,7 +26,6 @@ func TestAutoImportBasic(t *testing.T) {
 		{n: "strconv", src: `strconv.Itoa(42)`, res: "42"},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.n, func(t *testing.T) {
 			t.Parallel()
 			i := newAutoImportInterp(t)

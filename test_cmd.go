@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -83,7 +84,7 @@ func testCmd(arg []string) error {
 
 	mvmFlags, target, testFlags := splitTestArgs(arg)
 	if err := tflag.Parse(mvmFlags); err != nil {
-		if err == flag.ErrHelp { // -h already printed usage
+		if errors.Is(err, flag.ErrHelp) { // -h already printed usage
 			return nil
 		}
 		return err
@@ -279,14 +280,14 @@ func materializePkgDir(fsys fs.FS, importPath string) (string, func(), error) {
 			return fmt.Errorf("refusing entry outside temp dir: %s", p)
 		}
 		if d.IsDir() {
-			return os.MkdirAll(dst, 0o700) //nolint:gosec // dst validated above
+			return os.MkdirAll(dst, 0o700) // dst validated above
 		}
 		src, oerr := fsys.Open(p)
 		if oerr != nil {
 			return oerr
 		}
 		defer func() { _ = src.Close() }()
-		out, cerr := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // dst validated above
+		out, cerr := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // dst validated above
 		if cerr != nil {
 			return cerr
 		}

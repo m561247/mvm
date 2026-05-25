@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unsafe" //nolint:depguard
+	"unsafe"
 )
 
 var (

@@ -116,8 +116,8 @@ func DumpFrame(w io.Writer, mem []Value, code Code, fp, sp, narg, nret int, di *
 		return
 	}
 
-	retIP := int(mem[fp-2].num)  //nolint:gosec
-	prevFP := int(mem[fp-1].num) //nolint:gosec
+	retIP := int(mem[fp-2].num)
+	prevFP := int(mem[fp-1].num)
 
 	funcAddr := max(fp-frameOverhead-narg-1, 0)
 
@@ -127,7 +127,7 @@ func DumpFrame(w io.Writer, mem []Value, code Code, fp, sp, narg, nret int, di *
 		codeAddr := 0
 		fv := mem[funcAddr]
 		if isNum(fv.ref.Kind()) {
-			codeAddr = int(fv.num) //nolint:gosec
+			codeAddr = int(fv.num)
 		} else if fv.ref.IsValid() {
 			if iv, ok := fv.ref.Interface().(int); ok {
 				codeAddr = iv
@@ -348,12 +348,12 @@ func (m *Machine) walkSegment(mem []Value, fp, ip int, yield func(StackFrame) bo
 			return
 		}
 		retIPInfo := mem[fp-2].num
-		retIP := int(int32(retIPInfo)) //nolint:gosec
+		retIP := int(int32(retIPInfo))
 		pc = retIP - 1
 		if fp-1 < 0 || fp-1 >= len(mem) {
 			return
 		}
-		fp = int(mem[fp-1].num &^ (1 << 63)) //nolint:gosec
+		fp = int(mem[fp-1].num &^ (1 << 63))
 	}
 	// Synthetic outermost frame for the top-level entry sequence (only
 	// when it carries a real source position; CallFunc-synthesized Call
@@ -404,7 +404,7 @@ func (m *Machine) DumpCallStack(w io.Writer, di *DebugInfo) {
 			break
 		}
 		fpVal := mem[fp-1].num
-		fp = int(fpVal &^ (1 << 63)) //nolint:gosec // mask off envSavedFlag
+		fp = int(fpVal &^ (1 << 63)) // mask off envSavedFlag
 	}
 
 	// Print globals with names if available.

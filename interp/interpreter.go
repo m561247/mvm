@@ -128,7 +128,7 @@ func (i *Interp) evalCompiled(compile func() error) (res reflect.Value, err erro
 	start := i.PushCode(i.Code[codeOffset:]...)
 	emitCall := func(fn string) {
 		if s, ok := i.Symbols[fn]; ok {
-			i.PushCode(vm.Instruction{Op: vm.Push, A: int32(i.Data[s.Index].Int())}) //nolint:gosec
+			i.PushCode(vm.Instruction{Op: vm.Push, A: int32(i.Data[s.Index].Int())})
 			i.PushCode(vm.Instruction{Op: vm.Call})
 		}
 	}

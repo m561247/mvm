@@ -361,7 +361,7 @@ func numBits(rv reflect.Value) uint64 {
 		}
 		return 0
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return uint64(rv.Int()) //nolint:gosec
+		return uint64(rv.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return rv.Uint()
 	case reflect.Float32, reflect.Float64:
@@ -448,7 +448,7 @@ func (v Value) UnwrapType() (reflect.Type, bool) {
 func (v Value) IsValid() bool { return v.ref.IsValid() }
 
 // Int returns v's value as int64.
-func (v Value) Int() int64 { return int64(v.num) } //nolint:gosec
+func (v Value) Int() int64 { return int64(v.num) }
 
 // Uint returns v's value as uint64.
 func (v Value) Uint() uint64 { return v.num }
@@ -489,7 +489,7 @@ func (v Value) Reflect() reflect.Value {
 	case reflect.Bool:
 		r.SetBool(v.num != 0)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		r.SetInt(int64(v.num)) //nolint:gosec
+		r.SetInt(int64(v.num))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		r.SetUint(v.num)
 	case reflect.Float32, reflect.Float64:
@@ -592,8 +592,8 @@ func Exportable(rv reflect.Value) reflect.Value {
 	// rather than silently misbehave.
 	// rvHeader mirrors reflect.Value's internal layout (typ, ptr, flag).
 	type rvHeader struct {
-		typ  unsafe.Pointer //nolint:unused
-		ptr  unsafe.Pointer //nolint:unused
+		typ  unsafe.Pointer
+		ptr  unsafe.Pointer
 		flag uintptr
 	}
 	const flagRO = (1 << 5) | (1 << 6) // flagStickyRO | flagEmbedRO

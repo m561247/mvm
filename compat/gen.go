@@ -288,9 +288,8 @@ func runOne(ref pkgRef, mvmBin string, timeout time.Duration) Pkg {
 	defer cancel()
 
 	start := time.Now()
-	// Package paths come from our own curated lists (stdlib/gen.go and
-	// compat/external.txt), not from untrusted input.
-	cmd := exec.CommandContext(ctx, mvmBin, "test", ref.path, "-v") //nolint:gosec
+	//nolint:gosec // G204: package paths from our curated lists, not untrusted input
+	cmd := exec.CommandContext(ctx, mvmBin, "test", ref.path, "-v")
 	cmd.Env = os.Environ()
 	output, _ := cmd.CombinedOutput()
 	dur := time.Since(start)
@@ -495,8 +494,8 @@ func updateReadme(path string, m Matrix) error {
 		"<!-- compat:end -->",
 		std.Green, std.Total, ext.Green, ext.Total, date)
 	updated := reReadme.ReplaceAllLiteralString(string(buf), block)
-	// path is the operator-supplied -root/README.md, not untrusted input.
-	return os.WriteFile(path, []byte(updated), 0o600) //nolint:gosec
+	//nolint:gosec // G703: path is the operator-supplied -root/README.md, not untrusted input
+	return os.WriteFile(path, []byte(updated), 0o600)
 }
 
 // printSummary writes a short human summary of the run to stderr.
