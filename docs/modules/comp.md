@@ -14,8 +14,10 @@ slice and populates a `Data` slice (the global memory segment).
 
 - **`Compiler`** -- embeds `*goparser.Parser`. Manages `Code`, `Data`,
   `Entry` (start IP), string deduplication (`strings` map), method ID
-  allocation (`methodIDs` map), and a type-pointer dedup cache
-  (`typeIdxs`). Position resolution rides on the embedded Parser's
+  allocation (`methodIDs` map), and type-slot dedup caches: `typeIdxs`
+  /`typeSyms` (type-DESCRIPTOR slots) and `zeroTypeIdxs` (zero-value `Fnew`
+  slots; see [Type resolution by identity slot](#type-resolution-by-identity-slot)).
+  Position resolution rides on the embedded Parser's
   `Sources` registry and `PosBase`; tokens carry absolute positions.
 - **`Compile(name, src string) error`** -- end-to-end compilation. Delegates
   Phase 1 (declaration resolution with retry loop) to `ParseAll`, then runs
@@ -53,6 +55,33 @@ slice and populates a `Data` slice (the global memory segment).
 
 A symbolic stack shadows the VM stack to track types at compile time,
 enabling type-specific opcode selection.
+
+#### Type resolution by identity slot
+
+A type is a first-class VM object: a `Data` slot holding the type, referenced by
+its slot index. The compiler resolves type references by IDENTITY, not by
+re-looking up a name in the (mutable, shared) symbol table -- the parser bakes
+the resolved `*vm.Type` onto the type-reference token (`Token.ResolvedType`; see
+[goparser](goparser.md#type-references-carry-identity)).
+
+Two kinds of type slot exist:
+
+- **Zero-value slot** -- `zeroTypeSlot(typ)` returns a `Data` slot holding a
+  `vm.NewValue` zero of the type (what `Fnew` copies to instantiate), deduped by
+  rtype. This is the slot a Type-kind ident resolves to.
+- **Descriptor slot** -- `typeSym(typ)` / `typeIndex(typ)` return a slot holding
+  the type descriptor, used by make-elem/key, `new`, `TypeAssert`, and type
+  switches.
+
+In the `Ident` handler, a token carrying a `*vm.Type` pushes a Type symbol bound
+to `zeroTypeSlot(typ)`, bypassing `symAt(t.Str)`. The pushed symbol carries the
+PRECISE `*vm.Type` (so two interpreted types that share an rtype do not
+cross-dispatch) and its `Name` (method lookup, `SymMap.MethodByName`, is still
+name-keyed). A name-resolved Type ident routes its own lazy allocation through
+the same `zeroTypeSlot`, so name idents, carried-type idents, and composite
+literals all patch the same `Fnew`. `make`/`new`/conversions read the pushed
+stack symbol, so they need no change. See
+[ADR-020](../decisions/ADR-020-type-identity-slots.md).
 
 #### Source positions
 
@@ -246,7 +275,9 @@ After Phase 1, every `Func` and `Var` symbol has a signature or type but
 assigns a `Data` slot to each, appending the symbol's `Value` (or a
 `NewValue` zero for uninitialized vars). Type and Value symbols are still
 allocated lazily in the `Ident` handler, since many built-in types may
-never be referenced.
+never be referenced; a Type symbol's lazy slot routes through `zeroTypeSlot`
+so it shares the type's canonical `Fnew` slot (see
+[Type resolution by identity slot](#type-resolution-by-identity-slot)).
 
 #### BuildDebugInfo
 

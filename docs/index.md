@@ -50,3 +50,4 @@ Architecture Decision Records:
 - [ADR-017: Synthetic `std` module + stdlib redirect FS](decisions/ADR-017-std-module-redirect.md)
 - [ADR-018: Virtualized process exit via panic-based `ExitError`](decisions/ADR-018-virtualized-process-exit.md)
 - [ADR-019: `mvm test` drives `testing.MainStart(...).Run()` directly](decisions/ADR-019-test-runner-mainstart-driver.md)
+- [ADR-020: Type references resolved by identity slot, not by name](decisions/ADR-020-type-identity-slots.md)

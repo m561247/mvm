@@ -40,25 +40,27 @@ type Compiler struct {
 
 	FuncRanges []vm.FuncRange // bytecode [Start, End) range for every compiled function, in source order
 
-	strings     map[string]int                  // locations of strings in Data
-	methodIDs   map[string]int                  // global method ID by method name
-	methodRtype map[int]reflect.Type            // func type (no receiver) by global method ID
-	typeIdxs    map[*vm.Type]int                // dedup cache for typeIndex, keyed by mvm type pointer
-	typeSyms    map[reflect.Type]*symbol.Symbol // dedup cache for typeSym, keyed by reflect.Type
-	labelAtPos  map[int]bool                    // code positions occupied by Labels; consulted by fuseCmpJump
+	strings      map[string]int                  // locations of strings in Data
+	methodIDs    map[string]int                  // global method ID by method name
+	methodRtype  map[int]reflect.Type            // func type (no receiver) by global method ID
+	typeIdxs     map[*vm.Type]int                // dedup cache for typeIndex, keyed by mvm type pointer
+	typeSyms     map[reflect.Type]*symbol.Symbol // dedup cache for typeSym (type-descriptor slot), keyed by reflect.Type
+	zeroTypeIdxs map[reflect.Type]int            // dedup cache: Data slot holding a zero VALUE of a type (Fnew source), keyed by reflect.Type
+	labelAtPos   map[int]bool                    // code positions occupied by Labels; consulted by fuseCmpJump
 }
 
 // NewCompiler returns a new compiler state for a given scanner.
 func NewCompiler(spec *lang.Spec) *Compiler {
 	return &Compiler{
-		Parser:      goparser.NewParser(spec, true),
-		Entry:       -1,
-		strings:     map[string]int{},
-		methodIDs:   map[string]int{},
-		methodRtype: map[int]reflect.Type{},
-		typeIdxs:    map[*vm.Type]int{},
-		typeSyms:    map[reflect.Type]*symbol.Symbol{},
-		labelAtPos:  map[int]bool{},
+		Parser:       goparser.NewParser(spec, true),
+		Entry:        -1,
+		strings:      map[string]int{},
+		methodIDs:    map[string]int{},
+		methodRtype:  map[int]reflect.Type{},
+		typeIdxs:     map[*vm.Type]int{},
+		typeSyms:     map[reflect.Type]*symbol.Symbol{},
+		zeroTypeIdxs: map[reflect.Type]int{},
+		labelAtPos:   map[int]bool{},
 	}
 }
 
@@ -1472,7 +1474,16 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 		case lang.Composite:
 			sliceLen := t.Arg[0].(int)
 			if sliceLen > 0 {
-				idx := int32(c.Symbols[t.Str].Index)
+				// Patch the matching Fnew by the type's canonical zero-value slot
+				// (the same slot the type ident emitted), shared by rtype whether
+				// that ident carried its type or was resolved by name.
+				sym := c.Symbols[t.Str]
+				var idx int32
+				if sym != nil && sym.Type != nil {
+					idx = int32(c.zeroTypeSlot(sym.Type))
+				} else if sym != nil {
+					idx = int32(sym.Index)
+				}
 				// Skip Fnews already claimed by a nested composite of the
 				// same type (B != 0 marks the patched length); without this,
 				// `[]E{x, &T{Errors: []E{y}}}` re-patches the inner []E's
@@ -1754,10 +1765,20 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emit(t, vm.EqualSet)
 
 		case lang.Ident:
-			s, ok := c.symAt(t.Str)
-			if !ok {
-				// It could be either an undefined symbol or a key ident in a literal composite expr.
-				s = &symbol.Symbol{Name: t.Str}
+			var s *symbol.Symbol
+			if typ := t.ResolvedType(); typ != nil {
+				// Type reference carrying its resolved type by identity: push a
+				// symbol bound to the type's shared zero-value slot, bypassing the
+				// name lookup against the (mutable, shared) symbol table. The symbol
+				// carries the precise *vm.Type so method resolution stays exact even
+				// when distinct types share the slot's rtype.
+				s = &symbol.Symbol{Kind: symbol.Type, Name: t.Str, Type: typ, Index: c.zeroTypeSlot(typ)}
+			} else {
+				var ok bool
+				if s, ok = c.symAt(t.Str); !ok {
+					// It could be either an undefined symbol or a key ident in a literal composite expr.
+					s = &symbol.Symbol{Name: t.Str}
+				}
 			}
 			push(s)
 			if s.Kind == symbol.Pkg || s.Kind == symbol.Unset || s.Kind == symbol.Builtin || s.Kind == symbol.Generic {
@@ -1841,10 +1862,14 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				}
 				if s.Index == symbol.UnsetAddr {
 					// Type or value symbol discovered during Phase 2 code generation.
-					s.Index = len(c.Data)
-					if s.Kind == symbol.Type {
-						c.Data = append(c.Data, vm.NewValue(s.Type.Rtype))
+					if s.Kind == symbol.Type && s.Type != nil {
+						// Share the canonical zero-value slot (by rtype) so a name-
+						// keyed type ident and a carried-type ident resolve to the
+						// same Fnew slot -- the composite handler patches it by type.
+						// s keeps its own .Type, so method resolution stays exact.
+						s.Index = c.zeroTypeSlot(s.Type)
 					} else {
+						s.Index = len(c.Data)
 						c.Data = append(c.Data, s.Value)
 					}
 				}
@@ -3604,6 +3629,24 @@ func (c *Compiler) compileBuiltin(
 	}
 
 	return false, nil
+}
+
+// zeroTypeSlot returns the Data slot holding a zero VALUE of typ (what Fnew
+// copies to instantiate), deduped by rtype. It is shared across emit sites so a
+// name-keyed type ident, a carried-type ident, and a composite all patch the
+// same Fnew. The SLOT may be shared by distinct *vm.Type values with the same
+// rtype (interpreted placeholder collisions) -- that is fine for Fnew, since the
+// zero value is identical; callers carry the precise *vm.Type on the pushed
+// SYMBOL so method resolution still distinguishes them. Distinct from typeSym,
+// which allocates a type-DESCRIPTOR slot (make-elem/key, TypeAssert, etc.).
+func (c *Compiler) zeroTypeSlot(typ *vm.Type) int {
+	if i, ok := c.zeroTypeIdxs[typ.Rtype]; ok {
+		return i
+	}
+	i := len(c.Data)
+	c.Data = append(c.Data, vm.NewValue(typ.Rtype))
+	c.zeroTypeIdxs[typ.Rtype] = i
+	return i
 }
 
 func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {

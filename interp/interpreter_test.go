@@ -510,7 +510,7 @@ func TestGenericType(t *testing.T) {
 		// IfaceMethods, and instantiating a cross-pkg generic with a local
 		// interpreted interface type arg is unsupported (errors/wrap_test.go's
 		// AsType[timeout]). Native interface args (error) still pass.
-		{n: "iface_constraint_interp_iface_arg", skip: true, src: `type I interface { Foo() string }; func F[T I](x T) string { return x.Foo() }; type T struct{}; func (T) Foo() string { return "ok" }; var v I = T{}; F[I](v)`, res: "ok"},
+		{n: "iface_constraint_interp_iface_arg", src: `type I interface { Foo() string }; func F[T I](x T) string { return x.Foo() }; type T struct{}; func (T) Foo() string { return "ok" }; var v I = T{}; F[I](v)`, res: "ok"},
 	})
 }
 
@@ -582,6 +582,19 @@ func TestGenericInfer(t *testing.T) {
 		// / Replace:328 `rotateRight(s[i:], m)` (masked today by an explicit-[E]
 		// mirror patch this overhaul removes).
 		{n: "slice_typeparam_value_in_generic", src: `func rr[E any](s []E) E { return s[0] }; func rep[S ~[]E, E any](src S) E { r := make(S, len(src)); copy(r, src); return rr(r[1:]) }; rep[[]int, int]([]int{1, 2, 3})`, res: "2"},
+
+		// Gap B follow-ups (in-package `mvm test slices` revealed more `:=` RHS
+		// forms that left a local untyped). Multi-RHS define `a, b := x, y` went
+		// through parseAssignMultiRHS which did no define-typing; and an
+		// `append(...)` local was untyped because postfixType didn't know append.
+		{n: "define_multi_rhs", src: `func g[S ~[]E, E any](x S) int { return len(x) }; func f() int { a, b := []int{1, 2}, []int{3}; return g(a) + g(b) }; f()`, res: "3"},
+		{n: "define_append_local", src: `func g[S ~[]E, E any](x S) int { return len(x) }; func f() int { base := []int{1}; x := append(base, 2, 3); return g(x) }; f()`, res: "3"},
+		// Known remaining: an append local whose slice arg is a composite literal
+		// (`append([]int{1}, 2)`) stays untyped -- postfixType can't span a
+		// composite operand in a call's arg list. Same class blocks
+		// slices/iter_test.go:92. Out of this pass; see the multi-file/postfixType
+		// follow-up.
+		{n: "define_append_composite_arg", skip: true, src: `func g[S ~[]E, E any](x S) int { return len(x) }; func f() int { x := append([]int{1}, 2, 3); return g(x) }; f()`, res: "3"},
 
 		// Load guard (NOT skipped): keep slices/maps package source compilable.
 		// References the rotateRight-using funcs (Insert/Replace) so a regression

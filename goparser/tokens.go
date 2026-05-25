@@ -153,3 +153,16 @@ func newSlice(pos int, three bool) Token { return newToken(lang.Slice, "", pos, 
 func newTypeAssert(typ *vm.Type, pos, okForm int) Token {
 	return newToken(lang.TypeAssert, typ.String(), pos, okForm, typ)
 }
+
+// ResolvedType returns the resolved *vm.Type that a Type-kind Ident carries, or
+// nil. The parser attaches it so the compiler resolves the type by its global
+// slot (typeSym/typeIndex) instead of re-looking up the name in the mutable,
+// shared symbol table -- the type's identity travels in the IR, not its name.
+func (t Token) ResolvedType() *vm.Type {
+	for _, a := range t.Arg {
+		if typ, ok := a.(*vm.Type); ok {
+			return typ
+		}
+	}
+	return nil
+}

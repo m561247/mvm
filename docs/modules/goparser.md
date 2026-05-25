@@ -286,6 +286,21 @@ test target's `_test.go` files do not leak into its transitive imports.
 - `vm/` -- `Type`, `Value` (for symbol metadata).
 - `io/fs` -- virtual filesystem for imported sources.
 
+### Type references carry identity
+
+When the parser resolves a type reference it attaches the resolved `*vm.Type` to
+the emitted token (`Token.ResolvedType`), so the compiler binds it to the type's
+global slot by identity rather than re-resolving the name against the mutable
+shared symbol table (the compiler's `symAt` does no scope walk). Three emit sites
+attach it: `registerType` (compound type exprs -- pointers, slices, maps,
+structs), the Type-kind ident handler in `parseExpr` (bare named types,
+including conversions `T(x)` and method expressions `T.M`), and `zeroInitLocals`
+(`var z T`). Type assertions and type switches already carried their `*vm.Type`.
+The token still carries the name in `Str`, used for method lookup (which is
+name-keyed) and as a fallback. See
+[comp](comp.md#type-resolution-by-identity-slot) and
+[ADR-020](../decisions/ADR-020-type-identity-slots.md).
+
 ### Generics (monomorphization)
 
 Generic functions and types are supported via compile-time monomorphization.
@@ -364,10 +379,18 @@ never instantiates -- which is why a `:=`-bound generic-call RHS no longer
 regresses source loading. This is what lets `slices`/`maps` interpret without
 explicit-type-arg workarounds (e.g. the former `rotateRight[E]` mirror patch).
 
-**Limitations.** Constraints are structurally matched for shape but not
-enforced as a hard type check.
+**Constraint satisfaction.** `checkConstraint` validates each type argument
+against its constraint elements (`~T` approximations, unions, `comparable`,
+interface method sets). For an interface constraint, `argImplementsIface`
+accepts a type arg by method-set membership: a native type via
+`reflect.Implements`, an interpreted concrete type via its registered method
+symbols, and -- via `ifaceContainsMethod` -- an interpreted INTERFACE type arg
+whose own `IfaceMethods` (set at parse, invisible to reflect and to method
+symbols) cover the constraint's methods. Constraints are still matched for shape,
+not enforced as a hard structural type check.
 
-See [ADR-011](../decisions/ADR-011-generics-monomorphization.md).
+See [ADR-011](../decisions/ADR-011-generics-monomorphization.md) and
+[ADR-020](../decisions/ADR-020-type-identity-slots.md).
 
 ## Open questions / TODOs
 

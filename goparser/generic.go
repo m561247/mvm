@@ -234,9 +234,29 @@ func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
 		if p.hasMethodSym(recvNames, im.Name) {
 			continue
 		}
+		// An interpreted INTERFACE type argument carries its own method set in
+		// IfaceMethods (set at parse, invisible to reflect and to method
+		// symbols). It satisfies the constraint by method-set containment.
+		if ifaceContainsMethod(arg, im.Name) {
+			continue
+		}
 		return false
 	}
 	return true
+}
+
+// ifaceContainsMethod reports whether t is an interface type whose method set
+// includes a method named name.
+func ifaceContainsMethod(t *vm.Type, name string) bool {
+	if t == nil {
+		return false
+	}
+	for _, im := range t.IfaceMethods {
+		if im.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNativeMethod reports whether reflect type rt has a method named name in
@@ -930,7 +950,9 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		switch fnTok.Tok {
 		case lang.Ident:
 			switch fnTok.Str {
-			case "make":
+			case "make", "append":
+				// make(T, ...) and append(s, ...) both yield their leftmost
+				// arg's type (the type expr / the appended-to slice).
 				return firstArgType, totalLen
 			case "new":
 				if firstArgType == nil {

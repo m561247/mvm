@@ -178,6 +178,11 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 			}
 			if s != nil && s.Kind == symbol.Type {
 				ctype = t.Str
+				// Carry the resolved type so the compiler resolves it by identity
+				// (its global slot) rather than re-looking up t.Str at compile time.
+				if s.Type != nil {
+					t.Arg = append(t.Arg, s.Type)
+				}
 				// Non-composite uses of a Type ident: T(x) (conversion),
 				// T.Method (method expression), and struct-field-key
 				// shadows (T:value inside a composite).
@@ -472,7 +477,9 @@ func (p *Parser) registerType(typ *vm.Type, pos int, out *Tokens) string {
 	if existing, ok := p.Symbols[key]; !ok || existing.Type != typ {
 		p.SymAdd(symbol.UnsetAddr, key, vm.NewValue(typ.Rtype), symbol.Type, typ)
 	}
-	*out = append(*out, newIdent(key, pos))
+	// Carry the resolved type on the emitted ident so the compiler resolves it by
+	// identity (its global slot) rather than by re-looking up key at compile time.
+	*out = append(*out, newIdent(key, pos, typ))
 	return key
 }
 

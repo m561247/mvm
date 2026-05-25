@@ -1069,7 +1069,9 @@ func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 			p.SymAdd(symbol.UnsetAddr, typKey, vm.NewValue(typ.Rtype), symbol.Type, typ)
 		}
 		out = append(out, newIdent(v, 0))
-		out = append(out, newIdent(typKey, 0))
+		// Carry the resolved type so the compiler resolves the zero-init by
+		// identity (the type's slot) rather than re-looking up typKey at compile.
+		out = append(out, newIdent(typKey, 0, typ))
 		out = append(out, newToken(lang.Assign, "", 0, 1))
 	}
 	return out

@@ -218,6 +218,16 @@ func (p *Parser) parseAssignMultiRHS(in Tokens, lhs, rhs []Tokens, aindex int, d
 			if len(lt) == 1 && lt[0].Tok == lang.Ident {
 				if p.funcScope != "" {
 					out[lhsPos].Str = p.addOrRebindLocalVar(lt[0].Str)
+					// Type the local from its single-value RHS (toks) so a later
+					// generic call can infer from it, matching the single-RHS
+					// define path. postfixType is pure.
+					if lt[0].Str != "_" {
+						if sym := p.Symbols[out[lhsPos].Str]; sym != nil && sym.Type == nil {
+							if t, _ := p.postfixType(toks); t != nil {
+								sym.Type = t
+							}
+						}
+					}
 				} else {
 					out[lhsPos].Str = p.addGlobalVar(lt[0].Str)
 				}

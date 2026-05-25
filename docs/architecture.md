@@ -48,7 +48,11 @@ flowchart TD
 
 The parser and compiler share a single `symbol.SymMap`. The parser registers
 types and function signatures; the compiler resolves addresses and emits
-bytecode referencing data indices.
+bytecode referencing data indices. Names resolve flatly on the compiler side
+(`symAt` does no scope walk), so the parser bakes the resolved key into each
+token. Type references go further: they carry the resolved `*vm.Type` itself, so
+the compiler binds them to a global type slot by identity rather than by name
+(see [ADR-020](decisions/ADR-020-type-identity-slots.md)).
 
 ## Memory model
 
@@ -152,6 +156,15 @@ See [vm](modules/vm.md#call-frame) for details.
     Performance-critical and hard-to-interpret packages stay as
     pre-compiled bridges in `stdlib/core`+`ext`. See
     [ADR-017](decisions/ADR-017-std-module-redirect.md).
+
+11. **Type references carry identity, not names** -- a type is a first-class VM
+    object (a slot in the `Data` segment). Type-reference tokens carry their
+    resolved `*vm.Type`, and the compiler binds them to a shared type slot
+    (`zeroTypeSlot`) by identity instead of re-resolving the name against the
+    mutable shared symbol table. This decouples compile-time type correctness
+    from symbol-table name state and is the foundation for robust generic
+    instantiation. Method lookup stays name-keyed. See
+    [ADR-020](decisions/ADR-020-type-identity-slots.md).
 
 ## Closure and interface dispatch
 
