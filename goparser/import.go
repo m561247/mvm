@@ -94,23 +94,7 @@ func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]Pac
 		}
 		out = append(out, PackageSource{Name: e.Name(), Content: src})
 	}
-	// Mirror-sourced packages (errors, cmp) ship source via stdlibfs (src.zip),
-	// which strips _test.go, so their tests must come from testSrcFS. When the
-	// source FS contributed no test files, serve the package's external
-	// (package X_test) tests as a standalone unit: their `import "X"` resolves X
-	// through the normal chain -- a bridge (errors) or the just-found mirror
-	// source via importSrc (cmp). Internal (package X) tests for mirror packages
-	// still need X's symbols in scope and remain unsupported (separate gap).
-	if includeTests && p.testSrcFS != nil && !sawTestFile {
-		if ext, terr := p.loadBridgedTestSources(importPath); terr == nil && len(ext) > 0 {
-			return ext, nil
-		}
-	}
-	// When loading tests, filter out external _test.go files (those declaring
-	// `package X_test` instead of `package X`). Go's testing tool compiles
-	// them as a separate package; mvm does not support that yet, and feeding
-	// them into the same parser scope would mis-resolve qualified imports
-	// (e.g. `errors.WithMessage` where `errors` aliases the package under test).
+	// External test files must compile as a standalone unit.
 	if includeTests {
 		names := make([]string, len(out))
 		var mainPkg string
@@ -120,6 +104,38 @@ func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]Pac
 				mainPkg = names[i]
 			}
 		}
+		// Only one unit can be returned, so prefer internal (package X) tests
+		// in-unit; serve external (package X_test) tests standalone otherwise.
+		hasInternal := false
+		for i := range out {
+			if strings.HasSuffix(out[i].Name, "_test.go") && names[i] == mainPkg {
+				hasInternal = true
+				break
+			}
+		}
+		if mainPkg != "" && !hasInternal {
+			var external []PackageSource
+			for i, s := range out {
+				if !strings.HasSuffix(s.Name, "_test.go") || names[i] != mainPkg+"_test" {
+					continue
+				}
+				if bad := p.firstUnresolvableImport(extractImports(s.Content)); bad != "" {
+					fmt.Fprintf(os.Stderr, "mvm test: skipping %s/%s: cannot resolve import %q\n", importPath, s.Name, bad)
+					continue
+				}
+				external = append(external, s)
+			}
+			if len(external) > 0 {
+				return external, nil
+			}
+		}
+		// Else fall back to testSrcFS ($GOROOT) for bridge-only / tests-stripped pkgs.
+		if p.testSrcFS != nil && !sawTestFile {
+			if ext, terr := p.loadBridgedTestSources(importPath); terr == nil && len(ext) > 0 {
+				return ext, nil
+			}
+		}
+		// Else keep internal tests in-unit; drop external stragglers.
 		if mainPkg != "" {
 			filtered := out[:0]
 			for i, s := range out {
@@ -192,11 +208,6 @@ func (p *Parser) loadBridgedTestSources(importPath string) ([]PackageSource, err
 	return out, nil
 }
 
-// firstUnresolvableImport returns the first path in imports that mvm
-// cannot resolve at load time: not present as a bridge in p.Packages,
-// not stat-able in stdlibfs, not stat-able in remotefs. Returns "" when
-// every import is resolvable. Used to pre-filter bridged-stdlib test
-// files (e.g. drop strings_test files importing `internal/asan`).
 func (p *Parser) firstUnresolvableImport(imports []string) string {
 	for _, ip := range imports {
 		if _, ok := p.Packages[ip]; ok {

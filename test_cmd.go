@@ -127,6 +127,13 @@ func testCmd(arg []string) error {
 				continue
 			}
 			flushStats()
+			// Error not in a droppable _test.go file. If the source still loads
+			// without tests, only the tests can't run: report "no tests" instead
+			// of failing hard.
+			if src, ok := sourceLoadsWithoutTests(trace, target); ok {
+				fmt.Fprintf(os.Stderr, "mvm test: %s: tests not loaded (%v)\n", target, err)
+				return runTestDriver(src, func() {})
+			}
 			return fmt.Errorf("loading %q: %w", target, err)
 		}
 		// modfs serves the package from memory, so tests using testdata-relative
@@ -190,6 +197,17 @@ func newTestInterp(trace traceFlag) (*interp.Interp, *modfs.FS) {
 	// (e.g. io.Copy(os.Stdout, ...)) does not, interleaving them wrongly.
 	i.SetIO(os.Stdin, liveStdout{}, os.Stderr)
 	return i, mfs
+}
+
+// sourceLoadsWithoutTests reports whether target's source compiles with tests
+// excluded, returning the loaded interpreter on success.
+func sourceLoadsWithoutTests(trace traceFlag, target string) (*interp.Interp, bool) {
+	src, _ := newTestInterp(trace)
+	src.SetIncludeTests(false)
+	if _, err := src.Eval(target, ""); err != nil {
+		return nil, false
+	}
+	return src, true
 }
 
 // liveStdout forwards each write to the current os.Stdout rather than capturing

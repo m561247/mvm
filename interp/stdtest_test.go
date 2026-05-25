@@ -157,8 +157,8 @@ func TestUsesReflectlite(t *testing.T) {
 
 // TestMirrorSourcedPkgExternalTestsRun covers the loader path for
 // `mvm test errors` / `mvm test cmp`: a package with source on the stdlib FS
-// (the mvm-sh/std mirror) whose tests are external (package X_test). The
-// mirror's src.zip strips _test.go, so LoadPackageSources, finding the source
+// (the mvm-sh/std mirror) whose tests are external (package X_test).
+// The mirror's src.zip strips _test.go, so LoadPackageSources, finding the source
 // but no test files, serves the external X_test files from testSrcFS as a
 // standalone unit (their `import "X"` resolves X via the normal chain).
 func TestMirrorSourcedPkgExternalTestsRun(t *testing.T) {
@@ -196,6 +196,95 @@ func TestHello(t *testing.T) {
 	}
 	if !slices.Contains(i.FuncNames("Test"), "TestHello") {
 		t.Errorf("external test for mirror-sourced package was not loaded; got %v", i.FuncNames("Test"))
+	}
+}
+
+// External (package X_test) tests shipped in-tree by the mirror (no testSrcFS)
+// must still load as a standalone unit, not get dropped as "not package X".
+func TestMirrorSourcedPkgInTreeExternalTestsRun(t *testing.T) {
+	mirrorFS := fstest.MapFS{
+		"mymir/mymir.go": &fstest.MapFile{Data: []byte(`package mymir
+
+func Hello() string { return "hi" }
+`)},
+		"mymir/mymir_test.go": &fstest.MapFile{Data: []byte(`package mymir_test
+
+import (
+	"mymir"
+	"testing"
+)
+
+func TestHello(t *testing.T) {
+	if mymir.Hello() != "hi" {
+		t.Fatal("Hello broken")
+	}
+}
+`)},
+	}
+
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values) // so the external test's `import "testing"` resolves
+	i.SetStdlibFS(mirrorFS)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	// Note: no SetTestSourceFS -- the tests come from the mirror FS itself.
+	i.SetIncludeTests(true)
+	if _, err := i.Eval("mymir", ""); err != nil {
+		t.Fatalf("loading mymir tests: %v\nstderr: %s", err, stderr.String())
+	}
+	if !slices.Contains(i.FuncNames("Test"), "TestHello") {
+		t.Errorf("in-tree external test for mirror-sourced package was not loaded; got %v", i.FuncNames("Test"))
+	}
+}
+
+// A package shipping both internal (package X) and external (package X_test)
+// tests in-tree keeps the internal suite in-unit and drops the external one.
+func TestMirrorSourcedPkgPrefersInternalTests(t *testing.T) {
+	mirrorFS := fstest.MapFS{
+		"mymir/mymir.go": &fstest.MapFile{Data: []byte(`package mymir
+
+func Hello() string { return "hi" }
+`)},
+		"mymir/internal_test.go": &fstest.MapFile{Data: []byte(`package mymir
+
+import "testing"
+
+func TestInternal(t *testing.T) {
+	if Hello() != "hi" {
+		t.Fatal("Hello broken")
+	}
+}
+`)},
+		"mymir/external_test.go": &fstest.MapFile{Data: []byte(`package mymir_test
+
+import (
+	"mymir"
+	"testing"
+)
+
+func TestExternal(t *testing.T) {
+	if mymir.Hello() != "hi" {
+		t.Fatal("Hello broken")
+	}
+}
+`)},
+	}
+
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetStdlibFS(mirrorFS)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	i.SetIncludeTests(true)
+	if _, err := i.Eval("mymir", ""); err != nil {
+		t.Fatalf("loading mymir tests: %v\nstderr: %s", err, stderr.String())
+	}
+	names := i.FuncNames("Test")
+	if !slices.Contains(names, "TestInternal") {
+		t.Errorf("internal test should be kept in-unit; got %v", names)
+	}
+	if slices.Contains(names, "TestExternal") {
+		t.Errorf("external test should be dropped when an internal suite is present; got %v", names)
 	}
 }
 

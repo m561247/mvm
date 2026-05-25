@@ -20,6 +20,13 @@ func main() {
 	m := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
 	maps.DeleteFunc(m, func(k string, v int) bool { return v%2 == 1 })
 	println(len(m), m["b"], m["d"])
+
+	// Clone is a shallow copy: mutating the clone leaves the original intact.
+	orig := map[string]int{"k": 5}
+	cl := maps.Clone(orig)
+	cl["k"] = 50
+	cl["new"] = 7
+	println(orig["k"], len(orig), cl["k"], len(cl), maps.Equal(orig, cl))
 }
 
 // Output:
@@ -29,3 +36,4 @@ func main() {
 // false
 // 1 2 3 99
 // 2 2 4
+// 5 1 50 2 false
