@@ -1197,9 +1197,19 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				// Wrap concrete args in Iface when the parameter expects an interface type.
 				// Use mvm-level Params types (which carry IfaceMethods) when available.
 				nIn := typ.Rtype.NumIn()
+				nFixed := nIn
+				if typ.Rtype.IsVariadic() {
+					nFixed = nIn - 1
+				}
 				for k := 0; k < narg && k < nIn; k++ {
 					argSym := stack[len(stack)-narg+k]
-					if argSym.Type == nil || argSym.Type.IsInterface() {
+					if argSym.Type == nil {
+						if k < nFixed || (spread && k == nFixed) {
+							c.emitNilCoerce(t, argSym, typ.Rtype.In(k), narg-1-k)
+						}
+						continue
+					}
+					if argSym.Type.IsInterface() {
 						continue
 					}
 					var ifaceTyp *vm.Type
@@ -1282,9 +1292,19 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			// Wrap concrete args in Iface when the parameter expects an interface type.
 			if rtyp != nil && rtyp.Kind() == reflect.Func {
 				nIn := rtyp.NumIn()
+				nFixed := nIn
+				if rtyp.IsVariadic() {
+					nFixed = nIn - 1
+				}
 				for k := 0; k < narg && k < nIn; k++ {
 					argSym := stack[len(stack)-narg+k]
-					if argSym.Type == nil || argSym.Type.IsInterface() {
+					if argSym.Type == nil {
+						if k < nFixed || (spread && k == nFixed) {
+							c.emitNilCoerce(t, argSym, rtyp.In(k), narg-1-k)
+						}
+						continue
+					}
+					if argSym.Type.IsInterface() {
 						continue
 					}
 					ifaceTyp := &vm.Type{Rtype: rtyp.In(k)}
@@ -2658,6 +2678,22 @@ func (c *Compiler) emitConstConvert(t goparser.Token, s *symbol.Symbol, typ *vm.
 		return
 	}
 	c.emitNumConvert(t, typ, symbol.Vtype(s), depth)
+}
+
+// emitNilCoerce coerces an untyped nil argument (Type == nil) to a typed zero
+// value of a concrete nilable parameter type (slice/map/ptr/chan/func), so that
+// len/range/index inside the callee see a typed nil (e.g. a nil []int) rather
+// than an invalid reflect.Value. Interface params keep the untyped nil (a nil
+// interface), which already compares and dispatches correctly. The Convert
+// opcode turns an invalid source into reflect.Zero(dstType) at runtime.
+func (c *Compiler) emitNilCoerce(t goparser.Token, argSym *symbol.Symbol, paramRtype reflect.Type, depth int) {
+	if argSym.Type != nil || paramRtype == nil {
+		return
+	}
+	switch paramRtype.Kind() {
+	case reflect.Slice, reflect.Map, reflect.Pointer, reflect.Chan, reflect.Func:
+		c.emit(t, vm.Convert, c.typeSym(&vm.Type{Rtype: paramRtype}).Index, depth)
+	}
 }
 
 func (c *Compiler) emitNumConvert(t goparser.Token, lhsType, rhsType *vm.Type, depth int) {

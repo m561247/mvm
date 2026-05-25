@@ -319,12 +319,14 @@ func TestFunc(t *testing.T) {
 		{n: "#24", src: `import "fmt"; x := 1; fn := func() int { return x }; fmt.Sprintf("%T", fn)`, res: "func() int"},
 		{n: "#25", src: `import "fmt"; fn := func() {}; fmt.Sprintf("%T", fn)`, res: "func()"},
 		{n: "#26", src: "func f(\n\tx int,\n\t// comment\n\ty string,\n) string { return y }; f(1, \"a\")", res: "a"},
-		// BUG: a bare `nil` literal passed to a slice (or any) parameter becomes
-		// an untyped zero reflect.Value rather than a typed-nil of the param type,
-		// so range/len on it panics ("reflect: call of reflect.Value.Type on zero
-		// Value"). A typed nil var (`var s []int; f(s)`) works. Surfaced by
-		// errors/wrap_test.go's `testAsType(t, multiErr{nil}, ...)` patterns.
-		{n: "nil_literal_slice_arg_range", skip: true, src: `func f(xs []int) int { n := 0; for range xs { n++ }; return n }; f(nil)`, res: "0"},
+		// A bare `nil` literal passed to a concrete nilable parameter (slice/map/
+		// ptr/chan/func) is coerced at the call site to a typed-nil of the param
+		// type (emitNilCoerce), so range/len/index inside the callee see e.g. a nil
+		// []int rather than an untyped zero reflect.Value (which used to panic with
+		// "reflect: call of reflect.Value.Type on zero Value").
+		{n: "nil_literal_slice_arg_range", src: `func f(xs []int) int { n := 0; for range xs { n++ }; return n }; f(nil)`, res: "0"},
+		{n: "nil_literal_map_arg_len", src: `func f(m map[string]int) int { return len(m) }; f(nil)`, res: "0"},
+		{n: "nil_literal_variadic_spread", src: `func f(xs ...int) int { return len(xs) }; f(nil...)`, res: "0"},
 	})
 }
 
