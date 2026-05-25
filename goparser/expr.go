@@ -201,7 +201,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				if gs, _, ok := p.Symbols.Get(prevName, p.scope); ok && gs.Kind == symbol.Generic {
 					tmpl := gs.Data.(*genericTemplate)
 					if tmpl.isFunc {
-						typeArgs, err := p.inferTypeArgs(tmpl, gs, t.Token)
+						typeArgs, err := p.inferTypeArgs(tmpl, gs, t.Token, nil)
 						if err != nil {
 							return out, err
 						}
@@ -227,7 +227,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 						if gs, ok := p.Symbols[qualifiedName]; ok && gs.Kind == symbol.Generic {
 							tmpl := gs.Data.(*genericTemplate)
 							if tmpl.isFunc {
-								typeArgs, err := p.inferTypeArgs(tmpl, gs, t.Token)
+								typeArgs, err := p.inferTypeArgs(tmpl, gs, t.Token, nil)
 								if err != nil {
 									return out, err
 								}
@@ -340,6 +340,12 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 						if err != nil {
 							return out, err
 						}
+						if len(typeArgs) < len(tmpl.typeParams) && i+1 < lin && in[i+1].Tok == lang.ParenBlock {
+							typeArgs, typeArgSources, err = p.inferPartialTypeArgs(tmpl, gs, typeArgs, typeArgSources, in[i+1].Token)
+							if err != nil {
+								return out, err
+							}
+						}
 						instToks, mname, err := p.instantiate(tmpl, typeArgs, typeArgSources, t)
 						if err != nil {
 							return out, err
@@ -374,6 +380,12 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 								typeArgs, typeArgSources, err := p.resolveTypeArgs(t.Token)
 								if err != nil {
 									return out, err
+								}
+								if len(typeArgs) < len(tmpl.typeParams) && i+1 < lin && in[i+1].Tok == lang.ParenBlock {
+									typeArgs, typeArgSources, err = p.inferPartialTypeArgs(tmpl, gs, typeArgs, typeArgSources, in[i+1].Token)
+									if err != nil {
+										return out, err
+									}
 								}
 								instToks, mname, err := p.instantiate(tmpl, typeArgs, typeArgSources, t)
 								if err != nil {

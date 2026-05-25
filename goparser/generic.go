@@ -444,6 +444,8 @@ func (p *Parser) substituteTokens(raw Tokens, sub map[string]string) Tokens {
 // argument (e.g. "netip.Prefix") so package qualifiers are preserved in the
 // substituted body. If nil, the short Name from *vm.Type is used.
 func (p *Parser) instantiate(tmpl *genericTemplate, typeArgs []*vm.Type, typeArgSources []string, pos Token) (Tokens, string, error) {
+	// A partial list (fewer args than params) reaches here only when the
+	// caller couldn't infer the rest; a too-long list is always an error.
 	if len(typeArgs) != len(tmpl.typeParams) {
 		return nil, "", p.wrapAt(pos, ErrSyntax, "generic %s expects %d type argument(s), got %d", tmpl.name, len(tmpl.typeParams), len(typeArgs))
 	}
@@ -657,7 +659,9 @@ func (p *Parser) stripRecvTypeParams(blockStr, origName, mangledName string) str
 // inferTypeArgs infers concrete type arguments for a generic function call
 // by examining the call argument expressions and matching them against the
 // template's type parameters through the function signature (stored in genSym.Type).
-func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, callArgs scan.Token) ([]*vm.Type, error) {
+// prefix supplies explicit leading type args (partial type-argument lists, e.g.
+// Grow[S](nil, n)); the remaining params are inferred from the call args.
+func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, callArgs scan.Token, prefix []*vm.Type) ([]*vm.Type, error) {
 	argToks, err := p.scanBlock(callArgs, false)
 	if err != nil {
 		return nil, err
@@ -693,6 +697,13 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 	// call has exactly one slice argument in that slot.
 	spread := len(argToks) > 0 && argToks[len(argToks)-1].Tok == lang.Ellipsis
 	inferred := make(map[string]*vm.Type, len(tmpl.typeParams))
+	// Seed explicit leading type args so pass 1 skips already-bound params and
+	// pass 2 can unpack their constraints (e.g. ~map[K]V) for the rest.
+	for i, t := range prefix {
+		if i < len(tmpl.typeParams) {
+			inferred[tmpl.typeParams[i].name] = t
+		}
+	}
 	for i, argExpr := range args {
 		if len(argExpr) == 0 {
 			continue
@@ -778,6 +789,19 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 		typeArgs[i] = t
 	}
 	return typeArgs, nil
+}
+
+// inferPartialTypeArgs completes a partial explicit type-argument list
+// (Name[prefix](args)) by inferring the trailing params from the call args,
+// keeping the explicit prefix's sources so package qualifiers survive.
+func (p *Parser) inferPartialTypeArgs(tmpl *genericTemplate, gs *symbol.Symbol, prefix []*vm.Type, prefixSrcs []string, callArgs scan.Token) ([]*vm.Type, []string, error) {
+	full, err := p.inferTypeArgs(tmpl, gs, callArgs, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	srcs := p.typeArgSourcesFor(full)
+	copy(srcs, prefixSrcs)
+	return full, srcs, nil
 }
 
 // inferExprType determines the type of an infix token expression by first

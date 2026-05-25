@@ -549,6 +549,47 @@ func TestGenericImplicit(t *testing.T) {
 	})
 }
 
+// TestGenericInfer captures the generics type-inference gaps targeted by the
+// dedicated overhaul (docs/plans wise-skipping-hoare). Each skipped case is a
+// distilled, self-contained repro of a real `mvm test slices` / `mvm test maps`
+// failure; flip skip:false as each phase lands. The non-skipped load_guard case
+// protects package source compilation (it would have caught the prior revert).
+//
+// Note: nested-generic-call inference (e.g. slices.Sorted(maps.Keys(m))) was a
+// gap in earlier sessions but now works, so it has no skipped case here.
+func TestGenericInfer(t *testing.T) {
+	run(t, []etest{
+		// Gap C: partial type-argument lists (some explicit, rest inferred).
+		// Mirrors maps_test.go:26 `Equal[map[int]int, map[int]int](nil, nil)`
+		// (2 of 4) and slices.Concat's `Grow[S](nil, size)` (1 of 2).
+		{n: "partial_type_args_slice", src: `func Grow[S ~[]E, E any](s S, n int) int { return n + len(s) }; Grow[[]int]([]int{1, 2}, 3)`, res: "5"},
+		{n: "partial_type_args_map", src: `func Eq[M1 ~map[K]V, M2 ~map[K]V, K comparable, V comparable](a M1, b M2) bool { return len(a) == len(b) }; Eq[map[int]int, map[int]int](nil, nil)`, res: "true"},
+
+		// Gap B: a `:=` make/slice-expr local INSIDE a function body is not
+		// type-recorded, so a later generic call can't infer from it. The same
+		// pattern at top level works (the funcScope == "" path is skipped).
+		// Mirrors slices sort_test.go:67 IsSorted(data), example_test.go:352
+		// Clip(s), slices_test.go:138 EqualFunc(xs, ys, ...).
+		{n: "define_make_local_in_func", src: `func srt[S ~[]E, E any](x S) bool { return len(x) > 0 }; func f(n int) bool { data := make([]int, n); return srt(data) }; f(3)`, res: "true"},
+		{n: "define_sliceexpr_local_in_func", src: `func clip[S ~[]E, E any](x S) int { return len(x) }; func f() int { a := []int{0, 1, 2, 3}; s := a[:2]; return clip(s) }; f()`, res: "2"},
+		// Same gap but the make-local's element type is itself a placeholder
+		// type param (map[K]V inside a generic body). Mirrors maps/iter.go:60
+		// `Insert(m, seq)` in Collect -- the source-load blocker for maps.
+		{n: "define_make_map_in_generic", src: `func ins[M ~map[K]V, K comparable, V any](m M) int { return len(m) }; func col[K comparable, V any]() int { m := make(map[K]V); return ins(m) }; col[int, string]()`, res: "0"},
+
+		// Gap A: slicing/indexing a value typed by a `~[]E` type parameter needs
+		// the placeholder to carry its element shape. Mirrors slices.go Insert:206
+		// / Replace:328 `rotateRight(s[i:], m)` (masked today by an explicit-[E]
+		// mirror patch this overhaul removes).
+		{n: "slice_typeparam_value_in_generic", src: `func rr[E any](s []E) E { return s[0] }; func rep[S ~[]E, E any](src S) E { r := make(S, len(src)); copy(r, src); return rr(r[1:]) }; rep[[]int, int]([]int{1, 2, 3})`, res: "2"},
+
+		// Load guard (NOT skipped): keep slices/maps package source compilable.
+		// References the rotateRight-using funcs (Insert/Replace) so a regression
+		// that breaks their compilation surfaces here, not silently in `mvm test`.
+		{n: "load_guard", src: `import ("slices"; "maps"); s := slices.Insert([]int{1, 5}, 1, 2, 3, 4); s = slices.Replace(s, 0, 1, 9); slices.Reverse(s); m := maps.Clone(map[int]int{1: 2}); len(s) + len(m)`, res: "6"},
+	})
+}
+
 func TestFuncNamedReturn(t *testing.T) {
 	run(t, []etest{
 		{n: "#00", src: "func f(a int) (r int) { r = a + 2; return }; f(3)", res: "5"},

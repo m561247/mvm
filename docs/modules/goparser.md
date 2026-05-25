@@ -350,18 +350,32 @@ by matching already-bound siblings against approximation-constraint shapes
 at parse time via `inferRangeTypes`, unblocking nested generic calls in
 `for _, v := range s { cmp.Compare(v, ...) }`-style loops.
 
+**Partial type arguments.** A prefix of explicit type args with the rest
+inferred (`Grow[S](nil, n)`, `Equal[M1, M2](a, b)`) is supported.
+`inferTypeArgs` takes a `prefix` that seeds the inferred map before unification;
+the explicit-bracket call sites in `expr.go` detect a short list followed by a
+call and fill the trailing params via `inferPartialTypeArgs`.
+
+**Local-var inference.** `:=` locals are typed at parse time so a later generic
+call can infer from them. `inferDefineType` / `inferCallDefineTypes` fall back
+to `postfixType` on the already-parsed RHS for `make`/`new`, slice-expr, and
+index RHS (not just composite literals). `postfixType` is pure, so this typing
+never instantiates -- which is why a `:=`-bound generic-call RHS no longer
+regresses source loading. This is what lets `slices`/`maps` interpret without
+explicit-type-arg workarounds (e.g. the former `rotateRight[E]` mirror patch).
+
 **Limitations.** Constraints are structurally matched for shape but not
-enforced as a hard type check. Non-range local-var inference from
-non-composite RHS (`ptr := &x; F(ptr)`) still fails because
-`inferDefineType` only handles composite-literal RHS; explicit type args
-are a workaround.
+enforced as a hard type check.
 
 See [ADR-011](../decisions/ADR-011-generics-monomorphization.md).
 
 ## Open questions / TODOs
 
 - Constraint enforcement at instantiation time.
-- Non-range local-var inference from non-composite RHS.
+- A few `mvm test slices` inferences (e.g. `AppendSeq([]int{...}, testSeq)`)
+  fail only under the in-package file-by-file test compile, not under
+  `mvm run`; likely a package-load-vs-REPL inference-state difference (see
+  the multi-file package compile TODO).
 - Transitive-import alias leak: when `slices` imports `cmp`, importing
   `slices` creates incidental `slices.Ordered`, `slices.Less` aliases
   pointing to cmp's originals. Harmless but leaky.

@@ -131,23 +131,29 @@ func (p *Parser) inferDefineType(rhs Tokens, scopedName string) {
 	if n == 0 {
 		return
 	}
-	// Check for &T{} (Addr at end, Composite before it) or T{} (Composite at end).
+	// Check for &T{} (Addr at end, Composite before it) or T{} (Composite at end);
+	// resolve via the named type so a forward-declared type postfixType can't yet
+	// see still works.
 	hasAddr := rhs[n-1].Tok == lang.Addr
 	compositeIdx := n - 1
 	if hasAddr {
 		compositeIdx = n - 2
 	}
-	if compositeIdx < 0 || rhs[compositeIdx].Tok != lang.Composite || rhs[compositeIdx].Str == "" {
-		return
+	if compositeIdx >= 0 && rhs[compositeIdx].Tok == lang.Composite && rhs[compositeIdx].Str != "" {
+		if s, _, ok := p.Symbols.Get(rhs[compositeIdx].Str, p.scope); ok && s.Kind == symbol.Type && s.Type != nil {
+			if hasAddr {
+				sym.Type = vm.PointerTo(s.Type)
+			} else {
+				sym.Type = s.Type
+			}
+			return
+		}
 	}
-	s, _, ok := p.Symbols.Get(rhs[compositeIdx].Str, p.scope)
-	if !ok || s.Kind != symbol.Type || s.Type == nil {
-		return
-	}
-	if hasAddr {
-		sym.Type = vm.PointerTo(s.Type)
-	} else {
-		sym.Type = s.Type
+	// General fallback: type the RHS expression itself (make/new, slice-expr,
+	// index, etc.) so a later generic call can infer its type params from this
+	// local. postfixType is pure - rhs is already-parsed postfix.
+	if t, _ := p.postfixType(rhs); t != nil {
+		sym.Type = t
 	}
 }
 
@@ -158,6 +164,14 @@ func (p *Parser) inferDefineType(rhs Tokens, scopedName string) {
 func (p *Parser) inferCallDefineTypes(rhs Tokens, lhs []Tokens, lhsPositions []int, out Tokens) {
 	ft := p.callFuncType(rhs)
 	if ft == nil {
+		// Builtin or conversion call (make([]T, n), T(x), ...): no func symbol to
+		// read a return tuple from. Type a single LHS local from the whole
+		// expression so a later generic call can infer its type params.
+		if len(lhs) == 1 {
+			if t, _ := p.postfixType(rhs); t != nil {
+				p.setLHSType(0, t, lhs, lhsPositions, out)
+			}
+		}
 		return
 	}
 	for i := 0; i < len(lhs) && i < ft.Rtype.NumOut(); i++ {
