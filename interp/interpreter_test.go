@@ -1038,15 +1038,26 @@ func TestStruct(t *testing.T) {
 		{n: "errors_multierror_is", src: `import "errors"; import "fmt"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x"), fmt.Errorf("w: %w", fs.ErrPermission)}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 		{n: "errors_multierror_is_miss", src: `import "errors"; import "fmt"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x"), fmt.Errorf("w: %w", fs.ErrPermission)}; errors.Is(err, fs.ErrNotExist)`, res: "false"},
 		{n: "errors_multierror_as", src: `import "errors"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x"), &fs.PathError{Op: "open", Path: "/x", Err: fs.ErrPermission}}; var pe *fs.PathError; errors.As(err, &pe) && pe.Path == "/x"`, res: "true"},
-		// SKIP (separate gap, exposed by the multierror bridge): errors.AsType is the
-		// interpreted generic shim; an interpreted named-slice error (M []error) reaching
-		// the shim as `error` loses its method set (reduced to raw []error), so the shim's
-		// interpreted type-switch can't see Unwrap and panics. Native Is/As (above) work.
-		{n: "errors_multierror_astype", skip: true, src: `import "errors"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{&fs.PathError{Op: "open", Path: "/x", Err: fs.ErrPermission}}; _, ok := errors.AsType[*fs.PathError](err); ok`, res: "true"},
+		// errors.AsType (interpreted generic shim) over an interpreted multierror:
+		// the shim's `switch err.(type)` distinguishes Unwrap() error from
+		// Unwrap() []error, which needs signature-aware interface satisfaction
+		// (method IDs are global by name). Fixed via vm.Type.Implements sigCompatible.
+		{n: "errors_multierror_astype", src: `import "errors"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{&fs.PathError{Op: "open", Path: "/x", Err: fs.ErrPermission}}; _, ok := errors.AsType[*fs.PathError](err); ok`, res: "true"},
+		// Nested multierror: the inner multierror crosses back as a native bridge,
+		// so the native type-assert path must also discriminate Unwrap signatures.
+		{n: "errors_multierror_astype_nested", src: `import "errors"; type errorT struct{ s string }; func (e errorT) Error() string { return e.s }; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; err := error(M{M{errors.New("a"), errorT{"x"}}, errorT{"y"}}); got, ok := errors.AsType[errorT](err); ok && got.s == "x"`, res: "true"},
+		// A Unwrap() []error method must not satisfy interface{ Unwrap() error }
+		// (method IDs are global by name; satisfaction is signature-aware).
+		{n: "iface_method_sig_discriminates", src: `type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var e error = M{}; _, single := e.(interface{ Unwrap() error }); _, multi := e.(interface{ Unwrap() []error }); !single && multi`, res: "true"},
 		{n: "errors_multierror_self", src: `import "errors"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x")}; errors.Is(err, err)`, res: "false"},
 		{n: "errors_multierror_custom_is", src: `import "errors"; import "fmt"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; func (m M) Is(t error) bool { return t == fs.ErrExist }; var err error = M{fmt.Errorf("w: %w", fs.ErrPermission)}; errors.Is(err, fs.ErrExist) && errors.Is(err, fs.ErrPermission)`, res: "true"},
 		{n: "errors_multierror_custom_as", src: `import "errors"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; func (m M) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "c", Path: "/p"}; return true }; var err error = M{errors.New("x")}; var pe *fs.PathError; errors.As(err, &pe) && pe.Path == "/p"`, res: "true"},
 		{n: "errors_multierror_custom_is_as", src: `import "errors"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; func (m M) Is(t error) bool { return t == fs.ErrExist }; func (m M) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "c", Path: "/p"}; return true }; var err error = M{errors.New("x")}; var pe *fs.PathError; errors.Is(err, fs.ErrExist) && errors.As(err, &pe) && pe.Path == "/p"`, res: "true"},
+		// reflect.DeepEqual over a []error whose element is an interpreted
+		// (bridged) error: the []error from native errors.Join.Unwrap() and an
+		// interpreted literal hold distinct bridge instances; the DeepEqual arg
+		// proxy strips nested bridges so they compare equal (was: false).
+		{n: "errors_join_unwrap_deepequal", src: `import "errors"; import "reflect"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; merr := M{errors.New("e3")}; got := errors.Join(merr).(interface{ Unwrap() []error }).Unwrap(); reflect.DeepEqual(got, []error{merr})`, res: "true"},
 		// SKIP (deeper gap): a multierror promoted from an EMBEDDED field panics
 		// "reflect: ... value obtained from unexported field" (the promoted-method
 		// closure returns a []error derived from the unexported embedded field).

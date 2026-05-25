@@ -1498,10 +1498,19 @@ func (m *Machine) Run() (err error) {
 					}
 				}
 				// If the value is a bridge wrapper (e.g. *BridgeError wrapping an
-				// interpreted value), try unwrapping to recover the original value.
+				// interpreted value), recover the original value. For an interface
+				// target, restore the interpreted Iface and check satisfaction by
+				// method signature: the bare underlying value is method-less and
+				// assignable to every interpreted interface (Rtype==any), a false
+				// positive. For a concrete target, the underlying value is what the
+				// assertion wants.
 				if !matched && !isNil {
-					if orig := unbridgeValue(rv); orig.IsValid() &&
-						(orig.Type().AssignableTo(dstTyp.Rtype) || dstTyp.NativeImplements(orig.Type())) {
+					if dstTyp.IsInterface() {
+						if bifc, ok := UnbridgeIface(rv); ok && bifc.Typ != nil && bifc.Typ.Implements(dstTyp) {
+							matched, wrapTyp = true, bifc.Typ
+							rv = bifc.Val.Reflect()
+						}
+					} else if orig := unbridgeValue(rv); orig.IsValid() && orig.Type().AssignableTo(dstTyp.Rtype) {
 						rv = orig
 						matched = true
 					}
@@ -1632,15 +1641,18 @@ func (m *Machine) Run() (err error) {
 						matched = concrete.Type().AssignableTo(dtyp.Rtype)
 					}
 					// Bridge wrapper (e.g. *BridgeError) holding an interpreted
-					// value: unwrap to recover the original concrete type. Mirrors
-					// the TypeAssert fallback above.
+					// value: recover it. For an interface target, restore the
+					// interpreted Iface and match by method signature (the bare
+					// underlying value is methodless and implements every
+					// interpreted interface, a false positive); keep TypeBranch
+					// consistent with the TypeAssert that binds the case variable.
 					if !matched {
-						if orig := unbridgeValue(rv); orig.IsValid() {
-							if dtyp.IsInterface() {
-								matched = orig.Type().Implements(dtyp.Rtype)
-							} else {
-								matched = orig.Type().AssignableTo(dtyp.Rtype)
+						if dtyp.IsInterface() {
+							if bifc, ok := UnbridgeIface(rv); ok && bifc.Typ != nil {
+								matched = bifc.Typ.Implements(dtyp)
 							}
+						} else if orig := unbridgeValue(rv); orig.IsValid() {
+							matched = orig.Type().AssignableTo(dtyp.Rtype)
 						}
 					}
 				}

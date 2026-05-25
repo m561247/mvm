@@ -191,6 +191,70 @@ func lookupFuncArgProxy(fnPtr uintptr, arg int) ProxyFactory {
 	return funcArgProxies[argProxyKey{fnPtr, arg}]
 }
 
+// DeepUnbridge returns rv with stdlib bridge wrappers replaced by the
+// concrete interpreted value they hold, recursing through interfaces and
+// slices (the shapes error trees take). Used by reflect.DeepEqual's arg
+// proxy: an interpreted error stored in a native []error slot becomes a
+// fresh bridge instance with non-nil func fields, so two logically-equal
+// slices (a []error from native errors.Join vs an interpreted literal)
+// never compare deeply equal until the nested bridges are stripped. The
+// depth bound guards pathological self-referential slices; maps, structs
+// and pointers are left untouched.
+func DeepUnbridge(rv reflect.Value) reflect.Value { return deepUnbridgeDepth(rv, 64) }
+
+func deepUnbridgeDepth(rv reflect.Value, depth int) reflect.Value {
+	if !rv.IsValid() || depth == 0 {
+		return rv
+	}
+	if u := UnbridgeValue(rv); u.IsValid() {
+		return deepUnbridgeDepth(u, depth-1)
+	}
+	switch rv.Kind() {
+	case reflect.Interface:
+		if rv.IsNil() {
+			return rv
+		}
+		e := deepUnbridgeDepth(rv.Elem(), depth-1)
+		if e.IsValid() && e.Type().AssignableTo(rv.Type()) {
+			out := reflect.New(rv.Type()).Elem()
+			out.Set(e)
+			return out
+		}
+		return rv
+	case reflect.Slice:
+		et := rv.Type().Elem()
+		if rv.IsNil() || (et.Kind() != reflect.Interface && et.Kind() != reflect.Slice) {
+			return rv
+		}
+		n := rv.Len()
+		elems := make([]reflect.Value, n)
+		allAssignable := true
+		for j := range n {
+			e := deepUnbridgeDepth(rv.Index(j), depth-1)
+			if !e.IsValid() {
+				e = rv.Index(j)
+			}
+			elems[j] = e
+			allAssignable = allAssignable && e.Type().AssignableTo(et)
+		}
+		// A bridge's underlying value may not satisfy the named element
+		// interface (e.g. an interpreted multierror unbridges to a plain
+		// []error, which is not itself an error). Widen to []any so both
+		// DeepEqual operands reduce to the same comparable shape.
+		sliceType := rv.Type()
+		if !allAssignable {
+			sliceType = reflect.SliceOf(AnyRtype)
+		}
+		out := reflect.MakeSlice(sliceType, n, n)
+		for j := range n {
+			out.Index(j).Set(elems[j])
+		}
+		return out
+	default:
+		return rv
+	}
+}
+
 func lookupMethodArgProxy(recvType reflect.Type, methodName string, arg int) ProxyFactory {
 	return methodArgProxies[methodProxyKey{recvType, methodName, arg}]
 }

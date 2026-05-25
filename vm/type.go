@@ -164,6 +164,13 @@ func (t *Type) Implements(iface *Type) bool {
 	isPtr := t.Rtype != nil && t.Rtype.Kind() == reflect.Pointer
 	for _, im := range iface.IfaceMethods {
 		if mt := t.ResolveMethodType(im.ID); mt != nil && (isPtr || !mt.Methods[im.ID].PtrRecv) {
+			// Method IDs are global by name, so a same-named method of a
+			// different signature would otherwise satisfy the interface (e.g.
+			// Unwrap() []error counting for interface{ Unwrap() error }). When
+			// both signatures are known, require them to match.
+			if !sigCompatible(im.Rtype, mt.Methods[im.ID].Rtype) {
+				return false
+			}
 			continue
 		}
 		if nativeIface {
@@ -171,6 +178,64 @@ func (t *Type) Implements(iface *Type) bool {
 		}
 		// Native concrete type with no mvm Methods: check reflect method set.
 		return iface.NativeImplements(t.Rtype)
+	}
+	return true
+}
+
+// sigCompatible reports whether a concrete method signature satisfies the
+// interface's required one. Both are receiver-free func types. It is lenient:
+// a nil (unknown) signature on either side matches, preserving the prior
+// name-only behavior wherever signatures were never recorded.
+func sigCompatible(want, have reflect.Type) bool {
+	if want == nil || have == nil || want == have {
+		return true
+	}
+	if want.Kind() != reflect.Func || have.Kind() != reflect.Func {
+		return true
+	}
+	if want.NumIn() != have.NumIn() || want.NumOut() != have.NumOut() || want.IsVariadic() != have.IsVariadic() {
+		return false
+	}
+	for i := range want.NumIn() {
+		if want.In(i) != have.In(i) {
+			return false
+		}
+	}
+	for i := range want.NumOut() {
+		if want.Out(i) != have.Out(i) {
+			return false
+		}
+	}
+	return true
+}
+
+// nativeSigCompatible reports whether a native method's signature mt satisfies
+// the interface's receiver-free required signature want. mt carries the
+// receiver as In(0) when hasRecv (rt is a concrete type, not an interface).
+// Lenient: a nil want matches.
+func nativeSigCompatible(want, mt reflect.Type, hasRecv bool) bool {
+	if want == nil {
+		return true
+	}
+	if want.Kind() != reflect.Func || mt.Kind() != reflect.Func {
+		return true
+	}
+	off := 0
+	if hasRecv {
+		off = 1
+	}
+	if mt.NumIn()-off != want.NumIn() || mt.NumOut() != want.NumOut() || mt.IsVariadic() != want.IsVariadic() {
+		return false
+	}
+	for i := range want.NumIn() {
+		if want.In(i) != mt.In(i+off) {
+			return false
+		}
+	}
+	for i := range want.NumOut() {
+		if want.Out(i) != mt.Out(i) {
+			return false
+		}
 	}
 	return true
 }
@@ -207,8 +272,15 @@ func (t *Type) NativeImplements(rt reflect.Type) bool {
 // are present or t has no IfaceMethods.
 func (t *Type) MissingMethod(rt reflect.Type) string {
 	t.EnsureIfaceMethods()
+	hasRecv := rt.Kind() != reflect.Interface
 	for _, im := range t.IfaceMethods {
-		if _, ok := rt.MethodByName(im.Name); !ok {
+		m, ok := rt.MethodByName(im.Name)
+		if !ok {
+			return im.Name
+		}
+		// Method present by name; if both signatures are known they must match
+		// so e.g. Unwrap() []error does not satisfy interface{ Unwrap() error }.
+		if !nativeSigCompatible(im.Rtype, m.Type, hasRecv) {
 			return im.Name
 		}
 	}

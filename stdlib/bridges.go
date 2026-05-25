@@ -25,6 +25,14 @@ func PassthroughIface(_ *vm.Machine, ifc vm.Iface) reflect.Value {
 	return reflect.Value{}
 }
 
+// DeepEqualArg is the reflect.DeepEqual arg proxy: it passes the concrete
+// value through, then recursively strips nested bridge wrappers (e.g. the
+// per-element wrappers inside a []error) so logically-equal interpreted
+// composites compare deeply equal. See vm.DeepUnbridge.
+func DeepEqualArg(m *vm.Machine, ifc vm.Iface) reflect.Value {
+	return vm.DeepUnbridge(PassthroughIface(m, ifc))
+}
+
 // Bridge types for common interface methods.
 // Each bridge is a struct with a Fn field and a pointer-receiver method
 // that delegates to Fn. At the native call boundary, the VM allocates a
@@ -580,8 +588,12 @@ func init() {
 	vm.InterfaceBridges[reflect.TypeOf((*heap.Interface)(nil)).Elem()] = reflect.TypeOf((*BridgeHeapInterface)(nil))
 	vm.InterfaceBridges[reflect.TypeOf((*flag.Value)(nil)).Elem()] = reflect.TypeOf((*BridgeFlagValue)(nil))
 
-	vm.RegisterArgProxy(reflect.DeepEqual, 0, PassthroughIface)
-	vm.RegisterArgProxy(reflect.DeepEqual, 1, PassthroughIface)
+	// PassthroughIface unwraps the top-level Iface arg to its concrete value,
+	// but a composite (e.g. a []error) keeps the per-element bridge wrappers
+	// built at slice construction, which DeepEqual sees as unequal (distinct
+	// instances with non-nil func fields). DeepEqualArg also strips those.
+	vm.RegisterArgProxy(reflect.DeepEqual, 0, DeepEqualArg)
+	vm.RegisterArgProxy(reflect.DeepEqual, 1, DeepEqualArg)
 
 	// sort.Slice* take the slice as `any` and drive it through reflect.Swapper /
 	// reflect.ValueOf, so the raw slice must reach them unwrapped. Without these
