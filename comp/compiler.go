@@ -621,6 +621,11 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 	maxExprDepth := []int{}       // max expression depth above locals per function scope
 	hasDefer := []bool{}          // whether current function scope uses defer
 	retCellSlots := [][]int{}     // per function scope: slot indices of cell-promoted named returns
+	// Per function scope: local slot indices that have had their address taken
+	// (lang.Addr -> vm.AddrLocal). Future GetLocals on these slots emit
+	// vm.GetLocalSync so a native callee writing through the pushed pointer is
+	// seen by subsequent num-based reads. Reset on function entry/exit.
+	addressedSlots := []map[int]bool{}
 
 	// pushAt appends a compile-stack entry recording the c.Code index where its
 	// load sequence began (used by the const folder to retract operand loads).
@@ -852,16 +857,32 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			// yield a *interface{} (handled by the Addr opcode's Iface branch).
 			concrete := srcType != nil && !srcType.IsInterface()
 			n := len(c.Code)
+			// markAddressed records that the local-frame slot has had its
+			// address taken in this function; future GetLocals on it emit
+			// GetLocalSync (see lang.Ident handling below).
+			markAddressed := func(slot int) {
+				if len(addressedSlots) == 0 {
+					return
+				}
+				m := addressedSlots[len(addressedSlots)-1]
+				if m == nil {
+					m = map[int]bool{}
+					addressedSlots[len(addressedSlots)-1] = m
+				}
+				m[slot] = true
+			}
 			switch {
 			case n > 0 && c.Code[n-1].Op == vm.Index:
 				c.Code[n-1].Op = vm.IndexAddr
 			case concrete && n > 0 && c.Code[n-1].Op == vm.GetLocal:
 				c.Code[n-1].Op = vm.AddrLocal
+				markAddressed(int(c.Code[n-1].A))
 			case concrete && n > 0 && c.Code[n-1].Op == vm.GetLocal2:
 				idx := int(c.Code[n-1].B)
 				c.Code[n-1].Op = vm.GetLocal
 				c.Code[n-1].B = 0
 				c.emit(t, vm.AddrLocal, idx)
+				markAddressed(idx)
 			default:
 				c.emit(t, vm.Addr)
 			}
@@ -1849,7 +1870,17 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			// Regular local or global access.
 			// Type symbols are always in global Data.
 			if s.Kind == symbol.LocalVar {
-				if !c.fuseGetLocal(vm.GetLocal2, s.Index) {
+				// Once the slot's address has been taken in this function, all
+				// future reads of it must re-sync num from ref (a native callee
+				// may have written through the pointer). Skip the GetLocal2
+				// fusion so the sync variant fires unconditionally for both.
+				addressed := len(addressedSlots) > 0 && addressedSlots[len(addressedSlots)-1][s.Index]
+				switch {
+				case addressed:
+					c.emit(t, vm.GetLocalSync, s.Index)
+				case c.fuseGetLocal(vm.GetLocal2, s.Index):
+					// fused; nothing more to do
+				default:
 					c.emit(t, vm.GetLocal, s.Index)
 				}
 			} else {
@@ -1912,6 +1943,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					flen = append(flen, len(stack))
 					funcStack = append(funcStack, t.Str)
 					funcStartStack = append(funcStartStack, lc)
+					addressedSlots = append(addressedSlots, nil)
 					// Register method in its receiver type's method table, prefer the qualified key.
 					if parts := strings.SplitN(t.Str, ".", 2); len(parts) == 2 {
 						typeName := strings.TrimPrefix(parts[0], "*")
@@ -1965,6 +1997,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 						})
 						funcStack = funcStack[:top]
 						funcStartStack = funcStartStack[:top]
+						addressedSlots = addressedSlots[:top]
 					}
 				}
 				c.SymSet(c.qualifyLabel(t.Str), &symbol.Symbol{Kind: symbol.Label, Value: vm.ValueOf(lc)})

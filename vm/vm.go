@@ -302,10 +302,11 @@ const (
 	LowerIntImm    // n -- n<$1  (signed)
 	LowerUintImm   // n -- n<$1  (unsigned)
 
-	GetGlobal  // -- value ; value = mem[$1] (global variable, syncs num from ref if needed)
-	GetLocal   // -- value ; value = mem[$1+fp-1] (local variable, no scope check)
-	NextLocal  // -- ; iterator next, set K (local scope); like Next but scope is always Local
-	Next2Local // -- ; iterator next, set K V (local scope); like Next2 but scope is always Local
+	GetGlobal    // -- value ; value = mem[$1] (global variable, syncs num from ref if needed)
+	GetLocal     // -- value ; value = mem[$1+fp-1] (local variable, no scope check)
+	GetLocalSync // -- value ; value = mem[$1+fp-1] and re-read num from ref (used after AddrLocal)
+	NextLocal    // -- ; iterator next, set K (local scope); like Next but scope is always Local
+	Next2Local   // -- ; iterator next, set K V (local scope); like Next2 but scope is always Local
 
 	// Fused GetLocal + operation superinstructions.
 	// $1 = local offset (as in GetLocal), $2 = immediate operand.
@@ -1173,6 +1174,17 @@ func (m *Machine) Run() (err error) {
 			mem[sp+1] = mem[int(c.A)+fp-1]
 			mem[sp+2] = mem[int(c.B)+fp-1]
 			sp += 2
+		case GetLocalSync:
+			// GetLocal variant emitted after AddrLocal for the same slot:
+			// the local was promoted to addressable storage, so a native
+			// callee writing through the pushed pointer bypasses slot.num.
+			// Re-read num from ref so subsequent reads see native writes
+			// (e.g. flag.BoolVar(&b, ...) + Parse must update `b`).
+			sp++
+			mem[sp] = mem[int(c.A)+fp-1]
+			if isNum(mem[sp].ref.Kind()) {
+				mem[sp].num = numBits(mem[sp].ref)
+			}
 		case GetLocalAddIntImm:
 			sp++
 			v := mem[int(c.A)+fp-1]

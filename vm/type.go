@@ -698,6 +698,16 @@ func nilEqual(v Value) bool {
 	return !v.ref.IsValid()
 }
 
+// isNativeIface reports whether v is a non-nil native interface{} holding a
+// concrete value (i.e. NOT mvm's own Iface wrapper). Used by Equal to unwrap
+// such interfaces before comparison.
+func isNativeIface(v Value) bool {
+	if !v.ref.IsValid() || v.ref.Kind() != reflect.Interface || v.ref.IsNil() {
+		return false
+	}
+	return !v.IsIface()
+}
+
 // Equal reports whether v is equal to u.
 func (v Value) Equal(u Value) bool {
 	// Unwrap bridge wrappers to compare underlying values.
@@ -706,6 +716,17 @@ func (v Value) Equal(u Value) bool {
 	}
 	if uu := unbridgeValue(u.ref); uu.IsValid() {
 		u = FromReflect(uu)
+	}
+	// Native interface{} holding a concrete (e.g. flag.Getter.Get() returns
+	// any-bool from native code): unwrap to the dynamic value so a
+	// `value == literal` test matches Go's interface-to-concrete comparison
+	// rather than reflect.Value.Equal's stricter Kind-must-match rule. mvm's
+	// own Iface wrapper is handled below; this only unwraps plain native ifaces.
+	if isNativeIface(v) {
+		v = FromReflect(v.ref.Elem())
+	}
+	if isNativeIface(u) {
+		u = FromReflect(u.ref.Elem())
 	}
 	if v.IsIface() {
 		if !u.IsValid() {
