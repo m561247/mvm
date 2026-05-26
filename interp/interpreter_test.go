@@ -179,6 +179,9 @@ func TestParseErrorPos(t *testing.T) {
 		{n: "var_no_name", src: `var = "x"`, err: `missing variable name in var declaration`},
 		{n: "var_no_name_in_func", src: `func main() { var = "x" }`, err: `missing variable name in var declaration`},
 		{n: "var_assign_mismatch", src: `var a = 1, 2`, err: `assignment mismatch: 1 variables but 2 values`},
+		{n: "assign_mismatch_few", src: `func main() { a, b := "a"; _, _ = a, b }; main()`, err: `assignment mismatch: 2 variables but 1 value`},
+		{n: "assign_mismatch_many", src: `func main() { a, b := "a", "b", "c"; _, _ = a, b }; main()`, err: `assignment mismatch: 2 variables but 3 values`},
+		{n: "assign_mismatch_single_lhs", src: `func main() { var a int; a = 1, 2; _ = a }; main()`, err: `assignment mismatch: 1 variables but 2 values`},
 		// Compiler-side ErrUndefined now carries source position too.
 		{n: "undefined_method", src: `type T struct{}; var t T; t.NoSuchMethod()`, err: `test:1:28: undefined: NoSuchMethod`},
 		// A missing pkg-qualified symbol now reports file:line:col so `mvm test`

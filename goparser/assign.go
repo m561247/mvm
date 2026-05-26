@@ -10,13 +10,16 @@ func (p *Parser) parseAssign(in Tokens, aindex int) (out Tokens, err error) {
 	rhs := in[aindex+1:].Split(lang.Comma)
 	lhs := in[:aindex].Split(lang.Comma)
 	define := in[aindex].Tok == lang.Define
+	if len(rhs) > 1 && len(lhs) != len(rhs) {
+		return out, p.errAt(in[aindex], "assignment mismatch: %d variables but %d values", len(lhs), len(rhs))
+	}
 	// `a[i], ok = f()` and similar: the multi-assign branch in
 	// compiler.go assumes Var/LocalVar lhs and mishandles indexed/deref'd
 	// lhs (the Index/Deref opcode runs at parse-emit time and consumes
 	// the container/pointer). Desugar to N temps + N single-value
 	// assigns so each lhs flows through Assign / IndexAssign / DerefAssign.
 	if !define && len(rhs) == 1 && len(lhs) > 1 && lhsNeedsTemps(lhs) {
-		return p.parseAssignSingleRHSViaTemps(lhs, rhs[0], in[aindex].Pos)
+		return p.parseAssignSingleRHSViaTemps(lhs, rhs[0], in[aindex])
 	}
 	if len(rhs) == 1 {
 		var isRange bool
@@ -32,6 +35,9 @@ func (p *Parser) parseAssign(in Tokens, aindex int) (out Tokens, err error) {
 		}
 		toks, err := p.parseExpr(rhs[0], "")
 		if err != nil {
+			return out, err
+		}
+		if err := p.checkSingleRHSArity(in[aindex], len(lhs), toks); err != nil {
 			return out, err
 		}
 		switch out[len(out)-1].Tok {
@@ -130,7 +136,8 @@ func lhsNeedsTemps(lhs []Tokens) bool {
 	return false
 }
 
-func (p *Parser) parseAssignSingleRHSViaTemps(lhs []Tokens, rhsExpr Tokens, pos int) (out Tokens, err error) {
+func (p *Parser) parseAssignSingleRHSViaTemps(lhs []Tokens, rhsExpr Tokens, opTok Token) (out Tokens, err error) {
+	pos := opTok.Pos
 	tmpNames := make([]string, len(lhs))
 	for i := range lhs {
 		tmpNames[i] = p.addTempVar(fmt.Sprintf("_ma_%d_", i))
@@ -138,6 +145,9 @@ func (p *Parser) parseAssignSingleRHSViaTemps(lhs []Tokens, rhsExpr Tokens, pos 
 	}
 	rhsToks, err := p.parseExpr(rhsExpr, "")
 	if err != nil {
+		return out, err
+	}
+	if err := p.checkSingleRHSArity(opTok, len(lhs), rhsToks); err != nil {
 		return out, err
 	}
 	out = append(out, rhsToks...)
@@ -151,6 +161,23 @@ func (p *Parser) parseAssignSingleRHSViaTemps(lhs []Tokens, rhsExpr Tokens, pos 
 		out = appendSingleAssign(out, newToken(lang.Ident, tmpNames[i], pos, 0), pos)
 	}
 	return out, nil
+}
+
+// checkSingleRHSArity rejects `a, b := <single-valued expr>`: a multi-LHS,
+// single-RHS assignment requires the RHS to yield multiple values (a function
+// call, a range, or a comma-ok form when lhs has 2 entries).
+func (p *Parser) checkSingleRHSArity(opTok Token, nLHS int, rhsToks Tokens) error {
+	if nLHS <= 1 || len(rhsToks) == 0 {
+		return nil
+	}
+	last := rhsToks[len(rhsToks)-1].Tok
+	if last == lang.Call || last == lang.Range {
+		return nil
+	}
+	if nLHS == 2 && (last == lang.TypeAssert || last == lang.Index || last == lang.Arrow) {
+		return nil
+	}
+	return p.errAt(opTok, "assignment mismatch: %d variables but 1 value", nLHS)
 }
 
 func appendSingleAssign(out Tokens, src Token, pos int) Tokens {
