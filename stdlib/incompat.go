@@ -24,6 +24,29 @@ var Incompat = map[string]map[string]string{
 		// frame (reflect/value.go) instead of the user's flag.Var call site.
 		"TestDefineAfterSet": "runtime.Caller through reflect.Call adapter masks the user call site",
 	},
+
+	// testing.AllocsPerRun counts heap allocations of the closure body.
+	// Interpreted execution boxes operands and reallocates working storage,
+	// so the observed count is always well above the native expectation of
+	// 0 or 1. Not a mvm bug -- the test is measuring the host runtime.
+	"bytes": {
+		"TestNewBufferShallow": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
+		"TestWriteAppend":      "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
+		"TestGrow":             "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
+	},
+	"strings": {
+		"TestBuilderGrow":            "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0/1",
+		"TestBuilderAllocs":          "testing.AllocsPerRun observes mvm interpreter allocations; native expects 1",
+		"TestBuilderGrowSizeclasses": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 1",
+		"TestIndexRune":              "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
+		"TestReplace":                "testing.AllocsPerRun observes mvm interpreter allocations; native expects <=1",
+	},
+	"unicode/utf8": {
+		"TestRuneCountNonASCIIAllocation": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
+	},
+	"testing": {
+		"TestAllocsPerRun": "self-test of AllocsPerRun; mvm interpreter allocates more than the native expectation of 1",
+	},
 }
 
 // SkipReason returns the recorded reason for skipping testName when running
