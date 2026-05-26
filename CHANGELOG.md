@@ -16,6 +16,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   The generator (`compat/gen.go`) is plain Go run through mvm itself.
   A weekly (and per-release) GitHub Actions workflow refreshes the data, and
   the matrix is published at [mvm.sh/compat](https://mvm.sh/compat).
+- Preliminary support for complex numbers: `complex`, `real`, `imag`
+  builtins and untyped/typed complex literals.
+  Arithmetic operators (`+`, `-`, `*`, `/`, `==`, `!=`) on complex values
+  are not yet implemented.
+- `mvm run a.go b.go ...` compiles all provided files as a single
+  compilation unit, so sibling forward declarations across files resolve
+  correctly.
+- `mvm run -e 'expr'` prints the last result of the expression in
+  addition to running it.
+- `extract` subcommand: runs correctly from inside the target package
+  directory, and the default mode now emits a binding `ImportPackageValues`
+  map keyed by full import path for any package, not just the standard
+  library.
+- Cross-language benchmarks under `bench/` compare mvm against Go, Lua,
+  Python, and Node on `fib` and `sieve`.
+- `errors.Is` and `errors.As` on interpreted interface types, including
+  multi-error chains (`Unwrap() []error`), through reworked native
+  bridges in `errorsx`.
+- `reflect.TypeAssert[T]` generic shim.
+- `fmtx` package fixes `%T` verbs to report the interpreted type name
+  instead of the bridge wrapper.
+- Stubs for `testing` package so `flag` and similar tests run end-to-end.
+- `stdlib.Incompat` skiplist: known architectural mismatches in stdlib
+  tests are rewritten to `mvmtest.SkipFn(reason)` so they show `SKIP`
+  rather than `FAIL`, keeping the compatibility matrix honest.
+- Custom linter rules wired into `make vet` (symbol-key and pos/base
+  invariants), plus broader linter coverage (`copyloopvar`,
+  `gocheckcompilerdirectives`, `makezero`, `wastedassign`, `errorlint`,
+  `nolintlint`); `nolint:gosec` sweep reduced from 189 to 5.
+
+### Changed
+
+- `slices` and `maps` standard-library packages are now fully
+  interpreted rather than bridged.
+  `testing/quick` is also interpreted now; its `_test.go` ships in the
+  std mirror and exercises the interpreter end-to-end.
+- Generics inference reworked.
+  Type parameters are bound through the symbol table by identity rather
+  than name-substitution; the old `substituteTokens` machinery and the
+  `typeArgSources` source-tracking subsystem are gone.
+  A cycle guard catches recursive generic types.
+  Closes a class of inference gaps (notably the `slices` and `maps`
+  packages now infer at parity with `go build`).
+- Interface satisfaction is signature-aware.
+  Previously a method was matched on name alone, so `Unwrap() []error`
+  spuriously satisfied `interface{ Unwrap() error }`; both
+  `Implements`/`MissingMethod` and `TypeAssert`/`TypeBranch` now compare
+  full signatures.
+- Generic interface constraints such as `[T error]` are satisfied by
+  interpreted concrete types via a name-based method probe.
+- Constant folding handles high-precision constants better and folds
+  more aggressively.
+- `mvm test` skip lists for stdlib tests with known incompatibilities
+  now surface as `SKIP` with a reason instead of `FAIL`.
+
+### Fixed
+
+- Package `init` no longer re-runs on every re-entrant `Eval`.
+  The start IP was taken from the compiler offset and skipped leftover
+  init/main shims; `mvm test flag` went from 0 to 28 passing tests.
+- `a, b = b, a` swap of pointer or reference locals.
+  All non-define multi-RHS assignments now go through `_swap_` temps.
+- Type assertions on the `type` type preserve the interpreted type
+  identity.
+- Native method expressions in all forms.
+  `(*big.Int).Add` direct, stored, and passed through `reflect.Method.Func`
+  now work; `mvm test math/big` passes.
+- Top-level function redeclarations are rejected with
+  "redeclared in this block" instead of hanging in an infinite loop.
+- Bare `nil` passed to a slice, map, pointer, channel, or function
+  parameter is coerced to a typed nil at the call site so `len` and
+  `range` no longer panic.
+- A variable that shadows its own type (`T := &T{}`) no longer corrupts
+  the `:=` LHS token; nil-interface-var to native-param coercion and
+  bridge `Is` on uncomparable values are also fixed.
+- Dot-imported package vars now carry their type, so `CommandLine.Parse(...)`
+  resolves through a dot import.
+- Hexadecimal float literals scan correctly.
+- Shift operations on wide (high-precision) constants.
+- User functions whose names shadow Go builtins compile correctly.
+- Constants from dot imports and typed constants generally.
+- Generic type inference no longer collides when distinct type
+  parameters share a name.
+- Test files whose build tags exclude the current `GOARCH` are skipped
+  at parse time instead of failing.
+- Forward declarations within grouped `type ( ... )` blocks resolve
+  through a shared `parseDeferring` helper.
+- Interpreted method lookup is faster and more correct on receivers
+  reached through native bridges.
+- `Equal` unwraps native `interface{}` to the concrete value when
+  comparing across the mvm/native boundary; `GetLocal`/`GetLocal2`
+  re-sync `num` from `ref` for addressable numeric slots so writes
+  through a native pointer are visible.
+- Interface bridges: improved coverage of stdlib interface conversions
+  in both directions.
+
+### Performance
+
+- New superinstructions and peepholes in the VM.
+  `Not+JumpFalse` peephole; `JumpTrue` fusion mirror; `AddLocalLocal`
+  and `IntImm`; non-addressable numeric slots; wide-immediate jump
+  fuse; `IndexSetBool`; `GetLocalSync` to sync `num` with `ref` on
+  load.
+- Sieve of Eratosthenes drops from 100 ms to 32 ms (-68%), beating
+  `lua5.4` on the same benchmark by ~14%.
+  `fib` is unchanged.
+
+### Removed
+
+- `substituteTokens` and its helpers from the generics-inference
+  pipeline (replaced by symbol-table identity binding).
+- `typeArgSources` source-tracking subsystem.
+- `rotateRight` mirror patch from `slices` (no longer needed).
 
 ## [0.3.0] - 2026-05-22
 
