@@ -1756,7 +1756,26 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			if typ.IsPtr() {
 				typ = typ.Elem()
 			}
-			switch typ.Rtype.Kind() {
+			kind := typ.Rtype.Kind()
+			// Peephole: `arr[i] = boolConst` collapses the bool load,
+			// IndexSet, and trailing Pop into a single IndexSetBool op.
+			if (kind == reflect.Array || kind == reflect.Slice) && len(c.Code) > 0 &&
+				!c.labelAtPos[len(c.Code)-1] {
+				val := stack[len(stack)-1]
+				if val.Kind == symbol.Const && val.Cval != nil && val.Cval.Kind() == constant.Bool {
+					if last := c.Code[len(c.Code)-1].Op; last == vm.GetGlobal || last == vm.Push {
+						c.Code = c.Code[:len(c.Code)-1]
+						b := 0
+						if constant.BoolVal(val.Cval) {
+							b = 1
+						}
+						c.emit(t, vm.IndexSetBool, b)
+						truncStack(len(stack) - 3)
+						break
+					}
+				}
+			}
+			switch kind {
 			case reflect.Array, reflect.Slice:
 				c.emit(t, vm.IndexSet)
 			case reflect.Map:

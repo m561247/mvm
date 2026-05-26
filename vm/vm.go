@@ -334,6 +334,7 @@ const (
 	SubLocalLocal  // -- ; local[$1] -= local[$2]
 	AddLocalIntImm // -- ; local[$1] += $2 (signed, fits int32)
 	SubLocalIntImm // -- ; local[$1] -= $2 (signed, fits int32)
+	IndexSetBool   // a i -- ; a[i] = bool($1)  (fuses Push/GetGlobal bool + IndexSet + Pop)
 
 	MarkNamedRet // -- ; flag this frame as having captured named returns (set bit in retIPInfo)
 )
@@ -1302,6 +1303,10 @@ func (m *Machine) Run() (err error) {
 			if isNum(slot.ref.Kind()) && slot.ref.CanSet() {
 				setNumReflect(slot.ref, n)
 			}
+		case IndexSetBool:
+			idx := int(mem[sp].num)
+			reflect.Indirect(mem[sp-1].ref).Index(idx).SetBool(c.A != 0)
+			sp -= 2
 		case GetGlobal:
 			// Global slots written via SetS update ref through a shared pointer without
 			// updating num in the original slot; sync num from ref before copying.
