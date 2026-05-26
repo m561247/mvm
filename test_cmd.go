@@ -102,7 +102,7 @@ func testCmd(arg []string) error {
 				flushStats()
 				return err
 			}
-			return runTestsInDir(i, absDir, flushStats)
+			return runTestsInDir(i, absDir, "", flushStats)
 		}
 	}
 
@@ -133,7 +133,7 @@ func testCmd(arg []string) error {
 			// of failing hard.
 			if src, ok := sourceLoadsWithoutTests(trace, target); ok {
 				fmt.Fprintf(os.Stderr, "mvm test: %s: tests not loaded (%v)\n", target, err)
-				return runTestDriver(src, func() {})
+				return runTestDriver(src, target, func() {})
 			}
 			return fmt.Errorf("loading %q: %w", target, err)
 		}
@@ -148,16 +148,16 @@ func testCmd(arg []string) error {
 			}
 			if dir != "" {
 				defer cleanup()
-				return runTestsInDir(i, dir, flushStats)
+				return runTestsInDir(i, dir, target, flushStats)
 			}
 		}
 		// Bridged-stdlib case: external test files came from $GOROOT/src/<target>.
 		// chdir there so testdata-relative paths resolve. No copy needed since
 		// stdlib tests read but do not write their testdata subtrees.
 		if dir := stdlib.GorootSrcDir(target); dir != "" {
-			return runTestsInDir(i, dir, flushStats)
+			return runTestsInDir(i, dir, target, flushStats)
 		}
-		return runTestDriver(i, flushStats)
+		return runTestDriver(i, target, flushStats)
 	}
 }
 
@@ -235,7 +235,9 @@ func failingTestFile(err error, target string) string {
 // runTestsInDir runs the test driver with cwd set to dir, restoring cwd on
 // return. Cwd matters because `go test` chdirs to the package source dir, and
 // any test using testdata-relative paths depends on that.
-func runTestsInDir(i *interp.Interp, dir string, flushStats func()) error {
+// pkgPath identifies the bridged-stdlib import path so the driver can apply
+// the stdlib.Incompat skiplist; pass "" for local-dir runs.
+func runTestsInDir(i *interp.Interp, dir, pkgPath string, flushStats func()) error {
 	prev, err := os.Getwd()
 	if err != nil {
 		return err
@@ -244,7 +246,7 @@ func runTestsInDir(i *interp.Interp, dir string, flushStats func()) error {
 		return err
 	}
 	defer func() { _ = os.Chdir(prev) }()
-	return runTestDriver(i, flushStats)
+	return runTestDriver(i, pkgPath, flushStats)
 }
 
 // materializePkgDir copies the import-path subtree of fsys into a fresh
@@ -395,7 +397,7 @@ func compileTestFilters(args []string) (run, skip *regexp.Regexp) {
 // re-entrant mvm bridge that an interpreted matcher would impose on every test
 // name. Benchmarks run only when -bench is given; testing filters them by that
 // flag, so the full Benchmark* list is passed unfiltered. See ADR-019.
-func runTestDriver(i *interp.Interp, flushStats func()) error {
+func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
 	testNames := filterTopLevelTests(i.FuncNames("Test"), os.Args[1:])
 	benchNames := i.FuncNames("Benchmark")
 	examples := collectExamples(i)
@@ -410,6 +412,13 @@ func runTestDriver(i *interp.Interp, flushStats func()) error {
 			"Run": reflect.ValueOf(func(tests []testing.InternalTest, benches []testing.InternalBenchmark, exs []testing.InternalExample) {
 				exitCode = testing.MainStart(statDeps{}, tests, benches, nil, exs).Run()
 			}),
+			// SkipFn builds a *native* t.Skip(reason) closure, so the skip path
+			// stays entirely outside the interpreter (an interpreted shim
+			// crashes inside makeCallFunc when invoked with the bridged
+			// *testing.T arg). See stdlib.Incompat usage below.
+			"SkipFn": reflect.ValueOf(func(reason string) func(*testing.T) {
+				return func(t *testing.T) { t.Skip(reason) }
+			}),
 		},
 	})
 	i.AutoImportPackages()
@@ -417,6 +426,13 @@ func runTestDriver(i *interp.Interp, flushStats func()) error {
 	var driver strings.Builder
 	driver.WriteString("mvmtest.Run([]testing.InternalTest{")
 	for _, name := range testNames {
+		if reason := stdlib.SkipReason(pkgPath, name); reason != "" {
+			// Architectural-limit skiplist: route through mvmtest.SkipFn so
+			// the run shows --- SKIP instead of --- FAIL, keeping
+			// compat/gen.go's pass/fail ratio honest.
+			fmt.Fprintf(&driver, "{Name: %q, F: mvmtest.SkipFn(%q)},", name, "mvm: "+reason)
+			continue
+		}
 		fmt.Fprintf(&driver, "{Name: %q, F: %s},", name, name)
 	}
 	driver.WriteString("}, []testing.InternalBenchmark{")

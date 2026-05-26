@@ -514,6 +514,35 @@ func (b *BridgeFlagValue) String() string { return b.FnString() }
 // Set implements flag.Value.
 func (b *BridgeFlagValue) Set(s string) error { return b.FnSet(s) }
 
+// BridgeFlagValueBool bridges flag's private boolFlag interface
+// (flag.Value + IsBoolFlag).
+// Picked over BridgeFlagValue when the interpreted value provides IsBoolFlag,
+// so flag.parseOne's `value.(boolFlag)` succeeds and bool-style `-flag` args
+// (no value) parse as `true` instead of failing with "needs an argument".
+type BridgeFlagValueBool struct {
+	FnString     func() string
+	FnSet        func(string) error
+	FnIsBoolFlag func() bool
+}
+
+// String implements flag.Value.
+func (b *BridgeFlagValueBool) String() string { return b.FnString() }
+
+// Set implements flag.Value.
+func (b *BridgeFlagValueBool) Set(s string) error { return b.FnSet(s) }
+
+// IsBoolFlag satisfies flag's boolFlag.
+func (b *BridgeFlagValueBool) IsBoolFlag() bool { return b.FnIsBoolFlag() }
+
+// flagBoolValue is the registration key for BridgeFlagValueBool.
+// flag.boolFlag is unexported, so we redeclare its method set here; reflect
+// only needs the shape to match for Implements().
+type flagBoolValue interface {
+	String() string
+	Set(string) error
+	IsBoolFlag() bool
+}
+
 func init() {
 	vm.Bridges["Error"] = reflect.TypeOf((*BridgeError)(nil))
 	vm.Bridges["Format"] = reflect.TypeOf((*BridgeFormat)(nil))
@@ -603,6 +632,7 @@ func init() {
 	vm.InterfaceBridges[reflect.TypeOf((*sort.Interface)(nil)).Elem()] = reflect.TypeOf((*BridgeSortInterface)(nil))
 	vm.InterfaceBridges[reflect.TypeOf((*heap.Interface)(nil)).Elem()] = reflect.TypeOf((*BridgeHeapInterface)(nil))
 	vm.InterfaceBridges[reflect.TypeOf((*flag.Value)(nil)).Elem()] = reflect.TypeOf((*BridgeFlagValue)(nil))
+	vm.InterfaceBridges[reflect.TypeOf((*flagBoolValue)(nil)).Elem()] = reflect.TypeOf((*BridgeFlagValueBool)(nil))
 
 	// PassthroughIface unwraps the top-level Iface arg to its concrete value,
 	// but a composite (e.g. a []error) keeps the per-element bridge wrappers
