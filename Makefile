@@ -56,8 +56,16 @@ compat:
 	go build -o mvm .
 	$(COMPAT_RUNNER) -mvm ./mvm
 
+# Refresh the cross-language bench data (bench/bench.json) and the
+# <!-- bench:start --> block in README.md. Requires hyperfine, lua5.4,
+# lua5.1, and python3 in PATH. Hardware-dependent: commit the result only
+# from a stable bench machine.
+bench:
+	go build -o mvm .
+	go run ./bench/gen.go -mvm ./mvm
+
 clean:
 	rm -f mvm extract demo cover.out
 	$(MAKE) -C examples/c clean
 
-.PHONY: all clean clean_generate compat cover cover-html fast generate lint test
+.PHONY: all bench clean clean_generate compat cover cover-html fast generate lint test

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-26T14:43:17Z",
+  "mvm": "68834a0",
+  "platform": "linux/arm64",
+  "cpu": "arm64",
+  "note": "Single-process wall time via hyperfine (--warmup 1 --min-runs 5). Numbers vary by hardware; reproduce locally with `make bench`.",
+  "benchmarks": [
+    {
+      "name": "sieve",
+      "description": "Eratosthenes sieve, N=10_000_000",
+      "results": [
+        {
+          "runtime": "mvm",
+          "version": "68834a0",
+          "meanMs": 336.4,
+          "stddevMs": 0.9
+        },
+        {
+          "runtime": "lua5.4",
+          "version": "5.4.8",
+          "meanMs": 379.2,
+          "stddevMs": 3.7
+        },
+        {
+          "runtime": "lua5.1",
+          "version": "5.1.5",
+          "meanMs": 590.2,
+          "stddevMs": 3.9
+        },
+        {
+          "runtime": "python3",
+          "version": "3.12.13",
+          "meanMs": 778.5,
+          "stddevMs": 6.9
+        }
+      ]
+    },
+    {
+      "name": "fib35",
+      "description": "Recursive fib(35)",
+      "results": [
+        {
+          "runtime": "lua5.4",
+          "version": "5.4.8",
+          "meanMs": 285.5,
+          "stddevMs": 7.9
+        },
+        {
+          "runtime": "mvm",
+          "version": "68834a0",
+          "meanMs": 340.8,
+          "stddevMs": 3.3
+        },
+        {
+          "runtime": "python3",
+          "version": "3.12.13",
+          "meanMs": 544.6,
+          "stddevMs": 5.3
+        },
+        {
+          "runtime": "lua5.1",
+          "version": "5.1.5",
+          "meanMs": 620.9,
+          "stddevMs": 11.7
+        }
+      ]
+    }
+  ]
+}
