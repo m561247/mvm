@@ -1333,7 +1333,17 @@ func (m *Machine) Run() (err error) {
 				mem[sp] = v
 			}
 		case New:
-			mem[int(c.A)+fp-1] = NewValue(m.globals[int(c.B)].ref.Type())
+			typ := m.globals[int(c.B)].ref.Type()
+			if isNum(typ.Kind()) {
+				// Non-addressable backing: slot.num is authoritative; slot.ref
+				// is a typed zero used only for Kind/Type. AddrLocal promotes
+				// to addressable on demand (vm.go:1164). Lets the in-place
+				// super-instructions skip setNumReflect when the local is not
+				// address-taken (the common case).
+				mem[int(c.A)+fp-1] = Value{ref: reflect.Zero(typ)}
+			} else {
+				mem[int(c.A)+fp-1] = NewValue(typ)
+			}
 		case Equal:
 			mem[sp-1] = boolVal(mem[sp-1].Equal(mem[sp]))
 			sp--
@@ -4208,6 +4218,14 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		dst.num = src.num
 		switch {
 		case !dst.ref.CanSet():
+			// For a non-addressable numeric dst (typed-zero from `vm.New`),
+			// num is authoritative; keep the typed-zero ref instead of
+			// aliasing src.ref, which may be an addressable backing returned
+			// by Deref. Aliasing would let DerefSet's address-scan corrupt
+			// this slot's num cache on later writes through that backing.
+			if dst.ref.IsValid() && isNum(dst.ref.Kind()) {
+				break
+			}
 			dst.ref = src.ref
 		case isNum(dst.ref.Kind()):
 			setNumReflect(dst.ref, src.num)
@@ -4216,10 +4234,14 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		}
 		return
 	}
-	// Bit ops leave src.ref invalid when neither operand carries a typed ref.
-	if !src.ref.IsValid() && dst.ref.CanSet() && isNum(dst.ref.Kind()) {
+	// Bit ops leave src.ref invalid when neither operand carries a typed ref;
+	// dst's kind is authoritative. For non-addressable numeric dst (typed-zero)
+	// num alone carries the value; skip the backing write.
+	if !src.ref.IsValid() && dst.ref.IsValid() && isNum(dst.ref.Kind()) {
 		dst.num = src.num
-		setNumReflect(dst.ref, src.num)
+		if dst.ref.CanSet() {
+			setNumReflect(dst.ref, src.num)
+		}
 		return
 	}
 	if !dst.ref.CanSet() {
