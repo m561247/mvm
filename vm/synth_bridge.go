@@ -13,8 +13,9 @@ import (
 // Native code that asserts the new rtype to an interface (fmt.Stringer,
 // error, etc.) then dispatches the method directly, with no bridge proxy.
 //
-// Phase 2a: shape S1 (func() string) on struct kinds, plus pointer-receiver
-// variants installed on *T via attachPtrType.
+// Phase 2b: shape S1 (func() string) on any supported kind (struct, named
+// primitive, slice, array, map) plus pointer-receiver variants installed on
+// *T via attachPtrType.
 // No-op for other shapes, other kinds, or when synth.Enabled() is false.
 // Installs at most one value-recv method on T and one ptr-recv method on *T
 // per call; multi-method support lands in Phase 2d.
@@ -27,7 +28,7 @@ func (m *Machine) AttachSynthMethods(t *Type) error {
 	if !synth.Enabled() || t == nil || t.Rtype == nil {
 		return nil
 	}
-	if t.Rtype.Kind() != reflect.Struct {
+	if !synthSupportedKind(t.Rtype.Kind()) {
 		return nil
 	}
 
@@ -38,13 +39,29 @@ func (m *Machine) AttachSynthMethods(t *Type) error {
 	return m.attachPtrRecvS1(t, valueAttached)
 }
 
+func synthSupportedKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Struct,
+		reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.String,
+		reflect.Slice, reflect.Array, reflect.Map:
+		return true
+	}
+	return false
+}
+
 func (m *Machine) attachValueRecvS1(t *Type) (bool, error) {
 	name, method, ok := m.firstS1Method(t, false)
 	if !ok {
 		return false, nil
 	}
 	handler := m.makeS1Handler(t, method, false)
-	newRT, err := synth.AttachStructMethods(t.Rtype, t.PkgPath, synth.Method{
+	newRT, err := synth.AttachMethods(t.Rtype, t.Name, t.PkgPath, synth.Method{
 		Name:     name,
 		Exported: true,
 		Sig:      method.Rtype,
@@ -59,16 +76,17 @@ func (m *Machine) attachValueRecvS1(t *Type) (bool, error) {
 
 // attachPtrRecvS1 installs a ptr-recv shape-S1 method on *T.
 // elemReady reports whether t.Rtype is already a fresh synth elem we own.
-// If not, we clone the original struct layout first so attachPtrType writes
+// If not, we clone the original layout first so attachPtrType writes
 // PtrToThis into our own rtype rather than the layout shared with reflect's
-// structLookupCache.
+// caches (structLookupCache for struct, the canonical native rtype for
+// primitives/slices/arrays/maps).
 func (m *Machine) attachPtrRecvS1(t *Type, elemReady bool) error {
 	name, method, ok := m.firstS1Method(t, true)
 	if !ok {
 		return nil
 	}
 	if !elemReady {
-		clone, err := synth.CloneStruct(t.Rtype, t.PkgPath)
+		clone, err := synth.Clone(t.Rtype, t.PkgPath)
 		if err != nil {
 			return err
 		}
