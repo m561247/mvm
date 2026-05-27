@@ -3829,6 +3829,42 @@ func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {
 	return tsym
 }
 
+// RefreshSynthRtype re-emits c.Data slots whose stored rtype no longer matches
+// the *vm.Type's current Rtype.
+// Called after vm.AttachSynthMethods swaps a type's Rtype (and the in-Type
+// cascade has propagated through the derived chain) so Fnew sources, type
+// descriptors, and var slots all observe the post-attach rtype.
+// Slots already in sync are left untouched; var values keep their numeric
+// payload across the rtype rebuild via vm.FromReflect (the synth swap
+// preserves layout, so the underlying storage stays valid against the new
+// rtype).
+func (c *Compiler) RefreshSynthRtype() {
+	for t, idx := range c.zeroTypeIdxs {
+		if !c.Data[idx].IsValid() || c.Data[idx].Type() == t.Rtype {
+			continue
+		}
+		c.Data[idx] = vm.NewValue(t.Rtype)
+	}
+	for _, sym := range c.typeSyms {
+		if sym.Index == symbol.UnsetAddr || sym.Type == nil {
+			continue
+		}
+		if !c.Data[sym.Index].IsValid() || c.Data[sym.Index].Type() == sym.Type.Rtype {
+			continue
+		}
+		c.Data[sym.Index] = vm.TypeValue(sym.Type.Rtype)
+	}
+	for _, sym := range c.Symbols {
+		if sym.Kind != symbol.Var || sym.Index == symbol.UnsetAddr || sym.Type == nil {
+			continue
+		}
+		if !c.Data[sym.Index].IsValid() || c.Data[sym.Index].Type() == sym.Type.Rtype {
+			continue
+		}
+		c.Data[sym.Index] = vm.NewValue(sym.Type.Rtype)
+	}
+}
+
 // intrinsicInfo describes a VM intrinsic that replaces a native function call.
 type intrinsicInfo struct {
 	op   vm.Op

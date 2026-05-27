@@ -16,17 +16,11 @@ import (
 // re-entrant Eval (test_cmd's package + _testmain) walks again.
 // Without dedup the S1 stub pool exhausts after ~64 packages.
 //
-// Known gap (Phase 3a sweep): replacing t.Rtype does NOT refresh derived
-// rtypes (reflect.PointerTo, SliceOf, MapOf) that the compiler captured
-// against the pre-synth layout and baked into c.Data immediates.
-// The compiler-internal dedup maps (typeSyms, zeroTypeIdxs) now key on
-// *vm.Type pointer identity (step 1 of the symbolic-types refactor), so
-// the t.Rtype swap itself no longer desyncs caches; only the derived-rtype
-// cascade remains.
-// Currently mvm-level iface dispatch routes through *vm.Type so most
-// observable behavior is correct; native-reflect paths (json.Marshal,
-// MethodByName etc.) get the synth rtype only on values built post-attach.
-// See [[project_synth_rtype_poc]] for the design.
+// vm.Type.RefreshRtype propagates the swap through t.derived, and
+// Compiler.RefreshSynthRtype (called once after every type is attached)
+// re-emits the c.Data slots whose stored rtype no longer matches the
+// post-cascade Rtype -- Fnew sources, type descriptors, var storage.
+// See [[project_synth_rtype_poc]] and [[project_symbolic_types_refactor]].
 func (i *Interp) attachSynthMethods() error {
 	if !synth.Enabled() {
 		return nil
@@ -34,6 +28,7 @@ func (i *Interp) attachSynthMethods() error {
 	if i.synthAttached == nil {
 		i.synthAttached = map[*vm.Type]bool{}
 	}
+	attached := false
 	for _, sym := range i.Symbols {
 		if sym.Kind != symbol.Type || sym.Type == nil {
 			continue
@@ -45,6 +40,10 @@ func (i *Interp) attachSynthMethods() error {
 			return err
 		}
 		i.synthAttached[sym.Type] = true
+		attached = true
+	}
+	if attached {
+		i.RefreshSynthRtype()
 	}
 	return nil
 }
