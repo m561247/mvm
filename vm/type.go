@@ -973,6 +973,69 @@ func (t *Type) refreshLocked(newRT reflect.Type) {
 	}
 }
 
+// canonicalType walks the Base chain to recover the source *Type that a
+// struct-field shallow copy was derived from.
+// Returns t itself if Base is nil.
+// Depth-capped at canonicalTypeMaxDepth so a malformed Type graph with
+// cyclic Base pointers can't hang the compiler; returns t unchanged when
+// the cap is hit.
+const canonicalTypeMaxDepth = 1024
+
+func canonicalType(t *Type) *Type {
+	start := t
+	for i := 0; i < canonicalTypeMaxDepth && t != nil && t.Base != nil; i++ {
+		t = t.Base
+	}
+	if t != nil && t.Base != nil {
+		return start
+	}
+	return t
+}
+
+// LiveFieldRtype returns the current rtype to use when rebuilding a struct
+// containing f as a field.
+// Struct-field clones (Base != nil) and pointer/slice/array/chan/map *Types
+// whose ElemType is a clone don't get refreshed by the in-Type cascade
+// (which walks t.derived from canonical roots only).  This helper follows
+// Base chains and re-derives via derive* so the returned rtype reflects the
+// post-cascade state of every referenced canonical type.
+func LiveFieldRtype(f *Type) reflect.Type {
+	if f == nil {
+		return nil
+	}
+	canonical := canonicalType(f)
+	if canonical == nil || canonical.Rtype == nil {
+		return nil
+	}
+	// Derived-type field whose ElemType (and/or KeyType for map) is itself
+	// a clone: re-derive from the canonical inner so we observe cascade
+	// updates that only landed on the canonical's derived chain.
+	if canonical.ElemType != nil && canonical.ElemType.Base != nil {
+		elemC := canonicalType(canonical.ElemType)
+		switch canonical.Rtype.Kind() {
+		case reflect.Pointer:
+			return derivePointerTo(elemC.Rtype)
+		case reflect.Slice:
+			return deriveSliceOf(elemC.Rtype)
+		case reflect.Array:
+			return deriveArrayOf(canonical.Rtype.Len(), elemC.Rtype)
+		case reflect.Chan:
+			return deriveChanOf(canonical.Rtype.ChanDir(), elemC.Rtype)
+		case reflect.Map:
+			keyC := canonical.KeyType
+			if keyC != nil {
+				keyC = canonicalType(keyC)
+			}
+			keyRT := canonical.Rtype.Key()
+			if keyC != nil && keyC.Rtype != nil {
+				keyRT = keyC.Rtype
+			}
+			return deriveMapOf(keyRT, elemC.Rtype)
+		}
+	}
+	return canonical.Rtype
+}
+
 // funcTypes is the global registry for FuncOf memoization.
 // Keys are signature fingerprints (packed pointer bytes of params/returns +
 // variadic byte); values are the canonical func *Type per signature.

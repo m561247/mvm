@@ -207,6 +207,53 @@ func HasPtrToThis(t reflect.Type) bool {
 	return rt.PtrToThis != 0
 }
 
+// SamePtrLayout reports whether a and b have identical pointer-density
+// (Size, Align, PtrBytes).
+// Used as a layout-safety guard before in-place rtype mutation: even if
+// Size and Align match, a difference in PtrBytes means the GC bitmap was
+// computed for a different pointer pattern and an in-place swap would
+// corrupt GC scanning.
+func SamePtrLayout(a, b reflect.Type) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	ra := rtypePtr(a)
+	rb := rtypePtr(b)
+	if ra == nil || rb == nil {
+		return false
+	}
+	return ra.Size == rb.Size && ra.Align == rb.Align && ra.PtrBytes == rb.PtrBytes
+}
+
+// PatchStructField mutates structRT's i-th field's Type pointer to newType,
+// preserving structRT's identity.
+// Used by the synth follow-up cascade when a struct's field rtype drifted
+// (e.g., a field-typed *Type underwent AttachSynthMethods after the struct
+// was originally StructOf'd at parse time).
+// Caller MUST ensure newType has the same Size, Align, AND PtrBytes as the
+// old field type (use SamePtrLayout to check); mvm's synth attach clones
+// source layout so this holds for synth swaps, but the guard prevents GC
+// corruption if a future caller violates the invariant.
+// No-op when out of range or on nil arguments.
+func PatchStructField(structRT reflect.Type, i int, newType reflect.Type) {
+	if structRT == nil || newType == nil {
+		return
+	}
+	rt := rtypePtr(structRT)
+	if rt == nil || rt.Kind != kindStruct {
+		return
+	}
+	st := (*abiStructType)(unsafe.Pointer(rt))
+	if i < 0 || i >= len(st.Fields) {
+		return
+	}
+	newFT := rtypePtr(newType)
+	if newFT == nil {
+		return
+	}
+	st.Fields[i].Typ = newFT
+}
+
 // registerLayout records the native-layout rtype for a synth rtype.
 // Called by every Attach*/Clone* path and by the derive constructors above
 // so chained derivations (e.g. SliceOf(PointerTo(synthStruct))) resolve the

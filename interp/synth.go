@@ -43,6 +43,7 @@ func (i *Interp) attachSynthMethods() error {
 		attached = true
 	}
 	if attached {
+		i.RebuildSynthStructRtypes()
 		i.RefreshSynthRtype()
 	}
 	return nil

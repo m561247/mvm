@@ -18,6 +18,7 @@ import (
 	"github.com/mvm-sh/mvm/lang"
 	"github.com/mvm-sh/mvm/symbol"
 	"github.com/mvm-sh/mvm/vm"
+	"github.com/mvm-sh/mvm/vm/synth"
 )
 
 const debug = false
@@ -3863,6 +3864,105 @@ func (c *Compiler) RefreshSynthRtype() {
 		}
 		c.Data[sym.Index] = vm.NewValue(sym.Type.Rtype)
 	}
+}
+
+// RebuildSynthStructRtypes walks every interpreted struct *vm.Type reachable
+// from compiler-tracked symbols and patches in-place any field whose Live
+// rtype no longer matches the rtype currently embedded in t.Rtype.Field(i).
+// Struct rtype identity is preserved (no reflect.StructOf rebuild) so any
+// compile-time captures of t.Rtype stay aligned AND the AttachPtrMethods *T
+// wired into t.Rtype.PtrToThis stays valid (a full RefreshRtype cascade
+// would overwrite d.ptr.Rtype with a fresh methodless synth.PointerTo
+// result, destroying the ptr-recv method attachment).
+// Called from interp/synth.go after the per-type AttachSynthMethods cascade
+// and BEFORE RefreshSynthRtype so the slot-level sweep observes any field
+// type swap.
+// Layout safety: synth attachments preserve the underlying rtype Size/Align
+// (the synth bridge clones source-rtype layout), so patching Field[i].Typ
+// to the synth-swapped rtype doesn't corrupt the struct's offsets.
+// Concurrency: this writes to rtype fields without holding any lock.
+// The invariant that makes that safe is "synth attach + rebuild complete
+// before Machine.Run resumes," enforced by the call site in evalCompiled
+// (interp/interpreter.go).  Adding derivedMu would NOT close any race with
+// the bytecode interpreter, which reads rtype fields without locking; the
+// only meaningful synchronization is the call-ordering invariant above.
+func (c *Compiler) RebuildSynthStructRtypes() {
+	structs := c.collectSynthStructs()
+	for t := range structs {
+		patchStructFieldTypes(t)
+	}
+}
+
+func patchStructFieldTypes(t *vm.Type) {
+	if t == nil || t.Rtype == nil || t.Rtype.Kind() != reflect.Struct {
+		return
+	}
+	n := t.Rtype.NumField()
+	if n != len(t.Fields) {
+		return
+	}
+	for i := 0; i < n; i++ {
+		live := vm.LiveFieldRtype(t.Fields[i])
+		if live == nil {
+			continue
+		}
+		// Interface fields are always stored as AnyRtype (vm.StructOf
+		// normalizes them at parse time); skip without scanning.
+		if live.Kind() == reflect.Interface {
+			continue
+		}
+		if t.Rtype.Field(i).Type == live {
+			continue
+		}
+		// Patch only when Size/Align/PtrBytes all match (synth attach
+		// preserves layout; PtrBytes match guards GCData against silent
+		// corruption if a future swap path violates that invariant).
+		if !synth.SamePtrLayout(t.Rtype.Field(i).Type, live) {
+			continue
+		}
+		synth.PatchStructField(t.Rtype, i, live)
+	}
+}
+
+// collectSynthStructs returns the set of distinct interpreted struct *Types
+// reachable from the compiler's type dedup maps (zeroTypeIdxs + typeSyms)
+// and from var symbols' Types.
+// Field types whose Base points elsewhere are followed: the canonical
+// struct *Type (the one whose rebuild matters) is what we collect.
+func (c *Compiler) collectSynthStructs() map[*vm.Type]bool {
+	seen := map[*vm.Type]bool{}
+	var visit func(t *vm.Type)
+	visit = func(t *vm.Type) {
+		if t == nil {
+			return
+		}
+		canonical := t
+		for canonical.Base != nil {
+			canonical = canonical.Base
+		}
+		if canonical.Rtype == nil || canonical.Rtype.Kind() != reflect.Struct {
+			return
+		}
+		if seen[canonical] {
+			return
+		}
+		seen[canonical] = true
+		for _, f := range canonical.Fields {
+			visit(f)
+		}
+	}
+	for t := range c.zeroTypeIdxs {
+		visit(t)
+	}
+	for t := range c.typeSyms {
+		visit(t)
+	}
+	for _, sym := range c.Symbols {
+		if sym.Type != nil {
+			visit(sym.Type)
+		}
+	}
+	return seen
 }
 
 // intrinsicInfo describes a VM intrinsic that replaces a native function call.
