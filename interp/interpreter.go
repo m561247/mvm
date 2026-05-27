@@ -120,6 +120,10 @@ func (i *Interp) evalCompiled(compile func() error) (res reflect.Value, err erro
 	i.Machine.MethodNames = i.Compiler.MethodNames()
 	i.Machine.MethodFuncTypes = i.Compiler.MethodFuncTypes()
 
+	if err := i.attachSynthMethods(); err != nil {
+		return res, i.withSourceContext(err)
+	}
+
 	i.TrimStack()
 	i.Push(i.Data[dataOffset:]...)
 	// start is the VM-code position of the freshly compiled code.
