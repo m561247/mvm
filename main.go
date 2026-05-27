@@ -85,13 +85,6 @@ func (t *traceFlag) Set(s string) error {
 	return nil
 }
 
-// setupStats returns a once-guarded flush closure for the -stat summary,
-// or a no-op when enabled is false.
-//
-// stderr is snapshotted now, before any interpreted code runs: a test may
-// reassign the host os.Stderr (e.g. spf13/pflag's TestBytesHex sets it to
-// /dev/null and never restores it), which would otherwise swallow the summary
-// since it is flushed only after all tests complete.
 func setupStats(i *interp.Interp, mfs *modfs.FS, enabled bool) func() {
 	if !enabled {
 		return func() {}
@@ -108,7 +101,6 @@ func setupStats(i *interp.Interp, mfs *modfs.FS, enabled bool) func() {
 	})
 }
 
-// humanBytes formats a byte count with a binary-unit suffix.
 func humanBytes(n int64) string {
 	switch {
 	case n < 1024:
