@@ -175,6 +175,21 @@ func layoutFor(t reflect.Type) reflect.Type {
 	return asReflectType(layout)
 }
 
+// IsSynth reports whether t is a synth-built rtype (produced by any of the
+// Attach*, Clone*, or derive constructors in this package).
+// Callers route between reflect.*Of (native rtype identity preserved) and
+// the synth-safe constructors above based on this predicate.
+func IsSynth(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	rt := rtypePtr(t)
+	layoutMu.RLock()
+	_, ok := layoutMap[rt]
+	layoutMu.RUnlock()
+	return ok
+}
+
 // registerLayout records the native-layout rtype for a synth rtype.
 // Called by every Attach*/Clone* path and by the derive constructors above
 // so chained derivations (e.g. SliceOf(PointerTo(synthStruct))) resolve the

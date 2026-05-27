@@ -10,6 +10,8 @@ import (
 	"sync"
 	"unicode"
 	"unsafe"
+
+	"github.com/mvm-sh/mvm/vm/synth"
 )
 
 // Runtime type and value representations (based on reflect).
@@ -822,7 +824,7 @@ func PointerTo(t *Type) *Type {
 	if d.ptr != nil {
 		return d.ptr
 	}
-	d.ptr = &Type{Name: t.Name, Rtype: reflect.PointerTo(t.Rtype), ElemType: t}
+	d.ptr = &Type{Name: t.Name, Rtype: derivePointerTo(t.Rtype), ElemType: t}
 	return d.ptr
 }
 
@@ -836,7 +838,7 @@ func ArrayOf(length int, t *Type) *Type {
 	} else if a := d.array[length]; a != nil {
 		return a
 	}
-	a := &Type{Rtype: reflect.ArrayOf(length, t.Rtype), ElemType: t}
+	a := &Type{Rtype: deriveArrayOf(length, t.Rtype), ElemType: t}
 	d.array[length] = a
 	return a
 }
@@ -850,7 +852,7 @@ func SliceOf(t *Type) *Type {
 	if d.slice != nil {
 		return d.slice
 	}
-	d.slice = &Type{Rtype: reflect.SliceOf(t.Rtype), ElemType: t}
+	d.slice = &Type{Rtype: deriveSliceOf(t.Rtype), ElemType: t}
 	return d.slice
 }
 
@@ -865,7 +867,7 @@ func MapOf(k, e *Type) *Type {
 	} else if m := d.maps[e]; m != nil {
 		return m
 	}
-	m := &Type{Rtype: reflect.MapOf(k.Rtype, e.Rtype), ElemType: e, KeyType: k}
+	m := &Type{Rtype: deriveMapOf(k.Rtype, e.Rtype), ElemType: e, KeyType: k}
 	d.maps[e] = m
 	return m
 }
@@ -880,9 +882,91 @@ func ChanOf(dir reflect.ChanDir, elem *Type) *Type {
 	} else if c := d.chans[dir]; c != nil {
 		return c
 	}
-	c := &Type{Rtype: reflect.ChanOf(dir, elem.Rtype), ElemType: elem}
+	c := &Type{Rtype: deriveChanOf(dir, elem.Rtype), ElemType: elem}
 	d.chans[dir] = c
 	return c
+}
+
+// derivePointerTo / SliceOf / ArrayOf / ChanOf / MapOf route between
+// reflect.* and synth.* per elem (and key) origin.
+// reflect.*Of preserves native rtype identity (so reflect.PointerTo(int) and
+// vm.PointerTo's *int Rtype stay the canonical *int); on a synth elem
+// reflect.*Of crashes via resolveNameOff, so synth.* takes over.
+func derivePointerTo(elem reflect.Type) reflect.Type {
+	if synth.IsSynth(elem) {
+		return synth.PointerTo(elem)
+	}
+	return reflect.PointerTo(elem)
+}
+
+func deriveSliceOf(elem reflect.Type) reflect.Type {
+	if synth.IsSynth(elem) {
+		return synth.SliceOf(elem)
+	}
+	return reflect.SliceOf(elem)
+}
+
+func deriveArrayOf(n int, elem reflect.Type) reflect.Type {
+	if synth.IsSynth(elem) {
+		return synth.ArrayOf(n, elem)
+	}
+	return reflect.ArrayOf(n, elem)
+}
+
+func deriveChanOf(dir reflect.ChanDir, elem reflect.Type) reflect.Type {
+	if synth.IsSynth(elem) {
+		return synth.ChanOf(dir, elem)
+	}
+	return reflect.ChanOf(dir, elem)
+}
+
+func deriveMapOf(key, elem reflect.Type) reflect.Type {
+	if synth.IsSynth(key) || synth.IsSynth(elem) {
+		return synth.MapOf(key, elem)
+	}
+	return reflect.MapOf(key, elem)
+}
+
+// RefreshRtype updates t.Rtype to newRT and cascades the change through every
+// derived *Type cached on t (and recursively on those derivatives).
+// Called by AttachSynthMethods after vm/synth swaps the layout-identity of
+// a user type to a synth-built rtype carrying interpreted methods; derived
+// rtypes (*T, []T, [N]T, chan T, map[T]E) captured by the compiler before
+// the swap would otherwise reference the pre-synth layout.
+// Uses synth.* (not reflect.*Of) for the rebuild because reflect.*Of crashes
+// via resolveNameOff on rtypes that live outside any registered moduledata.
+// Maps cascade only the t-as-key direction (t.derived.maps): maps with t as
+// element live under the key's derived cache and are not reachable from t.
+func (t *Type) RefreshRtype(newRT reflect.Type) {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	t.refreshLocked(newRT)
+}
+
+func (t *Type) refreshLocked(newRT reflect.Type) {
+	if newRT == nil || newRT == t.Rtype {
+		return
+	}
+	t.Rtype = newRT
+	if t.derived == nil {
+		return
+	}
+	d := t.derived
+	if d.ptr != nil {
+		d.ptr.refreshLocked(synth.PointerTo(newRT))
+	}
+	if d.slice != nil {
+		d.slice.refreshLocked(synth.SliceOf(newRT))
+	}
+	for length, a := range d.array {
+		a.refreshLocked(synth.ArrayOf(length, newRT))
+	}
+	for dir, c := range d.chans {
+		c.refreshLocked(synth.ChanOf(dir, newRT))
+	}
+	for e, mt := range d.maps {
+		mt.refreshLocked(synth.MapOf(newRT, e.Rtype))
+	}
 }
 
 // funcTypes is the global registry for FuncOf memoization.

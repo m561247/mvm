@@ -66,7 +66,7 @@ func (m *Machine) attachValueRecv(t *Type) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	t.Rtype = newRT
+	t.RefreshRtype(newRT)
 	return true, nil
 }
 
@@ -86,11 +86,21 @@ func (m *Machine) attachPtrRecv(t *Type, elemReady bool) error {
 		if err != nil {
 			return err
 		}
-		t.Rtype = clone
+		t.RefreshRtype(clone)
 	}
-	_, err := synth.AttachPtrMethods(t.Rtype, "*"+t.Name, t.PkgPath,
+	newPtrRT, err := synth.AttachPtrMethods(t.Rtype, "*"+t.Name, t.PkgPath,
 		toSynthMethods(m, t, specs, true))
-	return err
+	if err != nil {
+		return err
+	}
+	// Propagate the *T-with-methods rtype to t.derived.ptr if it was already
+	// materialized (and cascade through its own derived chain).
+	derivedMu.Lock()
+	if t.derived != nil && t.derived.ptr != nil {
+		t.derived.ptr.refreshLocked(newPtrRT)
+	}
+	derivedMu.Unlock()
+	return nil
 }
 
 // synthMethodSpec describes a single method picked for synth attachment.

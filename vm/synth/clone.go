@@ -30,13 +30,17 @@ func Clone(layout reflect.Type, pkgPath string) (reflect.Type, error) {
 var errCloneKind = errors.New(
 	"synth: Clone: layout kind not supported")
 
+// stampHeader handles Hash, PtrToThis, TFlag, AND Str (via addReflectOff).
+// Restamping Str is required for clones of native rtypes whose Str is a
+// module-relative offset: after cloning to the heap, resolveNameOff would
+// otherwise fall through both the module-range check and the reflectOffs
+// lookup, throwing "name offset base pointer out of range".
+
 func cloneStruct(layout reflect.Type, pkgPath string) (reflect.Type, error) {
 	src := (*abiStructType)(unsafe.Pointer(rtypePtr(layout)))
 	b := new(synth0Struct)
 	b.t = *src
-	b.t.TFlag |= tflagUncommon
-	b.t.Hash = nextSyntheticHash()
-	b.t.PtrToThis = 0
+	stampHeader(&b.t.abiType, layout.Name())
 	b.u = makeUncommon(pkgPath, nil, uint32(unsafe.Sizeof(b.u)))
 	registerLayout(&b.t.abiType, &src.abiType)
 	return asReflectType(&b.t.abiType), nil
@@ -46,9 +50,7 @@ func clonePrim(layout reflect.Type, pkgPath string) (reflect.Type, error) {
 	src := rtypePtr(layout)
 	b := new(synth0Prim)
 	b.t = *src
-	b.t.TFlag |= tflagUncommon
-	b.t.Hash = nextSyntheticHash()
-	b.t.PtrToThis = 0
+	stampHeader(&b.t, layout.Name())
 	b.u = makeUncommon(pkgPath, nil, uint32(unsafe.Sizeof(b.u)))
 	registerLayout(&b.t, src)
 	return asReflectType(&b.t), nil
@@ -58,9 +60,7 @@ func cloneSlice(layout reflect.Type, pkgPath string) (reflect.Type, error) {
 	src := (*abiSliceType)(unsafe.Pointer(rtypePtr(layout)))
 	b := new(synth0Slice)
 	b.t = *src
-	b.t.TFlag |= tflagUncommon
-	b.t.Hash = nextSyntheticHash()
-	b.t.PtrToThis = 0
+	stampHeader(&b.t.abiType, layout.Name())
 	b.u = makeUncommon(pkgPath, nil, uint32(unsafe.Sizeof(b.u)))
 	registerLayout(&b.t.abiType, &src.abiType)
 	return asReflectType(&b.t.abiType), nil
@@ -70,9 +70,7 @@ func cloneArray(layout reflect.Type, pkgPath string) (reflect.Type, error) {
 	src := (*abiArrayType)(unsafe.Pointer(rtypePtr(layout)))
 	b := new(synth0Array)
 	b.t = *src
-	b.t.TFlag |= tflagUncommon
-	b.t.Hash = nextSyntheticHash()
-	b.t.PtrToThis = 0
+	stampHeader(&b.t.abiType, layout.Name())
 	b.u = makeUncommon(pkgPath, nil, uint32(unsafe.Sizeof(b.u)))
 	registerLayout(&b.t.abiType, &src.abiType)
 	return asReflectType(&b.t.abiType), nil
@@ -82,9 +80,7 @@ func cloneMap(layout reflect.Type, pkgPath string) (reflect.Type, error) {
 	src := (*abiMapType)(unsafe.Pointer(rtypePtr(layout)))
 	b := new(synth0Map)
 	b.t = *src
-	b.t.TFlag |= tflagUncommon
-	b.t.Hash = nextSyntheticHash()
-	b.t.PtrToThis = 0
+	stampHeader(&b.t.abiType, layout.Name())
 	b.u = makeUncommon(pkgPath, nil, uint32(unsafe.Sizeof(b.u)))
 	registerLayout(&b.t.abiType, &src.abiType)
 	return asReflectType(&b.t.abiType), nil
