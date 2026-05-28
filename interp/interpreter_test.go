@@ -1056,6 +1056,13 @@ func TestStruct(t *testing.T) {
 		// the panic propagates and recover() sees it (res "true").
 		{n: "errors_is_panic_propagates", skip: true, src: `import "errors"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { panic("boom") }; func f() (r bool) { defer func() { r = recover() != nil }(); errors.Is(E{"x"}, errors.New("t")); return false }; f()`, res: "true"},
 
+		// Regression: multiple blank `_` result params must each get their own
+		// slot+type; before the fix they collided on one "scope/_" key, so the
+		// bare return zero-init wrote a struct zero into the bool slot
+		// ("reflect.Set: ... not assignable to bool"). Surfaced via errors.AsType.
+		{n: "blank_struct_result_bare_return", src: `type S struct{ n int }; func g() (_ S, _ bool) { return }; _, b := g(); !b`, res: "true"},
+		{n: "generic_blank_result_bare_return", src: `type S struct{ n int }; func g[E any]() (_ E, _ bool) { return }; _, b := g[S](); !b`, res: "true"},
+
 		{n: "errors_as_validation_basic", src: `import "errors"; func f() (r bool) { defer func() { r = recover() != nil }(); var s string; errors.As(errors.New("e"), &s); return false }; f()`, res: "true"},
 
 		{n: "errors_as_anon_iface_target_via_any", src: `import "errors"; var timeout interface{ Timeout() bool }; tc := struct{ t any }{&timeout}; errors.As(errors.New("e"), tc.t)`, res: "false"},

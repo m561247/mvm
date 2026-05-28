@@ -443,6 +443,14 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 		}
 		if treatAsParam {
 			origName := t[0].Str
+			// Uniquify blank params so multiple `_` results don't collide on a
+			// single "scope/_" symbol key. The collision corrupts bare-return
+			// zero-init -- each blank result slot needs its own type, else a
+			// struct zero lands in a sibling (e.g. bool) slot. Mirrors
+			// addLocalVar's blankName handling for `_` locals.
+			if origName == "_" {
+				origName = p.blankName()
+			}
 			if flag == parseTypeVar {
 				// Top-level vars want the canonical pkgKey; pkgKey itself
 				// falls through to scopedName for nested (in-function) vars.
