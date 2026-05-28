@@ -993,12 +993,13 @@ const canonicalTypeMaxDepth = 1024
 func CanonicalType(t *Type) *Type {
 	start := t
 	for i := 0; i < canonicalTypeMaxDepth && t != nil && t.Base != nil; i++ {
-		// Stop at a method-bearing named type: Base is overloaded, and
-		// crossing the named-type-to-underlying link (`type Grams int`) would
-		// drop the synth rtype carrying Grams's methods.
-		// NumMethod>0 holds only post-synth-attach, so pre-attach the walk
-		// continues unchanged.
-		if t.Rtype != nil && t.Rtype.NumMethod() > 0 {
+		// Stop at a synth-attached named type: Base is overloaded, and crossing
+		// the named-type-to-underlying link (`type Grams int`) would drop the
+		// synth rtype. IsSynth catches ptr-receiver-only types too (their value
+		// clone is synth though its value method set is empty); NumMethod>0 is a
+		// fallback for any method-bearing rtype that is not synth.
+		// Both hold only post-attach, so pre-attach the walk continues unchanged.
+		if t.Rtype != nil && (synth.IsSynth(t.Rtype) || t.Rtype.NumMethod() > 0) {
 			return t
 		}
 		t = t.Base

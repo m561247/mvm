@@ -66,6 +66,10 @@ const (
 	// ShapeS13 is func([]byte) (int, error).
 	// Covers io.Reader.Read and io.Writer.Write.
 	ShapeS13 Shape = 12
+
+	// ShapeS14 is func(fmt.State, rune).
+	// Covers fmt.Formatter.Format.
+	ShapeS14 Shape = 13
 )
 
 // Method describes one method to install on a synthesized type.
@@ -169,6 +173,12 @@ func acquireSlot(m Method) (pc uintptr, release func(), err error) {
 			return 0, nil, errInvalidHandlerType
 		}
 		return acquireSlotS13(h)
+	case ShapeS14:
+		h, ok := m.Handler.(HandlerS14)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS14(h)
 	}
 	return 0, nil, fmt.Errorf("synth: unknown shape %d", m.Shape)
 }

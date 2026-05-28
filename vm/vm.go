@@ -658,10 +658,20 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 			mem[idx] = Value{num: uint64(uint32(bits)), ref: zuint32}
 		case reflect.Uint64:
 			mem[idx] = Value{num: bits, ref: zuint64}
+		case reflect.Uintptr:
+			mem[idx] = Value{num: bits, ref: zuintptr}
 		case reflect.Float32:
 			mem[idx] = Value{num: math.Float64bits(float64(float32(math.Float64frombits(bits)))), ref: zfloat32}
 		case reflect.Float64:
 			mem[idx] = Value{num: bits, ref: zfloat64}
+		}
+		// Keep a defined numeric type's named rtype (e.g. `type Grams int` with
+		// String): the canonical zXXX ref above dropped it, so a later box into
+		// an interface would lose its methods.
+		// Gated on NumMethod so plain numeric conversions keep the shared-ref
+		// fast path.
+		if dstType.NumMethod() > 0 {
+			mem[idx].ref = reflect.Zero(dstType)
 		}
 
 	case isNum(srcKind) && dstKind == reflect.String:

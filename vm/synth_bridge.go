@@ -267,6 +267,8 @@ func toSynthMethods(
 			handler = makeHandlerS12(m, t, s.method, s.ptrRecv)
 		case synth.ShapeS13:
 			handler = makeHandlerS13(m, t, s.method, s.ptrRecv)
+		case synth.ShapeS14:
+			handler = makeHandlerS14(m, t, s.method, s.ptrRecv)
 		}
 		out[i] = synth.Method{
 			Name:     s.name,
@@ -339,6 +341,7 @@ func (m *Machine) allSynthMethods(
 //	S11: func(any)               (heap.Interface.Push)
 //	S12: func() any              (heap.Interface.Pop)
 //	S13: func([]byte) (int, error) (io.Reader.Read / io.Writer.Write)
+//	S14: func(fmt.State, rune)    (fmt.Formatter.Format)
 func detectShape(sig reflect.Type) (synth.Shape, bool) {
 	if sig == nil || sig.Kind() != reflect.Func {
 		return 0, false
@@ -379,6 +382,9 @@ func detectShape(sig reflect.Type) (synth.Shape, bool) {
 	case nin == 2 && nout == 0 &&
 		sig.In(0).Kind() == reflect.Int && sig.In(1).Kind() == reflect.Int:
 		return synth.ShapeS10, true
+	case nin == 2 && nout == 0 &&
+		sig.In(0) == fmtStateIface && sig.In(1).Kind() == reflect.Int32:
+		return synth.ShapeS14, true
 	}
 	return 0, false
 }
@@ -394,6 +400,7 @@ var (
 	byteSliceType  = reflect.TypeOf([]byte(nil))
 	anyIface       = reflect.TypeOf((*any)(nil)).Elem()
 	errorSliceType = reflect.TypeOf([]error(nil))
+	fmtStateIface  = reflect.TypeOf((*fmt.State)(nil)).Elem()
 )
 
 func isByteSlice(t reflect.Type) bool { return t == byteSliceType }
@@ -617,6 +624,18 @@ func makeHandlerS13(m *Machine, t *Type, method Method, ptrRecv bool) synth.Hand
 			return 0, errors.New("synth: S13 dispatch produced wrong arity")
 		}
 		return int(out[0].Int()), reflectToError(out[1])
+	}
+}
+
+// makeHandlerS14 bridges shape S14: (T).Format(fmt.State, rune).
+// st is passed through reflect.ValueOf(&st).Elem() so it keeps its fmt.State
+// type, letting the interpreted body call State methods on it.
+func makeHandlerS14(m *Machine, t *Type, method Method, ptrRecv bool) synth.HandlerS14 {
+	methodSig := method.Rtype
+	return func(recv unsafe.Pointer, st fmt.State, verb rune) {
+		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		argv := []reflect.Value{reflect.ValueOf(&st).Elem(), reflect.ValueOf(verb)}
+		_, _ = callMethod(m, t, rv, method, methodSig, argv)
 	}
 }
 

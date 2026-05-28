@@ -3,7 +3,9 @@
 
 package synth
 
-import "unsafe"
+import (
+	"unsafe"
+)
 
 const poolSizeS10 = 256
 
