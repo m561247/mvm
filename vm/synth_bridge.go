@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
+	"unicode"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/mvm-sh/mvm/vm/synth"
@@ -39,6 +42,95 @@ func (m *Machine) AttachSynthMethods(t *Type) error {
 		return err
 	}
 	return m.attachPtrRecv(t, valueAttached)
+}
+
+// bridgePtrToIface retypes a bridged pointer-to-interpreted-interface (e.g.
+// &timeout) to *synthIface so the callee sees the real method set, not a
+// methodless any; without it errors.As treats the target as matching every error.
+// Returns an invalid Value (the common case) to fall through to the default bridge.
+//
+// Gated to an allowlist (fn), because mvm stores interfaces as eface (type+data)
+// while a non-empty interface is iface (itab+data): relabeling is only safe for
+// callees that use the pointer as a type-tagged out-param (errors.As) or merely
+// describe it (reflect.ValueOf/TypeOf, used to read the result back). A callee
+// that reads the pointee as an iface (gob, json) would misread eface bytes.
+// val (= ifc.Val.Reflect()) shares storage with the result, so a callee write is
+// visible to a later read through the same mvm pointer.
+func (m *Machine) bridgePtrToIface(ifc Iface, val, fn reflect.Value) reflect.Value {
+	if ifc.Typ == nil || ifc.Typ.Rtype == nil || ifc.Typ.Rtype.Kind() != reflect.Pointer {
+		return reflect.Value{}
+	}
+	et := ifc.Typ.ElemType
+	if et == nil || et.Rtype == nil || et.Rtype.Kind() != reflect.Interface ||
+		len(et.IfaceMethods) == 0 {
+		return reflect.Value{}
+	}
+	if !val.IsValid() || val.Kind() != reflect.Pointer || val.IsNil() {
+		return reflect.Value{}
+	}
+	if !isSynthIfaceTargetFunc(fn) {
+		return reflect.Value{}
+	}
+	st := synthIfaceRtype(et)
+	if st == nil {
+		return reflect.Value{}
+	}
+	return reflect.NewAt(st, val.UnsafePointer())
+}
+
+// synthIfaceTargetPCs is the set of native-func PCs whose pointer-to-interface
+// argument may be retyped (see bridgePtrToIface); init-write, concurrent-read.
+var synthIfaceTargetPCs sync.Map // uintptr -> struct{}
+
+// RegisterSynthIfaceTargetFunc allowlists fn for synth-interface target
+// retyping. Call from package init.
+func RegisterSynthIfaceTargetFunc(fn reflect.Value) {
+	if fn.IsValid() && fn.Kind() == reflect.Func {
+		synthIfaceTargetPCs.Store(fn.Pointer(), struct{}{})
+	}
+}
+
+func isSynthIfaceTargetFunc(fn reflect.Value) bool {
+	if !fn.IsValid() || fn.Kind() != reflect.Func {
+		return false
+	}
+	_, ok := synthIfaceTargetPCs.Load(fn.Pointer())
+	return ok
+}
+
+// synthIfaceRtype builds and caches t's method-bearing synth interface rtype.
+// Returns nil if any method signature is unknown, keeping the AnyRtype bridge.
+func synthIfaceRtype(t *Type) reflect.Type {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	if t.synthIface != nil {
+		return t.synthIface
+	}
+	ims := make([]synth.Imethod, 0, len(t.IfaceMethods))
+	for _, im := range t.IfaceMethods {
+		if im.Rtype == nil || im.Rtype.Kind() != reflect.Func {
+			return nil
+		}
+		ims = append(ims, synth.Imethod{
+			Name:     im.Name,
+			Exported: isExportedName(im.Name),
+			Sig:      im.Rtype,
+		})
+	}
+	if len(ims) == 0 {
+		return nil
+	}
+	st := synth.InterfaceOf(t.Rtype.String(), t.PkgPath, ims)
+	t.synthIface = st
+	return st
+}
+
+func isExportedName(name string) bool {
+	if name == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(r)
 }
 
 func synthSupportedKind(k reflect.Kind) bool {

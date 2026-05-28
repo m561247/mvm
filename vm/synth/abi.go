@@ -112,6 +112,20 @@ type abiMapType struct {
 	_         uint32 // align following UncommonType on 32 and 64-bit targets
 }
 
+// abiImethod mirrors internal/abi.Imethod (an interface method entry).
+type abiImethod struct {
+	Name int32 // NameOff
+	Typ  int32 // TypeOff (.(*FuncType), receiver elided)
+}
+
+// abiInterfaceType mirrors internal/abi.InterfaceType.
+// Methods is sorted alphabetically by name (runtime/reflect rely on it).
+type abiInterfaceType struct {
+	abiType
+	PkgPath abiName
+	Methods []abiImethod
+}
+
 // abiUncommon mirrors internal/abi.UncommonType.
 type abiUncommon struct {
 	PkgPath uint32 // NameOff

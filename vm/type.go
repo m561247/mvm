@@ -65,6 +65,11 @@ type Type struct {
 	// Not safe for concurrent derivation of the same base Type -- callers must
 	// serialize, which mvm's single-threaded compile pipeline already does.
 	derived *derivedTypes
+
+	// synthIface caches a method-bearing synth interface rtype built from
+	// IfaceMethods for native-boundary satisfaction; Rtype stays AnyRtype for
+	// in-interpreter storage. Guarded by derivedMu.
+	synthIface reflect.Type
 }
 
 type derivedTypes struct {

@@ -1065,9 +1065,22 @@ func TestStruct(t *testing.T) {
 
 		{n: "errors_as_validation_basic", src: `import "errors"; func f() (r bool) { defer func() { r = recover() != nil }(); var s string; errors.As(errors.New("e"), &s); return false }; f()`, res: "true"},
 
+		// errors.As into a method-bearing anonymous interface target: a synth
+		// interface rtype built at the boundary resolves real satisfaction instead
+		// of a methodless any (which matched every error). See vm.bridgePtrToIface.
 		{n: "errors_as_anon_iface_target_via_any", src: `import "errors"; var timeout interface{ Timeout() bool }; tc := struct{ t any }{&timeout}; errors.As(errors.New("e"), tc.t)`, res: "false"},
 
 		{n: "errors_as_anon_iface_target_unwrap", src: `import "errors"; import "os"; _, errF := os.Open("/nonexistent-x"); type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; tc := struct{ t any }{&t}; errors.As(W{errF}, tc.t)`, res: "true"},
+
+		// Unwrap to an error that does NOT implement the target: no match (was
+		// wrongly "true" before the fix).
+		{n: "errors_as_anon_iface_unwrap_nomatch", src: `import "errors"; type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; tc := struct{ t any }{&t}; errors.As(W{errors.New("x")}, tc.t)`, res: "false"},
+
+		// Reading the iface var directly (not via the same reflect pointer) after
+		// As corrupts: As writes iface bytes (itab+data) into mvm's eface slot.
+		// Pre-existing crash; a real fix needs interpreted interfaces to carry the
+		// synth rtype as storage identity, not just at the boundary.
+		{n: "errors_as_anon_iface_direct_read", skip: true, src: `import "errors"; import "os"; _, errF := os.Open("/nonexistent-x"); type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; errors.As(W{errF}, &t); t != nil`, res: "true"},
 
 		{n: "errors_multierror_self", src: `import "errors"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x")}; errors.Is(err, err)`, res: "false"},
 

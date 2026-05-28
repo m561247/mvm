@@ -989,7 +989,7 @@ func (m *Machine) Run() (err error) {
 					for i := range in {
 						in[i] = mem[sp-narg+1+i].Reflect()
 					}
-					m.bridgeArgs(in, funcType)
+					m.bridgeArgs(in, funcType, rv)
 					coerceInterfaceArgs(in, funcType)
 					m.wrapFuncArgs(in, mem[sp-narg+1:sp+1], funcType)
 					sp -= narg + 1
@@ -4180,7 +4180,7 @@ func numReflect(t reflect.Type, src Value) reflect.Value {
 
 // bridgeArgs unwraps any Iface-typed arguments to the underlying concrete
 // reflect.Value for the native call boundary.
-func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type) {
+func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fn reflect.Value) {
 	for i, rv := range in {
 		if !rv.IsValid() || rv.Type() != ifaceRtype {
 			if rv.IsValid() && rv.Kind() == reflect.Interface && !rv.IsNil() &&
@@ -4191,6 +4191,10 @@ func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type) {
 			}
 		}
 		ifc := rv.Interface().(Iface)
+		if st := m.bridgePtrToIface(ifc, ifc.Val.Reflect(), fn); st.IsValid() {
+			in[i] = st
+			continue
+		}
 		targetType := paramTypeFor(funcType, i)
 		if targetType == nil {
 			targetType = AnyRtype
