@@ -339,3 +339,37 @@ func TestDerivedFmtStringer(t *testing.T) {
 		t.Errorf("%%v of derived slice = %q, want elem String() result present", s)
 	}
 }
+
+// TestStampName verifies the in-place name stamp: a fresh anonymous
+// reflect.StructOf rtype (Name()=="") gains a name and pkg-qualified String()
+// without any layout change. This is the primitive a future type-identity
+// dedup layer would use to name interpreted structs.
+func TestStampName(t *testing.T) {
+	rt := reflect.StructOf([]reflect.StructField{
+		{Name: "V", Type: reflect.TypeOf(int(0))},
+	})
+	if rt.Name() != "" {
+		t.Fatalf("precondition: fresh StructOf should be anonymous, got %q", rt.Name())
+	}
+	sizeBefore, alignBefore, nfBefore := rt.Size(), rt.Align(), rt.NumField()
+
+	StampName(rt, "pkg.Vector")
+
+	if got := rt.String(); got != "pkg.Vector" {
+		t.Errorf("String() = %q, want %q", got, "pkg.Vector")
+	}
+	if got := rt.Name(); got != "Vector" {
+		t.Errorf("Name() = %q, want %q (reflect strips to last dot)", got, "Vector")
+	}
+	// Layout must be untouched by a name-only stamp.
+	if rt.Size() != sizeBefore || rt.Align() != alignBefore || rt.NumField() != nfBefore {
+		t.Errorf("layout changed: size %d->%d align %d->%d nfield %d->%d",
+			sizeBefore, rt.Size(), alignBefore, rt.Align(), nfBefore, rt.NumField())
+	}
+	// Value ops still work against the renamed rtype.
+	v := reflect.New(rt).Elem()
+	v.Field(0).SetInt(7)
+	if v.Field(0).Int() != 7 {
+		t.Errorf("field access broken after stamp")
+	}
+}

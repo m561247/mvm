@@ -175,6 +175,25 @@ func layoutFor(t reflect.Type) reflect.Type {
 	return asReflectType(layout)
 }
 
+// StampName overwrites t's type name in place: registers name via
+// addReflectOff, points Str at it, sets tflagNamed, and clears
+// tflagExtraStar.
+// Layout is untouched (a type name is a label, not structure), so t's
+// identity, fields, methods, and any derived types stay valid -- no
+// cascade needed.  This is the safest possible synth mutation.
+// CALLER CONTRACT: t must be a heap rtype mvm owns (e.g. a
+// reflect.StructOf placeholder).  Stamping a shared canonical rtype
+// (int, a native struct like time.Time) would corrupt the name of every
+// value of that type process-wide.
+func StampName(t reflect.Type, name string) {
+	rt := rtypePtr(t)
+	if rt == nil {
+		return
+	}
+	rt.TFlag = (rt.TFlag &^ tflagExtraStar) | tflagNamed
+	rt.Str = addReflectOff(unsafe.Pointer(encodeName(name, true).Bytes))
+}
+
 // IsSynth reports whether t is a synth-built rtype (produced by any of the
 // Attach*, Clone*, or derive constructors in this package).
 // Callers route between reflect.*Of (native rtype identity preserved) and
