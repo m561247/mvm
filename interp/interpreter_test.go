@@ -1251,6 +1251,31 @@ type T int
 func (t T) String() string { return "s" }
 reflect.TypeOf(T(1) + T(2)).NumMethod()`, res: "1"},
 
+		// make([]T, n) for a method-bearing (synth-rtype) named T must build the
+		// slice from the canonical element type, not a pre-synth-attach
+		// placeholder snapshot, so the result stays assignable to the []T slot.
+		// Regression: x/text TestRemoteXTextLanguageImport ("[]struct{PTag_N int}
+		// not assignable to []language.Tag").
+		{n: "make_named_slice_keeps_synth_elem", src: `
+type Tag struct{ id int }
+func (t Tag) String() string { return "s" }
+func f() int { s := make([]Tag, 3); return len(s) }
+f()`, res: "3"},
+
+		// Open: the synth-attach cascade rebuilds slice container rtypes but not
+		// map container rtypes, so a map[K]T var slot (and make result) keep a
+		// methodless placeholder element. Slice's makeElemType fix has no map
+		// analogue because the map var slot itself is never upgraded; closing
+		// this needs the cascade to rebuild map rtypes too (then make/MkMap can
+		// switch to the canonical KeyType/ElemType like the slice/chan cases).
+		{n: "make_named_map_value_keeps_synth_elem", skip: true, src: `
+import "reflect"
+type Tag struct{ id int }
+func (t Tag) String() string { return "s" }
+var m map[string]Tag
+func f() int { m = make(map[string]Tag); return reflect.TypeOf(m).Elem().NumMethod() }
+f()`, res: "1"},
+
 		{n: "reflect_struct_sibling_no_crossdispatch", src: `
 import "reflect"
 type X struct{ n int }

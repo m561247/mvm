@@ -18,7 +18,6 @@ import (
 	"github.com/mvm-sh/mvm/lang"
 	"github.com/mvm-sh/mvm/symbol"
 	"github.com/mvm-sh/mvm/vm"
-	"github.com/mvm-sh/mvm/vm/synth"
 )
 
 const debug = false
@@ -3593,11 +3592,19 @@ func (c *Compiler) compileBuiltin(
 		push(&symbol.Symbol{Kind: symbol.Value, Type: typeSym.Type})
 		switch typeSym.Type.Rtype.Kind() {
 		case reflect.Slice:
-			// make([]T, len) or make([]T, len, cap)
-			elemType := typeSym.Type.Rtype.Elem()
-			elemIdx := c.typeSym(&vm.Type{Rtype: elemType}).Index
+			// make([]T, len) or make([]T, len, cap).
+			// Use the canonical mvm-level element type so a post-compile
+			// synth-rtype attach (which upgrades the named element in place)
+			// is observed via RefreshSynthRtype; a detached {Rtype: Elem()}
+			// snapshot would freeze the pre-attach placeholder rtype and
+			// MkSlice's reflect.SliceOf would diverge from the var slot type.
+			elemIdx := c.typeSym(makeElemType(typeSym.Type)).Index
 			c.emit(t, vm.MkSlice, -(narg - 1), elemIdx)
 		case reflect.Map:
+			// NB: unlike slice, the synth-attach cascade does not currently
+			// rebuild map container rtypes, so the var slot keeps its
+			// placeholder element. Use a matching detached snapshot here so
+			// make's map rtype stays assignable to that slot.
 			keyType := typeSym.Type.Rtype.Key()
 			keyIdx := c.typeSym(&vm.Type{Rtype: keyType}).Index
 			valType := typeSym.Type.Rtype.Elem()
@@ -3836,6 +3843,16 @@ func (c *Compiler) zeroTypeSlot(typ *vm.Type) int {
 	return i
 }
 
+// makeElemType returns the canonical mvm-level element type of a container
+// type, falling back to a fresh wrapper around the reflect element when the
+// container was built natively without an mvm-level ElemType link.
+func makeElemType(container *vm.Type) *vm.Type {
+	if container.ElemType != nil {
+		return container.ElemType
+	}
+	return &vm.Type{Rtype: container.Rtype.Elem()}
+}
+
 func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {
 	tsym, ok := c.typeSyms[t]
 	if !ok {
@@ -3931,50 +3948,14 @@ func isBasicSynthKind(k reflect.Kind) bool {
 // Called from interp/synth.go after the per-type AttachSynthMethods cascade
 // and BEFORE RefreshSynthRtype so the slot-level sweep observes any field
 // type swap.
-// Layout safety: synth attachments preserve the underlying rtype Size/Align
-// (the synth bridge clones source-rtype layout), so patching Field[i].Typ
-// to the synth-swapped rtype doesn't corrupt the struct's offsets.
-// Concurrency: this writes to rtype fields without holding any lock.
-// The invariant that makes that safe is "synth attach + rebuild complete
-// before Machine.Run resumes," enforced by the call site in evalCompiled
-// (interp/interpreter.go).  Adding derivedMu would NOT close any race with
-// the bytecode interpreter, which reads rtype fields without locking; the
-// only meaningful synchronization is the call-ordering invariant above.
+// Layout safety + concurrency are handled by vm.PatchSynthStructFields, which
+// serializes the in-place field-rtype writes under the same lock StructOf uses
+// (a struct *Type is shared across concurrently-compiling Interps via the
+// global StructOf cache, so the patch must not race reflect.StructOf reads).
 func (c *Compiler) RebuildSynthStructRtypes() {
 	structs := c.collectSynthStructs()
 	for t := range structs {
-		patchStructFieldTypes(t)
-	}
-}
-
-func patchStructFieldTypes(t *vm.Type) {
-	if t == nil || t.Rtype == nil || t.Rtype.Kind() != reflect.Struct {
-		return
-	}
-	n := t.Rtype.NumField()
-	if n != len(t.Fields) {
-		return
-	}
-	for i := 0; i < n; i++ {
-		live := vm.LiveFieldRtype(t.Fields[i])
-		if live == nil {
-			continue
-		}
-		// Interface fields are always stored as AnyRtype (vm.StructOf
-		// normalizes them at parse time); skip without scanning.
-		if live.Kind() == reflect.Interface {
-			continue
-		}
-		if t.Rtype.Field(i).Type == live {
-			continue
-		}
-		// Patch only when Size/Align/PtrBytes all match (synth attach
-		// preserves layout; PtrBytes match guards GCData against silent
-		// corruption if a future swap path violates that invariant).
-		if !synth.SamePtrLayout(t.Rtype.Field(i).Type, live) {
-			continue
-		}
-		synth.PatchStructField(t.Rtype, i, live)
+		vm.PatchSynthStructFields(t)
 	}
 }
 

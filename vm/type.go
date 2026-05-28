@@ -1197,6 +1197,52 @@ func StructOf(fields []*Type, embedded []EmbeddedField, tags []string) *Type {
 	return t
 }
 
+// PatchSynthStructFields patches t's struct rtype fields in place to their
+// live (post-synth-attach) element rtypes, preserving t.Rtype identity (and
+// any AttachPtrMethods *T wired into PtrToThis).
+// Synth attach preserves field layout (Size/Align/PtrBytes), checked per field
+// via SamePtrLayout, so the in-place pointer swap never corrupts offsets.
+//
+// Locking: the write is serialized under structTypesMu, the same lock StructOf
+// holds while calling reflect.StructOf. A struct *Type is shared across
+// concurrently-compiling Interps via the global StructOf cache, and
+// reflect.StructOf reads a cached struct's field rtypes (haveIdenticalUnderlyingType)
+// while building a structurally-identical one; without this lock that read
+// races the patch write on the shared rtype. Live rtypes are computed before
+// locking because LiveFieldRtype walks derived chains under derivedMu and must
+// not nest inside structTypesMu.
+func PatchSynthStructFields(t *Type) {
+	if t == nil || t.Rtype == nil || t.Rtype.Kind() != reflect.Struct {
+		return
+	}
+	if t.Rtype.NumField() != len(t.Fields) {
+		return
+	}
+	lives := make([]reflect.Type, len(t.Fields))
+	for i, f := range t.Fields {
+		lives[i] = LiveFieldRtype(f)
+	}
+	structTypesMu.Lock()
+	defer structTypesMu.Unlock()
+	for i, live := range lives {
+		if live == nil {
+			continue
+		}
+		// Interface fields are always stored as AnyRtype (StructOf normalizes
+		// them at parse time); skip without scanning.
+		if live.Kind() == reflect.Interface {
+			continue
+		}
+		if t.Rtype.Field(i).Type == live {
+			continue
+		}
+		if !synth.SamePtrLayout(t.Rtype.Field(i).Type, live) {
+			continue
+		}
+		synth.PatchStructField(t.Rtype, i, live)
+	}
+}
+
 func structTypeKey(fields []*Type, embedded []EmbeddedField, tags []string) string {
 	var b strings.Builder
 	writeUint32(&b, uint32(len(fields)))
