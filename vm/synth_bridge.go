@@ -260,6 +260,10 @@ func toSynthMethods(
 			handler = makeHandlerS15(m, t, s.method, s.name, s.ptrRecv)
 		case stubs.ShapeS16:
 			handler = makeHandlerS16(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS17:
+			handler = makeHandlerS17(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS18:
+			handler = makeHandlerS18(m, t, s.method, s.name, s.ptrRecv)
 		}
 		out[i] = stubs.Method{
 			Name:     s.name,
@@ -352,6 +356,12 @@ func detectShape(sig reflect.Type) (stubs.Shape, bool) {
 	case nin == 0 && nout == 2 &&
 		isByteSlice(sig.Out(0)) && isErrorType(sig.Out(1)):
 		return stubs.ShapeS2, true
+	case nin == 0 && nout == 2 &&
+		sig.Out(0).Kind() == reflect.Int && sig.Out(1).Kind() == reflect.Bool:
+		return stubs.ShapeS17, true
+	case nin == 1 && nout == 1 &&
+		sig.In(0).Kind() == reflect.Int && sig.Out(0).Kind() == reflect.Bool:
+		return stubs.ShapeS18, true
 	case nin == 1 && nout == 1 &&
 		isByteSlice(sig.In(0)) && isErrorType(sig.Out(0)):
 		return stubs.ShapeS3, true
@@ -677,6 +687,33 @@ func makeHandlerS16(m *Machine, t *Type, method Method, name string, ptrRecv boo
 			return errors.New("synth: S16 dispatch produced wrong arity")
 		}
 		return reflectToError(out[0])
+	}
+}
+
+// makeHandlerS17 bridges shape S17: (T).Width/Precision() (int, bool).
+func makeHandlerS17(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS17 {
+	methodSig := method.Rtype
+	return func(recv unsafe.Pointer) (int, bool) {
+		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
+		if err != nil || len(out) != 2 {
+			return 0, false
+		}
+		return int(out[0].Int()), out[1].Bool()
+	}
+}
+
+// makeHandlerS18 bridges shape S18: (T).Flag(c int) bool.
+func makeHandlerS18(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS18 {
+	methodSig := method.Rtype
+	return func(recv unsafe.Pointer, c int) bool {
+		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		argv := []reflect.Value{reflect.ValueOf(c)}
+		out, err := callMethod(m, t, name, rv, method, methodSig, argv)
+		if err != nil || len(out) != 1 {
+			return false
+		}
+		return out[0].Bool()
 	}
 }
 

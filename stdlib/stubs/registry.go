@@ -78,6 +78,14 @@ const (
 	// ShapeS16 is func(*xml.Decoder, xml.StartElement) error.
 	// Covers xml.Unmarshaler.UnmarshalXML.
 	ShapeS16 Shape = 15
+
+	// ShapeS17 is func() (int, bool).
+	// Covers fmt.State.Width and fmt.State.Precision.
+	ShapeS17 Shape = 16
+
+	// ShapeS18 is func(int) bool.
+	// Covers fmt.State.Flag.
+	ShapeS18 Shape = 17
 )
 
 // Method describes one method to install on a synthesized type.
@@ -199,6 +207,18 @@ func acquireSlot(m Method) (pc uintptr, release func(), err error) {
 			return 0, nil, errInvalidHandlerType
 		}
 		return acquireSlotS16(h)
+	case ShapeS17:
+		h, ok := m.Handler.(HandlerS17)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS17(h)
+	case ShapeS18:
+		h, ok := m.Handler.(HandlerS18)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS18(h)
 	}
 	return 0, nil, fmt.Errorf("stubs: unknown shape %d", m.Shape)
 }

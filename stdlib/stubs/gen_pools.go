@@ -61,6 +61,8 @@ var shapes = []shape{
 	// xml.Marshaler.MarshalXML / xml.Unmarshaler.UnmarshalXML.
 	{ID: "S15", Params: ", e *xml.Encoder, start xml.StartElement", ArgList: ", e, start", Results: "error", Imports: []string{"encoding/xml"}},
 	{ID: "S16", Params: ", d *xml.Decoder, start xml.StartElement", ArgList: ", d, start", Results: "error", Imports: []string{"encoding/xml"}},
+	{ID: "S17", Results: "(int, bool)"},                             // fmt.State.Width / fmt.State.Precision
+	{ID: "S18", Params: ", c int", ArgList: ", c", Results: "bool"}, // fmt.State.Flag
 }
 
 func main() {
