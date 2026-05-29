@@ -399,8 +399,12 @@ func (c *Compiler) typeSlotValue(idx int, typ *vm.Type, descriptor bool) vm.Valu
 	return vm.NewValue(c.rtype(typ))
 }
 
-// FillTypeSlots writes the materialized value into every deferred slot. Run
-// after MaterializeAll + attach so each observes its final rtype; no-op if none.
+// FillTypeSlots settles every type's Data slot to its post-attach rtype. It
+// fills deferred (invalid) slots and re-emits eager slots whose rtype the synth
+// attach swapped (Fnew sources, type descriptors, var storage). Run after
+// MaterializeAll + the RebuildSynth* cascade so each slot observes its final
+// rtype. Var values keep their numeric payload across the rebuild (the synth
+// swap preserves layout). Invalid-then-filled and in-sync slots are left as is.
 func (c *Compiler) FillTypeSlots() {
 	for _, p := range c.pendingTypeSlots {
 		rt := liveSynthRtype(p.typ)
@@ -425,6 +429,36 @@ func (c *Compiler) FillTypeSlots() {
 		if rt := liveSynthRtype(sym.Type); rt != nil {
 			c.Data[sym.Index] = vm.NewValue(rt)
 		}
+	}
+	// Eager slots the attach left stale.
+	for t, idx := range c.zeroTypeIdxs {
+		rt := liveSynthRtype(t)
+		old := c.Data[idx]
+		if !old.IsValid() || old.Type() == rt || ifaceZeroStable(old, rt) {
+			continue
+		}
+		c.Data[idx] = vm.NewValue(rt)
+	}
+	for _, sym := range c.typeSyms {
+		if sym.Index == symbol.UnsetAddr || sym.Type == nil {
+			continue
+		}
+		rt := liveSynthRtype(sym.Type)
+		if !c.Data[sym.Index].IsValid() || c.Data[sym.Index].Type() == rt {
+			continue
+		}
+		c.Data[sym.Index] = vm.TypeValue(rt)
+	}
+	for _, sym := range c.Symbols {
+		if sym.Kind != symbol.Var || sym.Index == symbol.UnsetAddr || sym.Type == nil {
+			continue
+		}
+		rt := liveSynthRtype(sym.Type)
+		old := c.Data[sym.Index]
+		if !old.IsValid() || old.Type() == rt || ifaceZeroStable(old, rt) {
+			continue
+		}
+		c.Data[sym.Index] = vm.NewValue(rt)
 	}
 }
 
@@ -3681,14 +3715,14 @@ func (c *Compiler) compileBuiltin(
 			// make([]T, len) or make([]T, len, cap).
 			// Use the canonical mvm-level element type so a post-compile
 			// synth-rtype attach (which upgrades the named element in place)
-			// is observed via RefreshSynthRtype; a detached {Rtype: Elem()}
+			// is observed via FillTypeSlots; a detached {Rtype: Elem()}
 			// snapshot would freeze the pre-attach placeholder rtype and
 			// MkSlice's reflect.SliceOf would diverge from the var slot type.
 			elemIdx := c.typeSym(makeElemType(typeSym.Type)).Index
 			c.emit(t, vm.MkSlice, -(narg - 1), elemIdx)
 		case reflect.Map:
 			// Canonical key type: the cascade rebuilds t-as-key map rtypes, so
-			// the var slot becomes map[synthKey]V; RefreshSynthRtype keeps this
+			// the var slot becomes map[synthKey]V; FillTypeSlots keeps this
 			// in step. The value stays a detached snapshot: t-as-element maps are
 			// not rebuilt, so the slot keeps its placeholder value.
 			keyIdx := c.typeSym(makeKeyType(typeSym.Type)).Index
@@ -3961,47 +3995,6 @@ func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {
 	return tsym
 }
 
-// RefreshSynthRtype re-emits c.Data slots whose stored rtype no longer matches
-// the *vm.Type's current Rtype.
-// Called after vm.AttachSynthMethods swaps a type's Rtype (and the in-Type
-// cascade has propagated through the derived chain) so Fnew sources, type
-// descriptors, and var slots all observe the post-attach rtype.
-// Slots already in sync are left untouched; var values keep their numeric
-// payload across the rtype rebuild via vm.FromReflect (the synth swap
-// preserves layout, so the underlying storage stays valid against the new
-// rtype).
-func (c *Compiler) RefreshSynthRtype() {
-	for t, idx := range c.zeroTypeIdxs {
-		rt := liveSynthRtype(t)
-		old := c.Data[idx]
-		if !old.IsValid() || old.Type() == rt || ifaceZeroStable(old, rt) {
-			continue
-		}
-		c.Data[idx] = vm.NewValue(rt)
-	}
-	for _, sym := range c.typeSyms {
-		if sym.Index == symbol.UnsetAddr || sym.Type == nil {
-			continue
-		}
-		rt := liveSynthRtype(sym.Type)
-		if !c.Data[sym.Index].IsValid() || c.Data[sym.Index].Type() == rt {
-			continue
-		}
-		c.Data[sym.Index] = vm.TypeValue(rt)
-	}
-	for _, sym := range c.Symbols {
-		if sym.Kind != symbol.Var || sym.Index == symbol.UnsetAddr || sym.Type == nil {
-			continue
-		}
-		rt := liveSynthRtype(sym.Type)
-		old := c.Data[sym.Index]
-		if !old.IsValid() || old.Type() == rt || ifaceZeroStable(old, rt) {
-			continue
-		}
-		c.Data[sym.Index] = vm.NewValue(rt)
-	}
-}
-
 // ifaceZeroStable reports that re-emitting an interface-kind slot is a no-op:
 // vm.NewValue yields AnyRtype for every interface, so a slot already holding one
 // can't change. Skips the (always-mismatching) old.Type()==rt check for them.
@@ -4050,8 +4043,7 @@ func isBasicSynthKind(k reflect.Kind) bool {
 // would overwrite d.ptr.Rtype with a fresh methodless synth.PointerTo
 // result, destroying the ptr-recv method attachment).
 // Called from interp/synth.go after the per-type AttachSynthMethods cascade
-// and BEFORE RefreshSynthRtype so the slot-level sweep observes any field
-// type swap.
+// and BEFORE FillTypeSlots so the slot-level sweep observes any field type swap.
 // Layout safety + concurrency are handled by vm.PatchSynthStructFields, which
 // serializes the in-place field-rtype writes under the same lock StructOf uses
 // (a struct *Type is shared across concurrently-compiling Interps via the
@@ -4066,7 +4058,7 @@ func (c *Compiler) RebuildSynthStructRtypes() {
 // RebuildSynthSliceRtypes refreshes the frozen element of every named synth
 // slice type (e.g. `type ByAge []Person` with a method); the in-Type cascade
 // reaches the unnamed []Person but not the named slice. Mirrors
-// RebuildSynthStructRtypes; called alongside it, before RefreshSynthRtype.
+// RebuildSynthStructRtypes; called alongside it, before FillTypeSlots.
 func (c *Compiler) RebuildSynthSliceRtypes() {
 	for t := range c.collectSynthSlices() {
 		vm.PatchSynthSliceElem(t)

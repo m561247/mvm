@@ -15,9 +15,9 @@ import (
 // Without dedup the S1 stub pool exhausts after ~64 packages.
 //
 // vm.Type.RefreshRtype propagates the swap through t.derived, and
-// Compiler.RefreshSynthRtype (called once after every type is attached)
-// re-emits the c.Data slots whose stored rtype no longer matches the
-// post-cascade Rtype -- Fnew sources, type descriptors, var storage.
+// Compiler.FillTypeSlots (called once after every type is attached) settles the
+// c.Data slots to the post-cascade Rtype -- Fnew sources, type descriptors, var
+// storage.
 // See [[project_synth_rtype_poc]] and [[project_symbolic_types_refactor]].
 func (i *Interp) attachSynthMethods() error {
 	if i.synthAttached == nil {
@@ -40,9 +40,9 @@ func (i *Interp) attachSynthMethods() error {
 	if attached {
 		i.RebuildSynthStructRtypes()
 		i.RebuildSynthSliceRtypes()
-		i.RefreshSynthRtype()
 	}
-	// Unconditional: deferred slots exist even when nothing was attached.
+	// Unconditional: deferred slots exist even when nothing was attached, and
+	// FillTypeSlots also re-emits the eager slots the attach left stale.
 	i.FillTypeSlots()
 	return nil
 }
