@@ -770,6 +770,32 @@ func (t *Type) symFieldLookup(name string) ([]int, *Type) {
 	return nil, nil
 }
 
+// FieldTypeAtPath returns the type of the field reached by the reflect-style
+// index path within struct t, computed from the symbolic Fields graph with a
+// reflect fallback per segment. Pointers are dereferenced between segments.
+// Returns nil if the path cannot be resolved.
+func (t *Type) FieldTypeAtPath(path []int) *Type {
+	cur := t
+	for _, idx := range path {
+		if cur == nil {
+			return nil
+		}
+		if cur.Kind() == reflect.Pointer {
+			cur = cur.Elem()
+		}
+		switch {
+		case idx < len(cur.Fields) && cur.Fields[idx] != nil:
+			cur = cur.Fields[idx]
+		case cur.Rtype != nil && cur.Kind() == reflect.Struct && idx < cur.Rtype.NumField():
+			f := cur.Rtype.Field(idx)
+			cur = &Type{Name: f.Type.Name(), Rtype: f.Type, kind: f.Type.Kind()}
+		default:
+			return nil
+		}
+	}
+	return cur
+}
+
 // FieldType returns the type of struct field name, using mvm-level info when available.
 func (t *Type) FieldType(name string) *Type {
 	_, ft := t.FieldLookup(name)
