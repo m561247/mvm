@@ -157,7 +157,7 @@ func (p *Parser) constraintError(c tpConstraint, arg *vm.Type) error {
 	return &constraintErr{
 		loc: p.Sources.FormatPos(c.pos),
 		pos: c.pos,
-		msg: fmt.Sprintf("type %s does not satisfy constraint", arg.Rtype),
+		msg: fmt.Sprintf("type %s does not satisfy constraint", typeArgName(arg)),
 	}
 }
 
@@ -729,7 +729,7 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 	// Match each argument to the corresponding parameter type from the parsed signature.
 	// If the parameter type name is a type parameter, infer it from the argument.
 	params := genSym.Type.Params
-	isVariadic := genSym.Type.Rtype.IsVariadic() && len(params) > 0
+	isVariadic := genSym.Type.IsVariadic() && len(params) > 0
 	// A spread call `f(s...)` passes the whole slice in the variadic slot, so it
 	// matches the variadic param `[]T` directly; per-element calls `f(a, b)` do
 	// not. Go forbids mixing spread with extra variadic elements, so a spread

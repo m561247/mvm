@@ -289,15 +289,15 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		// type, so pre-detect common forms whose arg isn't const-evaluable
 		// (Var, composite literal, selector) before the generic args loop.
 		if narg == 1 {
-			if rt, op, consumed, err := p.unsafeSizeArg(in, l); op != "" {
+			if at, op, consumed, err := p.unsafeSizeArg(in, l); op != "" {
 				if err != nil {
 					return nil, nil, 0, err
 				}
 				var val uintptr
 				if op == "Sizeof" {
-					val = rt.Size()
+					val = at.Size()
 				} else {
-					val = uintptr(rt.Align())
+					val = uintptr(at.Align())
 				}
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, consumed, nil
 			}
@@ -363,14 +363,14 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 				if argTyp == nil {
 					argTyp = defaultConstType(args[0], p)
 				}
-				if argTyp == nil || argTyp.Rtype == nil {
+				if argTyp == nil || argTyp.Kind() == reflect.Invalid {
 					return nil, nil, 0, fmt.Errorf("unsafe.%s: argument has no type", fname)
 				}
 				var val uintptr
 				if fname == "Sizeof" {
-					val = argTyp.Rtype.Size()
+					val = argTyp.Size()
 				} else {
-					val = uintptr(argTyp.Rtype.Align())
+					val = uintptr(argTyp.Align())
 				}
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, totalLen + 2 /* Ident + Period */, nil
 			}
@@ -457,7 +457,7 @@ func OverflowsType(cv constant.Value, typ *vm.Type) bool {
 	if i.Kind() != constant.Int {
 		return false // not an integer constant; truncation is a separate concern
 	}
-	bits := uint(typ.Rtype.Size()) * 8 // type sizes are small
+	bits := uint(typ.Size()) * 8 // type sizes are small
 	if unsigned {
 		if constant.Sign(i) < 0 {
 			return true
@@ -481,7 +481,7 @@ func OverflowsType(cv constant.Value, typ *vm.Type) bool {
 // Returns the argument's reflect.Type, the op name ("Sizeof"/"Alignof"),
 // tokens-consumed-including-Call, and any lookup/resolution error. An empty
 // op means no form matched; the caller falls through to the generic path.
-func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, error) {
+func (p *Parser) unsafeSizeArg(in Tokens, l int) (*vm.Type, string, int, error) {
 	// Locate [unsafe][.Sizeof|.Alignof] ending at either l-3 or l-4.
 	var opIdx int
 	switch {
@@ -511,7 +511,7 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 			if err != nil {
 				return nil, op, 0, err
 			}
-			return t.Rtype, op, 5, nil
+			return t, op, 5, nil
 		case lang.Period:
 			if in[l-2].Tok != lang.Ident {
 				return nil, "", 0, nil
@@ -520,18 +520,19 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 			if err != nil {
 				return nil, op, 0, err
 			}
-			rt := base.Rtype
-			if rt.Kind() == reflect.Pointer {
-				rt = rt.Elem()
+			bt := base
+			if bt.Kind() == reflect.Pointer {
+				bt = bt.Elem()
 			}
-			if rt.Kind() != reflect.Struct {
+			if bt.Kind() != reflect.Struct {
 				return nil, op, 0, fmt.Errorf("unsafe.%s: %s is not a struct", op, in[l-2].Str)
 			}
-			f, ok := rt.FieldByName(in[l-1].Str[1:])
-			if !ok {
-				return nil, op, 0, fmt.Errorf("unsafe.%s: no field %s in %s", op, in[l-1].Str[1:], in[l-2].Str)
+			field := in[l-1].Str[1:]
+			_, ft := bt.FieldLookup(field)
+			if ft == nil {
+				return nil, op, 0, fmt.Errorf("unsafe.%s: no field %s in %s", op, field, in[l-2].Str)
 			}
-			return f.Type, op, 5, nil
+			return ft, op, 5, nil
 		}
 		return nil, "", 0, nil
 	}
@@ -543,7 +544,7 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 	if err != nil {
 		return nil, op, 0, err
 	}
-	return t.Rtype, op, 4, nil
+	return t, op, 4, nil
 }
 
 func constValue(c constant.Value) any {
@@ -603,19 +604,103 @@ func typedConstValue(c constant.Value, typ *vm.Type) any {
 	if typ == nil || v == nil {
 		return v
 	}
-	return reflect.ValueOf(v).Convert(typ.Rtype).Interface()
+	// A materialized named type keeps the reflect.Convert path so the value
+	// carries that type. Symbolic types (Rtype nil until comp) convert off the
+	// kind, which already enumerates every basic type -- no reflect.Type needed.
+	if typ.Rtype != nil {
+		return reflect.ValueOf(v).Convert(typ.Rtype).Interface()
+	}
+	return basicConst(v, typ.Kind())
+}
+
+// basicConst converts a folded constant (bool/string/int/float64/complex128, as
+// returned by constValue) to the Go value of basic kind k, mirroring
+// reflect.Value.Convert without materializing a reflect.Type.
+func basicConst(v any, k reflect.Kind) any {
+	switch k {
+	case reflect.Bool:
+		return v
+	case reflect.String:
+		if i, ok := v.(int); ok {
+			return string(rune(i))
+		}
+		return v
+	case reflect.Int:
+		return int(asInt64(v))
+	case reflect.Int8:
+		return int8(asInt64(v))
+	case reflect.Int16:
+		return int16(asInt64(v))
+	case reflect.Int32:
+		return int32(asInt64(v))
+	case reflect.Int64:
+		return asInt64(v)
+	case reflect.Uint:
+		return uint(asInt64(v))
+	case reflect.Uint8:
+		return uint8(asInt64(v))
+	case reflect.Uint16:
+		return uint16(asInt64(v))
+	case reflect.Uint32:
+		return uint32(asInt64(v))
+	case reflect.Uint64:
+		return uint64(asInt64(v))
+	case reflect.Uintptr:
+		return uintptr(asInt64(v))
+	case reflect.Float32:
+		return float32(asFloat64(v))
+	case reflect.Float64:
+		return asFloat64(v)
+	case reflect.Complex64:
+		return complex64(asComplex128(v))
+	case reflect.Complex128:
+		return asComplex128(v)
+	}
+	return v
+}
+
+func asInt64(v any) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	}
+	return 0
+}
+
+func asFloat64(v any) float64 {
+	switch x := v.(type) {
+	case int:
+		return float64(x)
+	case float64:
+		return x
+	}
+	return 0
+}
+
+func asComplex128(v any) complex128 {
+	switch x := v.(type) {
+	case int:
+		return complex(float64(x), 0)
+	case float64:
+		return complex(x, 0)
+	case complex128:
+		return x
+	}
+	return 0
 }
 
 func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
-	rt := typ.Rtype
+	k := typ.Kind()
 	switch {
-	case rt.Kind() >= reflect.Int && rt.Kind() <= reflect.Int64:
+	case k >= reflect.Int && k <= reflect.Int64:
 		if cv.Kind() == constant.Float {
 			f, _ := constant.Float64Val(cv)
 			return constant.MakeInt64(int64(f))
 		}
 		return constant.ToInt(cv)
-	case isUnsignedKind(rt.Kind()):
+	case isUnsignedKind(k):
 		if cv.Kind() == constant.Float {
 			f, _ := constant.Float64Val(cv)
 			return constant.MakeUint64(uint64(f))
@@ -623,11 +708,11 @@ func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
 		// go/constant has no ToUint; extract int64 bits for correct wraparound.
 		v, _ := constant.Int64Val(constant.ToInt(cv))
 		return constant.MakeUint64(uint64(v)) // intentional wraparound
-	case rt.Kind() == reflect.Float32 || rt.Kind() == reflect.Float64:
+	case k == reflect.Float32 || k == reflect.Float64:
 		return constant.ToFloat(cv)
-	case rt.Kind() == reflect.Complex64 || rt.Kind() == reflect.Complex128:
+	case k == reflect.Complex64 || k == reflect.Complex128:
 		return constant.ToComplex(cv)
-	case rt.Kind() == reflect.String:
+	case k == reflect.String:
 		if cv.Kind() == constant.Int {
 			v, _ := constant.Int64Val(cv)
 			return constant.MakeString(string(rune(v))) // intentional int-to-rune conversion
@@ -765,7 +850,7 @@ func FoldUnary(op lang.Token, x constant.Value, xtyp *vm.Type) (constant.Value, 
 	// unsigned constants. Recompute using the correct bit width.
 	if op == lang.BitComp && xtyp != nil && isUnsignedKind(xtyp.Kind()) {
 		v, _ := constant.Uint64Val(x)
-		bits := xtyp.Rtype.Size() * 8
+		bits := xtyp.Size() * 8
 		mask := ^uint64(0) >> (64 - bits)
 		cv = constant.MakeUint64(^v & mask)
 	}

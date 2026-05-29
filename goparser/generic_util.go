@@ -14,9 +14,9 @@ func checkConstraintElem(e constraintElem, arg *vm.Type, typeArgs []*vm.Type) bo
 	case elemAny:
 		return true
 	case elemComparable:
-		return arg.Rtype.Comparable()
+		return arg.IsComparable()
 	case elemExact:
-		return e.typ == nil || arg.Rtype == e.typ.Rtype
+		return e.typ == nil || arg.Identical(e.typ)
 	// elemInterface is handled by checkConstraint (it needs the parser's symbol
 	// table to see interpreted method sets), so it never reaches here.
 	case elemApprox:
@@ -25,7 +25,7 @@ func checkConstraintElem(e constraintElem, arg *vm.Type, typeArgs []*vm.Type) bo
 		if e.paramRef < 0 || e.paramRef >= len(typeArgs) {
 			return true
 		}
-		return arg.Rtype == typeArgs[e.paramRef].Rtype
+		return arg.Identical(typeArgs[e.paramRef])
 	}
 	return false
 }
@@ -48,7 +48,7 @@ func typeArgName(t *vm.Type) string {
 		}
 	case reflect.Array:
 		if t.ElemType != nil {
-			return "[" + strconv.Itoa(t.Rtype.Len()) + "]" + typeArgName(t.ElemType)
+			return "[" + strconv.Itoa(t.Len()) + "]" + typeArgName(t.ElemType)
 		}
 	case reflect.Map:
 		if t.KeyType != nil && t.ElemType != nil {
@@ -70,7 +70,7 @@ func typeArgComposite(t *vm.Type, renderLeaf func(*vm.Type) string) string {
 		}
 	case reflect.Array:
 		if t.ElemType != nil {
-			return "[" + strconv.Itoa(t.Rtype.Len()) + "]" + typeArgComposite(t.ElemType, renderLeaf)
+			return "[" + strconv.Itoa(t.Len()) + "]" + typeArgComposite(t.ElemType, renderLeaf)
 		}
 	case reflect.Map:
 		if t.KeyType != nil && t.ElemType != nil {
@@ -282,7 +282,7 @@ func funcReturnType(typ *vm.Type) *vm.Type {
 	if len(typ.Returns) > 0 {
 		return typ.Returns[0]
 	}
-	if typ.Kind() == reflect.Func && typ.Rtype.NumOut() > 0 {
+	if typ.Kind() == reflect.Func && typ.Rtype != nil && typ.Rtype.NumOut() > 0 {
 		out := typ.Rtype.Out(0)
 		return &vm.Type{Name: out.Name(), Rtype: out}
 	}

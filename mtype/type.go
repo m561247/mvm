@@ -347,6 +347,9 @@ func TypeOf(v any) *Type {
 	return &Type{Name: t.Name(), Rtype: t, kind: t.Kind()}
 }
 
+// SymBasic builds a symbolic type of a basic kind with Rtype unset.
+func SymBasic(k reflect.Kind) *Type { return &Type{kind: k} }
+
 // SymPtr builds a symbolic *elem with Rtype unset for comp to materialize (see
 // vm.MaterializeRtype); SymSlice/SymMap/SymArray/SymChan are the parse-time
 // counterparts to vm's rtype-building PointerTo/SliceOf/... .
@@ -634,3 +637,176 @@ func (t *Type) IsSlice() bool { return t != nil && t.Kind() == reflect.Slice }
 
 // IsFunc returns true if type t is of func kind.
 func (t *Type) IsFunc() bool { return t != nil && t.Kind() == reflect.Func }
+
+// Len returns an array type's length, from the symbolic graph when no rtype is
+// materialized yet.
+func (t *Type) Len() int {
+	if t.Rtype != nil {
+		return t.Rtype.Len()
+	}
+	return t.ArrayLen
+}
+
+// IsVariadic reports whether a func type's final parameter is variadic, from the
+// symbolic graph when no rtype is materialized yet.
+func (t *Type) IsVariadic() bool {
+	if t.Rtype != nil {
+		return t.Rtype.IsVariadic()
+	}
+	return t.Variadic
+}
+
+// IsComparable reports whether values of t may be compared with == / !=,
+// computed from the symbolic graph (matching reflect.Type.Comparable). Slices,
+// maps and funcs are not comparable; a struct is comparable iff every field is;
+// an array iff its element is; interfaces are comparable (may panic at runtime).
+func (t *Type) IsComparable() bool {
+	if t.Rtype != nil {
+		return t.Rtype.Comparable()
+	}
+	switch t.Kind() {
+	case reflect.Slice, reflect.Map, reflect.Func:
+		return false
+	case reflect.Array:
+		return t.ElemType == nil || t.ElemType.IsComparable()
+	case reflect.Struct:
+		for _, f := range t.Fields {
+			if !f.IsComparable() {
+				return false
+			}
+		}
+		return true
+	}
+	return true
+}
+
+// Identical reports whether t and u denote the same Go type. Materialized types
+// compare by rtype identity; symbolic ones compare structurally (named types by
+// name+package, composites recursively).
+func (t *Type) Identical(u *Type) bool {
+	if t == u {
+		return true
+	}
+	if t == nil || u == nil {
+		return false
+	}
+	if t.Rtype != nil && u.Rtype != nil {
+		return t.Rtype == u.Rtype
+	}
+	if t.Kind() != u.Kind() {
+		return false
+	}
+	if t.Name != "" || u.Name != "" {
+		return t.Name == u.Name && t.PkgPath == u.PkgPath
+	}
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Chan:
+		return t.ElemType.Identical(u.ElemType)
+	case reflect.Array:
+		return t.Len() == u.Len() && t.ElemType.Identical(u.ElemType)
+	case reflect.Map:
+		return t.KeyType.Identical(u.KeyType) && t.ElemType.Identical(u.ElemType)
+	case reflect.Func:
+		return identicalTypes(t.Params, u.Params) && identicalTypes(t.Returns, u.Returns) && t.IsVariadic() == u.IsVariadic()
+	case reflect.Struct:
+		return identicalTypes(t.Fields, u.Fields)
+	}
+	return true // identical basic kinds
+}
+
+func identicalTypes(a, b []*Type) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].Identical(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// ptrSize is the machine word: the size and alignment of a pointer, int, and
+// the header words of strings/slices/interfaces.
+var ptrSize = unsafe.Sizeof(uintptr(0))
+
+type layout struct{ size, align uintptr }
+
+// Size returns the number of bytes a value of t occupies, computed from the
+// symbolic graph so it is available before Rtype materializes. It matches
+// reflect.Type.Size for every kind mvm constructs.
+func (t *Type) Size() uintptr {
+	if t.Rtype != nil {
+		return t.Rtype.Size()
+	}
+	return t.layout().size
+}
+
+// Align returns t's required alignment in bytes (see Size).
+func (t *Type) Align() int {
+	if t.Rtype != nil {
+		return t.Rtype.Align()
+	}
+	return int(t.layout().align)
+}
+
+func (t *Type) layout() layout {
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int8, reflect.Uint8:
+		return layout{1, 1}
+	case reflect.Int16, reflect.Uint16:
+		return layout{2, 2}
+	case reflect.Int32, reflect.Uint32, reflect.Float32:
+		return layout{4, 4}
+	case reflect.Int64, reflect.Uint64, reflect.Float64:
+		return layout{8, 8}
+	case reflect.Complex64:
+		return layout{8, 4}
+	case reflect.Complex128:
+		return layout{16, 8}
+	case reflect.Int, reflect.Uint, reflect.Uintptr,
+		reflect.Pointer, reflect.UnsafePointer, reflect.Chan, reflect.Map, reflect.Func:
+		return layout{ptrSize, ptrSize}
+	case reflect.String, reflect.Interface:
+		return layout{2 * ptrSize, ptrSize}
+	case reflect.Slice:
+		return layout{3 * ptrSize, ptrSize}
+	case reflect.Array:
+		el := t.ElemType.layout()
+		return layout{el.size * uintptr(t.ArrayLen), el.align}
+	case reflect.Struct:
+		return structLayout(t.Fields)
+	}
+	return layout{}
+}
+
+// structLayout lays fields out with Go's padding rules: each field aligns to
+// its own alignment, the struct aligns to the widest field, and a struct that
+// ends in a zero-sized field gets one byte of trailing padding so the address
+// of that field cannot point past the allocation.
+func structLayout(fields []*Type) layout {
+	off, maxAlign := uintptr(0), uintptr(1)
+	lastZero := false
+	for _, f := range fields {
+		fl := f.layout()
+		if fl.align == 0 {
+			fl.align = 1
+		}
+		off = alignUp(off, fl.align) + fl.size
+		if fl.align > maxAlign {
+			maxAlign = fl.align
+		}
+		lastZero = fl.size == 0
+	}
+	if lastZero && off > 0 {
+		off++
+	}
+	return layout{alignUp(off, maxAlign), maxAlign}
+}
+
+func alignUp(n, a uintptr) uintptr {
+	if a == 0 {
+		return n
+	}
+	return (n + a - 1) &^ (a - 1)
+}
