@@ -153,7 +153,7 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 			// PatchRtype keeps ph's placeholder name; stamp the real one.
 			// Method-bearing types get theirs from attach instead.
 			if len(t.Methods) == 0 {
-				runtype.StampNameUnique(ph, qualifiedTypeName(t))
+				runtype.StampName(ph, qualifiedTypeName(t))
 			}
 			return ph
 		}

@@ -285,6 +285,50 @@ func TestRunMultiFile(t *testing.T) {
 	}
 }
 
+// TestExternalTestPkgPath guards that types in a package X_test render
+// X_test.<Name> (not the under-test package's name) under `mvm test <dir>`,
+// in either file order.
+func TestExternalTestPkgPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short")
+	}
+	bin := buildMvm(t)
+	const fooGo = "package foo\n\ntype Internal struct{ a int }\n"
+	const testGo = `package foo_test
+
+import (
+	"fmt"
+	"testing"
+)
+
+type T struct{ a int }
+
+func TestPkgPath(t *testing.T) {
+	if got := fmt.Sprintf("%#v", T{5}); got != "foo_test.T{a:5}" {
+		t.Errorf("got %q, want foo_test.T{a:5}", got)
+	}
+	var p *T
+	if got := fmt.Sprintf("%T", p); got != "*foo_test.T" {
+		t.Errorf("got %q, want *foo_test.T", got)
+	}
+}
+`
+	// Names make the test file sort second, then first (ReadDir sorts by name).
+	for _, names := range [][2]string{{"foo.go", "z_test.go"}, {"z.go", "a_test.go"}} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, names[0]), []byte(fooGo), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, names[1]), []byte(testGo), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		exit, out := runMvmTest(t, bin, dir)
+		if exit != 0 {
+			t.Errorf("files %v: exit = %d, want 0:\n%s", names, exit, out)
+		}
+	}
+}
+
 // TestRunEvalEcho guards that `mvm run -e` echoes the result of the last
 // statement to stdout (bare, no prefix) only when it left exactly one value on
 // the data stack: a value-producing expression or single-return call. Void and

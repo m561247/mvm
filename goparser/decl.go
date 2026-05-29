@@ -998,12 +998,20 @@ func (p *Parser) parsePackageDecl(in Tokens) (out Tokens, err error) {
 	if in[1].Tok != lang.Ident {
 		return out, p.errAt(in[1], "expected package name, got %s", in[1].Tok)
 	}
-	if p.pkgName != "" && p.pkgName != in[1].Str {
+	// X and its external test package X_test share a parser unit under
+	// `mvm test .`; accept that transition so each file's types keep their own
+	// PkgPath. Any other mismatch is a genuine two-packages-in-a-dir error.
+	if p.pkgName != "" && p.pkgName != in[1].Str && !isTestPkgPair(p.pkgName, in[1].Str) {
 		return out, p.errAt(in[1], "package %s; expected %s", in[1].Str, p.pkgName)
 	}
 	p.pkgName = in[1].Str
 	p.backfillPlaceholderPkgPath()
 	return out, err
+}
+
+// isTestPkgPair reports whether one of a, b is the other plus "_test".
+func isTestPkgPair(a, b string) bool {
+	return a == b+"_test" || b == a+"_test"
 }
 
 // backfillPlaceholderPkgPath sets the PkgPath of every still-empty type
@@ -1109,6 +1117,13 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 			placeholder.Placeholder = false
 		} else {
 			placeholder.SetFields(typ)
+		}
+		// Func-local types miss backfillPlaceholderPkgPath (it runs at the
+		// package decl, before any local type exists); set PkgPath here so %T
+		// renders <pkg>.<Name>. Guard on empty preserves backfilled top-level
+		// types and a reused placeholder.
+		if placeholder.PkgPath == "" {
+			placeholder.PkgPath = p.pkgName
 		}
 		if s, ok := p.Symbols[name]; ok {
 			s.Value = typeTokenValue(placeholder)
