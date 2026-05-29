@@ -2881,6 +2881,9 @@ func TestMethod(t *testing.T) {
 
 		// Method expression: value receiver.
 		{n: "mexpr_val", src: `type T struct{n int}; func(t T) Add(a int) int { return t.n + a }; T.Add(T{3}, 4)`, res: "7"},
+		// reflect.Value.NumMethod/Method on an interpreted FUNC-typed value: the
+		// synth rtype must carry the method (runtype.AttachFuncMethods).
+		{n: "reflect_method_on_func_type", src: `import "reflect"; type Fn func() int; func(fn Fn) String() string { return "s" }; func f() int { var v Fn; return reflect.ValueOf(v).NumMethod() }; f()`, res: "1"},
 		// Method expression: pointer receiver.
 		{n: "mexpr_ptr", src: `type T struct{n int}; func(t *T) Get() int { return t.n }; (*T).Get(&T{n: 5})`, res: "5"},
 		// Native method expression as a stored/passed VALUE: `(*big.Int).Add` is

@@ -33,6 +33,11 @@ var TestValues = map[string]map[string]reflect.Value{
 		"TrigReduce":      reflect.ValueOf(trigReduce),
 		"ReduceThreshold": reflect.ValueOf(float64(reduceThreshold)),
 	},
+	"fmt": {
+		// export_test.go: IsSpace = isSpace, Parsenum = parsenum.
+		"IsSpace":  reflect.ValueOf(fmtIsSpace),
+		"Parsenum": reflect.ValueOf(fmtParsenum),
+	},
 	"strings": {
 		// export_test.go: StringFind(pattern, text) == Index(text, pattern).
 		"StringFind": reflect.ValueOf(func(pattern, text string) int {
@@ -114,6 +119,51 @@ func longestCommonSuffix(a, b string) (i int) {
 		if a[len(a)-1-i] != b[len(b)-1-i] {
 			break
 		}
+	}
+	return
+}
+
+// fmtIsSpace and fmtParsenum are ported verbatim from $GOROOT/src/fmt scan.go
+// and print.go (BSD-licensed, The Go Authors) for fmt's export_test.go stand-ins.
+var fmtSpace = [][2]uint16{
+	{0x0009, 0x000d},
+	{0x0020, 0x0020},
+	{0x0085, 0x0085},
+	{0x00a0, 0x00a0},
+	{0x1680, 0x1680},
+	{0x2000, 0x200a},
+	{0x2028, 0x2029},
+	{0x202f, 0x202f},
+	{0x205f, 0x205f},
+	{0x3000, 0x3000},
+}
+
+func fmtIsSpace(r rune) bool {
+	if r >= 1<<16 {
+		return false
+	}
+	rx := uint16(r)
+	for _, rng := range fmtSpace {
+		if rx < rng[0] {
+			return false
+		}
+		if rx <= rng[1] {
+			return true
+		}
+	}
+	return false
+}
+
+func fmtParsenum(s string, start, end int) (num int, isnum bool, newi int) {
+	if start >= end {
+		return 0, false, end
+	}
+	for newi = start; newi < end && '0' <= s[newi] && s[newi] <= '9'; newi++ {
+		if num > 1e6 || num < -1e6 {
+			return 0, false, end
+		}
+		num = num*10 + int(s[newi]-'0')
+		isnum = true
 	}
 	return
 }

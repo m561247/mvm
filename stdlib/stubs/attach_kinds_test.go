@@ -87,6 +87,39 @@ func TestAttachPrimitiveMethodsString(t *testing.T) {
 // reflect.Type.MethodByName (binary search) work correctly.
 // Without sorting, MethodByName misses entries past the binary-search
 // midpoint and Implements returns false for multi-method target ifaces.
+func TestAttachFuncMethods(t *testing.T) {
+	called := false
+	layout := reflect.TypeOf(func(int) string { return "" })
+	rt, err := AttachFuncMethods(layout, "MyFunc", "test", []Method{{
+		Name: "String", Exported: true, Sig: stringerSig,
+		Handler: stubHandler(&called, "myfunc"),
+	}})
+	if err != nil {
+		t.Fatalf("AttachFuncMethods: %v", err)
+	}
+	if got, want := rt.Kind(), reflect.Func; got != want {
+		t.Errorf("Kind = %v, want %v", got, want)
+	}
+	if got, want := rt.NumIn(), 1; got != want {
+		t.Errorf("NumIn = %d, want %d", got, want)
+	}
+	if rt.In(0) != reflect.TypeOf(int(0)) || rt.Out(0) != reflect.TypeOf("") {
+		t.Errorf("signature = %v, want func(int) string", rt)
+	}
+	if !rt.Implements(stringerT()) {
+		t.Fatal("not Stringer")
+	}
+	v := reflect.MakeFunc(rt, func([]reflect.Value) []reflect.Value {
+		return []reflect.Value{reflect.ValueOf("")}
+	})
+	if got, want := v.Interface().(fmt.Stringer).String(), "myfunc"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if !called {
+		t.Error("handler not invoked")
+	}
+}
+
 func TestInstallMethodsSortedByName(t *testing.T) {
 	// Five methods in REVERSE alphabetical order so binary search would
 	// miss the early ones if the array stays unsorted.

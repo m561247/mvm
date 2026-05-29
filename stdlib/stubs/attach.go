@@ -39,6 +39,11 @@ func AttachMapMethods(layout reflect.Type, name, pkgPath string, methods []Metho
 	return attach(runtype.AttachMapMethods, layout, name, pkgPath, methods)
 }
 
+// AttachFuncMethods is the func-layout entry point.
+func AttachFuncMethods(layout reflect.Type, name, pkgPath string, methods []Method) (reflect.Type, error) {
+	return attach(runtype.AttachFuncMethods, layout, name, pkgPath, methods)
+}
+
 // AttachPtrMethods is the pointer-receiver entry point; it wires *T back so
 // reflect.PointerTo(elem) returns the method-bearing *T.
 func AttachPtrMethods(elem reflect.Type, name, pkgPath string, methods []Method) (reflect.Type, error) {

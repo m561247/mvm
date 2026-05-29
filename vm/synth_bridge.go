@@ -140,7 +140,7 @@ func synthSupportedKind(k reflect.Kind) bool {
 		reflect.Float32, reflect.Float64,
 		reflect.Complex64, reflect.Complex128,
 		reflect.String,
-		reflect.Slice, reflect.Array, reflect.Map:
+		reflect.Slice, reflect.Array, reflect.Map, reflect.Func:
 		return true
 	}
 	return false

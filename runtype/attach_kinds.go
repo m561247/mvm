@@ -28,6 +28,8 @@ func AttachMethods(
 		return AttachArrayMethods(layout, name, pkgPath, methods)
 	case k == reflect.Map:
 		return AttachMapMethods(layout, name, pkgPath, methods)
+	case k == reflect.Func:
+		return AttachFuncMethods(layout, name, pkgPath, methods)
 	}
 	return nil, ErrKindUnsupported
 }
@@ -130,6 +132,39 @@ func AttachMapMethods(
 	return asReflectType(&b.t.abiType), nil
 }
 
+// AttachFuncMethods synthesizes a fresh func rtype carrying the methods.
+// The In/Out *abiType pointers are copied inline after the uncommon struct
+// (where reflect reads them once tflagUncommon is set), capped at maxFuncIO.
+func AttachFuncMethods(
+	layout reflect.Type, name, pkgPath string, methods []MethodSpec,
+) (reflect.Type, error) {
+	if layout.Kind() != reflect.Func {
+		return nil, errKindFunc
+	}
+	if err := checkMethodCount(methods); err != nil {
+		return nil, err
+	}
+	nin, nout := layout.NumIn(), layout.NumOut()
+	if nin+nout > maxFuncIO {
+		return nil, errFuncTooManyIO
+	}
+	src := (*abiFuncType)(unsafe.Pointer(rtypePtr(layout)))
+	b := new(synthFunc)
+	b.t = *src
+	stampHeader(&b.t.abiType, name)
+	for i := range nin {
+		b.io[i] = (*abiType)(unsafe.Pointer(rtypePtr(layout.In(i))))
+	}
+	for i := range nout {
+		b.io[nin+i] = (*abiType)(unsafe.Pointer(rtypePtr(layout.Out(i))))
+	}
+	moff := unsafe.Offsetof(b.m) - unsafe.Offsetof(b.u)
+	b.u = makeUncommon(pkgPath, methods, uint32(moff))
+	installMethods(b.m[:len(methods)], methods)
+	registerLayout(&b.t.abiType, &src.abiType)
+	return asReflectType(&b.t.abiType), nil
+}
+
 func stampHeader(t *abiType, name string) {
 	t.TFlag = (t.TFlag &^ tflagExtraStar) | tflagUncommon | tflagNamed
 	t.Hash = nextSyntheticHash()
@@ -202,12 +237,19 @@ func isPrimitiveKind(k reflect.Kind) bool {
 }
 
 var (
-	errKindPrim  = errors.New("runtype: AttachPrimitiveMethods: layout is not a primitive kind")
-	errKindSlice = errors.New("runtype: AttachSliceMethods: layout kind is not Slice")
-	errKindArray = errors.New("runtype: AttachArrayMethods: layout kind is not Array")
-	errKindMap   = errors.New("runtype: AttachMapMethods: layout kind is not Map")
-	errNoMethods = errors.New("runtype: methods slice is empty")
+	errKindPrim      = errors.New("runtype: AttachPrimitiveMethods: layout is not a primitive kind")
+	errKindSlice     = errors.New("runtype: AttachSliceMethods: layout kind is not Slice")
+	errKindArray     = errors.New("runtype: AttachArrayMethods: layout kind is not Array")
+	errKindMap       = errors.New("runtype: AttachMapMethods: layout kind is not Map")
+	errKindFunc      = errors.New("runtype: AttachFuncMethods: layout kind is not Func")
+	errFuncTooManyIO = errors.New("runtype: AttachFuncMethods: too many in/out params")
+	errNoMethods     = errors.New("runtype: methods slice is empty")
 )
+
+// maxFuncIO caps a synth func type's combined in+out parameter count; the
+// inline io array is sized to it. Method-bearing func types are rare and have
+// small signatures, so this is generous headroom.
+const maxFuncIO = 32
 
 // maxMethods caps the number of methods installable per synth attach call.
 // Sized to comfortably hold the union of Stringer/Error/GoString +
@@ -244,4 +286,13 @@ type synthMap struct {
 	t abiMapType
 	u abiUncommon
 	m [maxMethods]abiMethod
+}
+
+// synthFunc places the In/Out pointer array (io) between the uncommon struct
+// and the methods, matching the runtime layout reflect expects for func types.
+type synthFunc struct {
+	t  abiFuncType
+	u  abiUncommon
+	io [maxFuncIO]*abiType
+	m  [maxMethods]abiMethod
 }

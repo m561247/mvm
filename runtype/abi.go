@@ -112,6 +112,15 @@ type abiMapType struct {
 	_         uint32 // align following UncommonType on 32 and 64-bit targets
 }
 
+// abiFuncType mirrors internal/abi.FuncType. The In/Out *abiType arrays are
+// stored inline after this header (after the uncommon struct when present);
+// the high bit of OutCount flags a variadic last parameter.
+type abiFuncType struct {
+	abiType
+	InCount  uint16
+	OutCount uint16
+}
+
 // abiImethod mirrors internal/abi.Imethod (an interface method entry).
 type abiImethod struct {
 	Name int32 // NameOff
