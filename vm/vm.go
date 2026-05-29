@@ -2493,7 +2493,8 @@ func (m *Machine) Run() (err error) {
 			mem[sp-1] = ValueOf(n)
 			sp--
 		case DeleteMap:
-			mem[sp-1].ref.SetMapIndex(mem[sp].Reflect(), reflect.Value{})
+			mapVal := mem[sp-1].ref
+			mapVal.SetMapIndex(numReflect(mapVal.Type().Key(), mem[sp]), reflect.Value{})
 			sp--
 		case Clear:
 			clearValue(mem[sp].Reflect())
@@ -2532,7 +2533,7 @@ func (m *Machine) Run() (err error) {
 			sp -= 2
 		case MapIndex:
 			mapVal := mem[sp-1].ref
-			rv := mapVal.MapIndex(mem[sp].Reflect())
+			rv := mapVal.MapIndex(numReflect(mapVal.Type().Key(), mem[sp]))
 			if !rv.IsValid() {
 				rv = reflect.Zero(mapVal.Type().Elem())
 			}
@@ -2540,7 +2541,7 @@ func (m *Machine) Run() (err error) {
 			sp--
 		case MapIndexOk:
 			mapVal := mem[sp-1].ref
-			rv := mapVal.MapIndex(mem[sp].Reflect())
+			rv := mapVal.MapIndex(numReflect(mapVal.Type().Key(), mem[sp]))
 			ok := rv.IsValid()
 			if !ok {
 				rv = reflect.Zero(mapVal.Type().Elem())
@@ -3913,7 +3914,7 @@ func (m *Machine) execBuiltinDeferred(op Op, base, narg int, mem []Value) {
 	case ChanClose:
 		mem[base].ref.Close()
 	case DeleteMap:
-		mem[base].ref.SetMapIndex(mem[base+1].Reflect(), reflect.Value{})
+		mem[base].ref.SetMapIndex(numReflect(mem[base].ref.Type().Key(), mem[base+1]), reflect.Value{})
 	case CopySlice:
 		reflect.Copy(mem[base].ref, mem[base+1].ref)
 	case Clear:

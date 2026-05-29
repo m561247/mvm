@@ -3601,12 +3601,11 @@ func (c *Compiler) compileBuiltin(
 			elemIdx := c.typeSym(makeElemType(typeSym.Type)).Index
 			c.emit(t, vm.MkSlice, -(narg - 1), elemIdx)
 		case reflect.Map:
-			// NB: unlike slice, the synth-attach cascade does not currently
-			// rebuild map container rtypes, so the var slot keeps its
-			// placeholder element. Use a matching detached snapshot here so
-			// make's map rtype stays assignable to that slot.
-			keyType := typeSym.Type.Rtype.Key()
-			keyIdx := c.typeSym(&vm.Type{Rtype: keyType}).Index
+			// Canonical key type: the cascade rebuilds t-as-key map rtypes, so
+			// the var slot becomes map[synthKey]V; RefreshSynthRtype keeps this
+			// in step. The value stays a detached snapshot: t-as-element maps are
+			// not rebuilt, so the slot keeps its placeholder value.
+			keyIdx := c.typeSym(makeKeyType(typeSym.Type)).Index
 			valType := typeSym.Type.Rtype.Elem()
 			valIdx := c.typeSym(&vm.Type{Rtype: valType}).Index
 			c.emit(t, vm.MkMap, keyIdx, valIdx)
@@ -3851,6 +3850,16 @@ func makeElemType(container *vm.Type) *vm.Type {
 		return container.ElemType
 	}
 	return &vm.Type{Rtype: container.Rtype.Elem()}
+}
+
+// makeKeyType returns the canonical mvm-level key type of a map type, falling
+// back to a fresh wrapper around the reflect key when the map was built
+// natively without an mvm-level KeyType link.
+func makeKeyType(container *vm.Type) *vm.Type {
+	if container.KeyType != nil {
+		return container.KeyType
+	}
+	return &vm.Type{Rtype: container.Rtype.Key()}
 }
 
 func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {

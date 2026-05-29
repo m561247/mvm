@@ -1262,12 +1262,22 @@ func (t Tag) String() string { return "s" }
 func f() int { s := make([]Tag, 3); return len(s) }
 f()`, res: "3"},
 
-		// Open: the synth-attach cascade rebuilds slice container rtypes but not
-		// map container rtypes, so a map[K]T var slot (and make result) keep a
-		// methodless placeholder element. Slice's makeElemType fix has no map
-		// analogue because the map var slot itself is never upgraded; closing
-		// this needs the cascade to rebuild map rtypes too (then make/MkMap can
-		// switch to the canonical KeyType/ElemType like the slice/chan cases).
+		// encoding/json/xml `make(map[Animal]int)` pattern: named-key map round-trip.
+		{n: "make_named_map_key_keeps_synth", src: `
+type Animal int
+func (a Animal) String() string { return "x" }
+func f() int {
+	m := make(map[Animal]int)
+	m[Animal(1)] += 10
+	m[Animal(2)] = 20
+	delete(m, Animal(2))
+	return m[Animal(1)] + len(m)
+}
+f()`, res: "11"},
+
+		// Open: the cascade rebuilds t-as-key maps but not t-as-element maps (they
+		// live under the key's derived cache), so a map[K]T slot keeps a methodless
+		// placeholder value. Needs the cascade to rebuild t-as-element maps too.
 		{n: "make_named_map_value_keeps_synth_elem", skip: true, src: `
 import "reflect"
 type Tag struct{ id int }
