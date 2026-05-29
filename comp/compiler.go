@@ -1436,7 +1436,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			ts := top()
 			if ts.IsPtr() {
 				// Resolve index on the element type
-				ts = &symbol.Symbol{Kind: symbol.Value, Type: &vm.Type{Rtype: ts.Type.Rtype.Elem()}}
+				ts = &symbol.Symbol{Kind: symbol.Value, Type: ts.Type.Elem()}
 			}
 			// `key: value` in a map composite literal.
 			// The key may be any kind of expression, so this must come before the ks.Kind switch.
