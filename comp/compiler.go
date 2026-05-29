@@ -3969,7 +3969,8 @@ func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {
 func (c *Compiler) RefreshSynthRtype() {
 	for t, idx := range c.zeroTypeIdxs {
 		rt := liveSynthRtype(t)
-		if !c.Data[idx].IsValid() || c.Data[idx].Type() == rt {
+		old := c.Data[idx]
+		if !old.IsValid() || old.Type() == rt || ifaceZeroStable(old, rt) {
 			continue
 		}
 		c.Data[idx] = vm.NewValue(rt)
@@ -3989,11 +3990,18 @@ func (c *Compiler) RefreshSynthRtype() {
 			continue
 		}
 		rt := liveSynthRtype(sym.Type)
-		if !c.Data[sym.Index].IsValid() || c.Data[sym.Index].Type() == rt {
+		old := c.Data[sym.Index]
+		if !old.IsValid() || old.Type() == rt || ifaceZeroStable(old, rt) {
 			continue
 		}
 		c.Data[sym.Index] = vm.NewValue(rt)
 	}
+}
+
+// ifaceZeroStable reports that a nil-interface zero slot needs no re-emit: it is
+// identical regardless of which interface type.
+func ifaceZeroStable(old vm.Value, rt reflect.Type) bool {
+	return rt != nil && rt.Kind() == reflect.Interface && old.Type().Kind() == reflect.Interface
 }
 
 // liveSynthRtype upgrades a field-copy's frozen Rtype to its named source's
