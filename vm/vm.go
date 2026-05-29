@@ -3358,6 +3358,9 @@ func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value 
 	if ifc.Typ != nil && (!val.IsValid() || (val.Kind() == reflect.Interface && val.IsNil())) {
 		return reflect.Zero(ifc.Typ.Rtype)
 	}
+	if ifc.Typ != nil && ifc.Typ.Rtype == nil {
+		MaterializeRtype(ifc.Typ)
+	}
 	if ifc.Typ != nil && ifc.Typ.Rtype.Kind() == reflect.Func {
 		if gf := m.wrapForFunc(ifc.Val, ifc.Typ.Rtype); gf.IsValid() {
 			return gf

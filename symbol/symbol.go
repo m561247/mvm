@@ -129,6 +129,18 @@ func (sm SymMap) Get(name, scope string) (sym *Symbol, sc string, ok bool) {
 	return sym, scope, ok
 }
 
+// mrtype returns t's rtype, materializing it on demand (composite/named types
+// built symbolically by goparser carry no rtype until comp materializes them).
+func mrtype(t *vm.Type) reflect.Type {
+	if t == nil {
+		return nil
+	}
+	if t.Rtype != nil {
+		return t.Rtype
+	}
+	return vm.MaterializeRtype(t)
+}
+
 // MethodByName returns the method symbol and the field index path to the receiver
 // (empty for direct methods, non-empty for promoted methods through embedded fields).
 func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
@@ -159,13 +171,13 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 		// Methods are registered under the short receiver name (`*T.M`), so
 		// prefer whichever candidate key actually has a registered method.
 		if typName == "" {
-			rtype := sym.Type.Rtype
-			if rtype.Kind() == reflect.Pointer {
+			rtype := mrtype(sym.Type)
+			if rtype != nil && rtype.Kind() == reflect.Pointer {
 				rtype = rtype.Elem()
 			}
 			var firstName string
 			for k, s := range sm {
-				if s.Kind != Type || s.Type == nil || s.Type.Rtype != rtype || k == "" {
+				if s.Kind != Type || s.Type == nil || mrtype(s.Type) != rtype || k == "" {
 					continue
 				}
 				if firstName == "" {
@@ -196,12 +208,16 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 		// `type durationValue time.Duration` from hijacking calls intended
 		// for the stdlib's *time.Duration.String.
 		if typName != "" {
-			ptype := sym.Type.Rtype
-			if ptype.Kind() == reflect.Pointer {
-				ptype = ptype.Elem()
+			rt := mrtype(sym.Type)
+			nativeVal, nativePtr := false, false
+			if rt != nil {
+				ptype := rt
+				if ptype.Kind() == reflect.Pointer {
+					ptype = ptype.Elem()
+				}
+				_, nativeVal = rt.MethodByName(name)
+				_, nativePtr = reflect.PointerTo(ptype).MethodByName(name)
 			}
-			_, nativeVal := sym.Type.Rtype.MethodByName(name)
-			_, nativePtr := reflect.PointerTo(ptype).MethodByName(name)
 			if !nativeVal && !nativePtr {
 				if m := sm.qualifiedMethodLookup(sym.Type, typName, name); m != nil {
 					return m, nil
@@ -226,11 +242,17 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 // Symbol *vm.Type pointer equals recv wins immediately; an rtype-only match is
 // kept as fallback in case recv has no entry of its own.
 func (sm SymMap) qualifiedMethodLookup(recv *vm.Type, typName, method string) *Symbol {
-	if recv == nil || recv.Rtype == nil {
+	if recv == nil {
 		return nil
 	}
-	rt := recv.Rtype
-	if rt.Kind() == reflect.Pointer {
+	// recv may be a field/param clone whose own rtype identity differs from the
+	// canonical type symbol's; follow Base to the source so a pointer match wins.
+	canon := recv
+	for canon.Base != nil && canon.Base != canon {
+		canon = canon.Base
+	}
+	rt := mrtype(recv)
+	if rt != nil && rt.Kind() == reflect.Pointer {
 		rt = rt.Elem()
 	}
 	suffix := "." + typName
@@ -245,24 +267,18 @@ func (sm SymMap) qualifiedMethodLookup(recv *vm.Type, typName, method string) *S
 		if k == "" || s.Kind != Type || s.Type == nil || !strings.HasSuffix(k, suffix) {
 			continue
 		}
-		srt := s.Type.Rtype
-		if srt == nil {
-			continue
-		}
-		if srt.Kind() == reflect.Pointer {
-			srt = srt.Elem()
-		}
-		if srt != rt {
-			continue
-		}
 		m := probe(k)
 		if m == nil {
 			continue
 		}
-		if s.Type == recv {
+		if s.Type == recv || s.Type == canon {
 			return m
 		}
-		if fallback == nil {
+		srt := mrtype(s.Type)
+		if srt != nil && srt.Kind() == reflect.Pointer {
+			srt = srt.Elem()
+		}
+		if rt != nil && srt == rt && fallback == nil {
 			fallback = m
 		}
 	}

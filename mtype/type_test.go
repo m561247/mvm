@@ -169,3 +169,39 @@ func TestSymbolicLenVariadic(t *testing.T) {
 		t.Errorf("symbolic IsVariadic()=true, want false")
 	}
 }
+
+func TestSymVisibleFieldsPromotion(t *testing.T) {
+	intT := &Type{Name: "int", kind: reflect.Int}
+	a := &Type{Name: "A", kind: reflect.Int, Base: intT}
+	inner := SymStruct([]*Type{a}, nil, nil)
+	inner.Name = "Inner"
+	innerField := &Type{Name: "Inner", kind: reflect.Struct, Fields: inner.Fields, Embedded: inner.Embedded, Base: inner}
+	b := &Type{Name: "B", kind: reflect.Int, Base: intT}
+	outer := SymStruct([]*Type{innerField, b}, []EmbeddedField{{FieldIdx: 0, Type: inner}}, nil)
+
+	want := map[string][]int{"Inner": {0}, "A": {0, 0}, "B": {1}}
+	got := map[string][]int{}
+	for _, sf := range outer.symVisibleFields() {
+		got[sf.name] = sf.index
+	}
+	if len(got) != len(want) {
+		t.Fatalf("visible fields = %v, want keys %v", got, want)
+	}
+	for name, idx := range want {
+		g, ok := got[name]
+		if !ok || len(g) != len(idx) {
+			t.Fatalf("field %s index = %v, want %v", name, g, idx)
+		}
+		for i := range idx {
+			if g[i] != idx[i] {
+				t.Fatalf("field %s index = %v, want %v", name, g, idx)
+			}
+		}
+	}
+	// FieldOffset: B sits after one int.
+	if off := outer.FieldOffset([]int{1}); off != ptrSizeInt() {
+		t.Errorf("Offsetof(B) = %d, want %d", off, ptrSizeInt())
+	}
+}
+
+func ptrSizeInt() uintptr { return (&Type{kind: reflect.Int}).Size() }

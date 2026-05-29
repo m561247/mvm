@@ -631,7 +631,7 @@ func (p *Parser) registerStructPlaceholder(key, short string) *vm.Type {
 	// instead. (Same guard also avoids re-patching an already-finalized struct,
 	// which would corrupt the other package's type.)
 	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
-		s.Type != nil && s.Type.Rtype != nil &&
+		s.Type != nil &&
 		s.Type.Kind() == reflect.Struct && s.Type.Placeholder {
 		return s.Type
 	}

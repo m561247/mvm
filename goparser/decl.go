@@ -268,21 +268,21 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 			typeName := in[l-2].Str
 			fieldName := in[l-1].Str[1:]
 			ts, _, ok := p.Symbols.Get(typeName, p.scope)
-			if !ok || ts.Type == nil || ts.Type.Rtype == nil {
+			if !ok || ts.Type == nil {
 				return nil, nil, 0, p.undef(typeName, in[l-2])
 			}
-			rt := ts.Type.Rtype
-			if rt.Kind() == reflect.Pointer {
-				rt = rt.Elem()
+			st := ts.Type
+			if st.Kind() == reflect.Pointer {
+				st = st.ElemType
 			}
-			if rt.Kind() != reflect.Struct {
+			if st == nil || st.Kind() != reflect.Struct {
 				return nil, nil, 0, fmt.Errorf("unsafe.Offsetof: %s is not a struct", typeName)
 			}
-			f, ok := rt.FieldByName(fieldName)
-			if !ok {
+			path := st.FieldIndex(fieldName)
+			if path == nil {
 				return nil, nil, 0, fmt.Errorf("unsafe.Offsetof: no field %s in %s", fieldName, typeName)
 			}
-			return constant.MakeUint64(uint64(f.Offset)), p.Symbols["uintptr"].Type, 6, nil
+			return constant.MakeUint64(uint64(st.FieldOffset(path))), p.Symbols["uintptr"].Type, 6, nil
 		}
 
 		// unsafe.Sizeof / unsafe.Alignof: the argument only contributes its
@@ -306,32 +306,32 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		// len/cap of an array or *array variable (bare or field access) is constant per Go spec.
 		if narg == 1 {
 			var fname string
-			var rt reflect.Type
+			var at *vm.Type
 			var n int
 			switch {
 			case l >= 2 && in[l-1].Tok == lang.Ident && in[l-2].Tok == lang.Ident:
 				if s, _, ok := p.Symbols.Get(in[l-1].Str, p.scope); ok && s.Type != nil {
-					fname, rt, n = in[l-2].Str, s.Type.Rtype, 3
+					fname, at, n = in[l-2].Str, s.Type, 3
 				}
 			case l >= 3 && in[l-1].Tok == lang.Period && in[l-2].Tok == lang.Ident && in[l-3].Tok == lang.Ident:
 				if s, _, ok := p.Symbols.Get(in[l-2].Str, p.scope); ok && s.Type != nil {
-					bt := s.Type.Rtype
+					bt := s.Type
 					if bt.Kind() == reflect.Pointer {
-						bt = bt.Elem()
+						bt = bt.ElemType
 					}
-					if bt.Kind() == reflect.Struct {
-						if f, ok2 := bt.FieldByName(in[l-1].Str[1:]); ok2 {
-							fname, rt, n = in[l-3].Str, f.Type, 4
+					if bt != nil && bt.Kind() == reflect.Struct {
+						if ft := bt.FieldType(in[l-1].Str[1:]); ft != nil {
+							fname, at, n = in[l-3].Str, ft, 4
 						}
 					}
 				}
 			}
-			if rt != nil && (fname == "len" || fname == "cap") {
-				if rt.Kind() == reflect.Pointer {
-					rt = rt.Elem()
+			if at != nil && (fname == "len" || fname == "cap") {
+				if at.Kind() == reflect.Pointer {
+					at = at.ElemType
 				}
-				if rt.Kind() == reflect.Array {
-					return constant.MakeInt64(int64(rt.Len())), nil, n, nil
+				if at != nil && at.Kind() == reflect.Array {
+					return constant.MakeInt64(int64(at.Len())), nil, n, nil
 				}
 			}
 		}
@@ -498,7 +498,7 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (*vm.Type, string, int, error) 
 
 	symType := func(tok Token, name string) (*vm.Type, error) {
 		s, _, ok := p.symGet(name)
-		if !ok || s.Type == nil || s.Type.Rtype == nil {
+		if !ok || s.Type == nil || s.Type.Kind() == reflect.Invalid {
 			return nil, p.undef(name, tok)
 		}
 		return s.Type, nil
@@ -522,9 +522,9 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (*vm.Type, string, int, error) 
 			}
 			bt := base
 			if bt.Kind() == reflect.Pointer {
-				bt = bt.Elem()
+				bt = bt.ElemType
 			}
-			if bt.Kind() != reflect.Struct {
+			if bt == nil || bt.Kind() != reflect.Struct {
 				return nil, op, 0, fmt.Errorf("unsafe.%s: %s is not a struct", op, in[l-2].Str)
 			}
 			field := in[l-1].Str[1:]

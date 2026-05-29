@@ -4059,6 +4059,48 @@ func (c *Compiler) collectSynthStructs() map[*vm.Type]bool {
 	return seen
 }
 
+// MaterializeAll builds the rtype of every *Type reachable from the compiler's
+// symbol table and type dedup maps (recursing into fields/elem/key/params/
+// returns/embedded/base). After the flip goparser leaves composite/named-struct
+// rtypes nil; this fills them with layout rtypes before run, so the VM never
+// dereferences a nil Rtype. Named-method types are then swapped to their
+// method-bearing rtype by the synth attach + cascade.
+func (c *Compiler) MaterializeAll() {
+	seen := map[*vm.Type]bool{}
+	var visit func(t *vm.Type)
+	visit = func(t *vm.Type) {
+		if t == nil || seen[t] {
+			return
+		}
+		seen[t] = true
+		visit(t.ElemType)
+		visit(t.KeyType)
+		visit(t.Base)
+		for _, f := range t.Fields {
+			visit(f)
+		}
+		for _, p := range t.Params {
+			visit(p)
+		}
+		for _, r := range t.Returns {
+			visit(r)
+		}
+		for _, e := range t.Embedded {
+			visit(e.Type)
+		}
+		vm.MaterializeRtype(t)
+	}
+	for t := range c.zeroTypeIdxs {
+		visit(t)
+	}
+	for t := range c.typeSyms {
+		visit(t)
+	}
+	for _, sym := range c.Symbols {
+		visit(sym.Type)
+	}
+}
+
 // intrinsicInfo describes a VM intrinsic that replaces a native function call.
 type intrinsicInfo struct {
 	op   vm.Op

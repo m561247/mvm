@@ -142,7 +142,7 @@ func (p *Parser) inferDefineType(rhs Tokens, scopedName string) {
 	if compositeIdx >= 0 && rhs[compositeIdx].Tok == lang.Composite && rhs[compositeIdx].Str != "" {
 		if s, _, ok := p.Symbols.Get(rhs[compositeIdx].Str, p.scope); ok && s.Kind == symbol.Type && s.Type != nil {
 			if hasAddr {
-				sym.Type = vm.PointerTo(s.Type)
+				sym.Type = vm.SymPtr(s.Type)
 			} else {
 				sym.Type = s.Type
 			}

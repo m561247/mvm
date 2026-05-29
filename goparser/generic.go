@@ -206,11 +206,11 @@ func (p *Parser) checkConstraint(c tpConstraint, arg *vm.Type, typeArgs []*vm.Ty
 // types (whose methods are invisible to reflect.Implements) are checked by
 // method name against the parser's registered method symbols.
 func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
-	if arg == nil || arg.Rtype == nil {
+	if arg == nil {
 		return true
 	}
 	// Native concrete type vs native interface: reflect can decide.
-	if iface.Rtype != nil && iface.Rtype.NumMethod() > 0 && arg.Rtype.Implements(iface.Rtype) {
+	if iface.Rtype != nil && iface.Rtype.NumMethod() > 0 && arg.Rtype != nil && arg.Rtype.Implements(iface.Rtype) {
 		return true
 	}
 	iface.EnsureIfaceMethods()
@@ -227,7 +227,7 @@ func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
 	// `error`) still pass via their reflect method set.
 	recvNames := argRecvTypeNames(arg)
 	for _, im := range iface.IfaceMethods {
-		if hasNativeMethod(arg.Rtype, im.Name) {
+		if arg.Rtype != nil && hasNativeMethod(arg.Rtype, im.Name) {
 			continue
 		}
 		if p.hasMethodSym(recvNames, im.Name) {
@@ -442,8 +442,11 @@ func (p *Parser) bindTypeParams(params []typeParam, typeArgs []*vm.Type) func() 
 			break
 		}
 		ta := typeArgs[i]
-		if ta == nil || ta.Rtype == nil {
-			continue // unresolved type arg: leave the name to resolve (or error) normally rather than panic in NewValue
+		if ta == nil {
+			continue // unresolved type arg: leave the name to resolve (or error) normally
+		}
+		if ta.Rtype == nil {
+			vm.MaterializeRtype(ta) // post-flip inferred args are symbolic; materialize so the binding is usable
 		}
 		sym := &symbol.Symbol{
 			Kind:  symbol.Type,
@@ -897,7 +900,7 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		case lang.Not:
 			return p.Symbols["bool"].Type, 1 + ln
 		case lang.Addr:
-			return vm.PointerTo(inner), 1 + ln
+			return vm.SymPtr(inner), 1 + ln
 		case lang.Deref:
 			if inner.Kind() == reflect.Pointer {
 				return inner.Elem(), 1 + ln
@@ -964,7 +967,7 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 				if firstArgType == nil {
 					return nil, 0
 				}
-				return vm.PointerTo(firstArgType), totalLen
+				return vm.SymPtr(firstArgType), totalLen
 			}
 			s, _, ok := p.Symbols.Get(fnTok.Str, p.scope)
 			if !ok {
@@ -1053,7 +1056,7 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		case reflect.Slice, reflect.String:
 			return containerTyp, total
 		case reflect.Array:
-			return vm.SliceOf(containerTyp.Elem()), total
+			return vm.SymSlice(containerTyp.Elem()), total
 		}
 		return nil, 0
 

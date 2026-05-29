@@ -3,6 +3,7 @@ package vm
 import (
 	"reflect"
 	"sync"
+	"unsafe"
 
 	"github.com/mvm-sh/mvm/mtype"
 	"github.com/mvm-sh/mvm/runtype"
@@ -56,38 +57,195 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 	if t.Rtype != nil {
 		return t.Rtype
 	}
+	if t.Placeholder {
+		return nil // forward-declared struct/interface not yet finalized
+	}
 	var rt reflect.Type
 	switch t.Kind() {
 	case reflect.Pointer:
-		rt = derivePointerTo(MaterializeRtype(t.ElemType))
+		elem := MaterializeRtype(t.ElemType)
+		if elem == nil {
+			return nil
+		}
+		rt = derivePointerTo(elem)
 	case reflect.Slice:
-		rt = deriveSliceOf(MaterializeRtype(t.ElemType))
+		elem := MaterializeRtype(t.ElemType)
+		if elem == nil {
+			return nil
+		}
+		rt = deriveSliceOf(elem)
 	case reflect.Array:
-		rt = deriveArrayOf(t.ArrayLen, MaterializeRtype(t.ElemType))
+		elem := MaterializeRtype(t.ElemType)
+		if elem == nil {
+			return nil
+		}
+		rt = deriveArrayOf(t.ArrayLen, elem)
 	case reflect.Chan:
-		rt = deriveChanOf(t.ChanDir, MaterializeRtype(t.ElemType))
+		elem := MaterializeRtype(t.ElemType)
+		if elem == nil {
+			return nil
+		}
+		rt = deriveChanOf(t.ChanDir, elem)
 	case reflect.Map:
-		rt = deriveMapOf(MaterializeRtype(t.KeyType), MaterializeRtype(t.ElemType))
+		key, elem := MaterializeRtype(t.KeyType), MaterializeRtype(t.ElemType)
+		if key == nil || elem == nil {
+			return nil
+		}
+		rt = deriveMapOf(key, elem)
 	case reflect.Func:
 		in := make([]reflect.Type, len(t.Params))
 		for i, p := range t.Params {
-			in[i] = MaterializeRtype(p)
+			if in[i] = MaterializeRtype(p); in[i] == nil {
+				return nil
+			}
 		}
 		out := make([]reflect.Type, len(t.Returns))
 		for i, r := range t.Returns {
-			out[i] = MaterializeRtype(r)
+			if out[i] = MaterializeRtype(r); out[i] == nil {
+				return nil
+			}
 		}
 		rt = reflect.FuncOf(in, out, t.Variadic)
 	case reflect.Struct:
+		if len(t.Fields) == 0 && t.Base != nil && t.Base != t && t.Base.Kind() == reflect.Struct {
+			// Defined type (type T1 T) whose Fields were cloned empty before the
+			// underlying was finalized: materialize from the underlying's layout.
+			rt = MaterializeRtype(t.Base)
+			if rt == nil {
+				return nil
+			}
+			t.Rtype = rt
+			return rt
+		}
+		if t.Name != "" {
+			// Named struct may be in a pointer cycle (field *T, or mutual T<->U):
+			// install a placeholder rtype, materialize fields (a *T built then
+			// resolves to it), then patch the placeholder in place.
+			ph := mtype.NewPlaceholderRtype(t.Name)
+			t.Rtype = ph
+			for _, f := range t.Fields {
+				MaterializeRtype(f)
+			}
+			mtype.PatchRtype(ph, mtype.StructOf(t.Fields, t.Embedded, t.Tags).Rtype)
+			return ph
+		}
 		for _, f := range t.Fields {
 			MaterializeRtype(f)
 		}
 		rt = mtype.StructOf(t.Fields, t.Embedded, t.Tags).Rtype
 	default:
-		return nil // un-materialized leaf: must carry its own rtype
+		// Basic kind with no rtype yet: materialize to the canonical native basic
+		// rtype (layout-correct). A named basic gets its method-bearing rtype from
+		// the synth attach + cascade; this is the underlying for composites built
+		// before attach.
+		if rt = basicRtype(t.Kind()); rt == nil {
+			return nil // genuinely un-materialized leaf
+		}
 	}
 	t.Rtype = rt
 	return rt
+}
+
+// basicRtype returns the canonical native rtype for a basic kind, or nil for a
+// non-basic kind.
+func basicRtype(k reflect.Kind) reflect.Type {
+	return basicRtypes[k]
+}
+
+var basicRtypes = map[reflect.Kind]reflect.Type{
+	reflect.Bool:          reflect.TypeOf(false),
+	reflect.Int:           reflect.TypeOf(int(0)),
+	reflect.Int8:          reflect.TypeOf(int8(0)),
+	reflect.Int16:         reflect.TypeOf(int16(0)),
+	reflect.Int32:         reflect.TypeOf(int32(0)),
+	reflect.Int64:         reflect.TypeOf(int64(0)),
+	reflect.Uint:          reflect.TypeOf(uint(0)),
+	reflect.Uint8:         reflect.TypeOf(uint8(0)),
+	reflect.Uint16:        reflect.TypeOf(uint16(0)),
+	reflect.Uint32:        reflect.TypeOf(uint32(0)),
+	reflect.Uint64:        reflect.TypeOf(uint64(0)),
+	reflect.Uintptr:       reflect.TypeOf(uintptr(0)),
+	reflect.Float32:       reflect.TypeOf(float32(0)),
+	reflect.Float64:       reflect.TypeOf(float64(0)),
+	reflect.Complex64:     reflect.TypeOf(complex64(0)),
+	reflect.Complex128:    reflect.TypeOf(complex128(0)),
+	reflect.String:        reflect.TypeOf(""),
+	reflect.UnsafePointer: reflect.TypeOf(unsafe.Pointer(nil)),
+	reflect.Interface:     mtype.AnyRtype,
+}
+
+// The Sym* derived constructors are goparser's parse-time entry points: they
+// memoize and register the derived *Type in t's derived cache (so the post-attach
+// cascade can refresh it) but leave Rtype nil -- comp materializes it later via
+// MaterializeRtype. They are the lazy counterparts of PointerTo/SliceOf/... .
+
+// SymPtr returns the canonical *t, registered in t's derived cache, Rtype nil.
+func SymPtr(t *mtype.Type) *mtype.Type {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	d := ensureDerived(t)
+	if d.ptr != nil {
+		return d.ptr
+	}
+	d.ptr = mtype.SymPtr(t)
+	return d.ptr
+}
+
+// SymSlice returns the canonical []t, registered in t's derived cache, Rtype nil.
+func SymSlice(t *mtype.Type) *mtype.Type {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	d := ensureDerived(t)
+	if d.slice != nil {
+		return d.slice
+	}
+	d.slice = mtype.SymSlice(t)
+	return d.slice
+}
+
+// SymArray returns the canonical [n]t, registered in t's derived cache, Rtype nil.
+func SymArray(n int, t *mtype.Type) *mtype.Type {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	d := ensureDerived(t)
+	if d.array == nil {
+		d.array = map[int]*mtype.Type{}
+	} else if a := d.array[n]; a != nil {
+		return a
+	}
+	a := mtype.SymArray(n, t)
+	d.array[n] = a
+	return a
+}
+
+// SymChan returns the canonical chan-t, registered in t's derived cache, Rtype nil.
+func SymChan(dir reflect.ChanDir, t *mtype.Type) *mtype.Type {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	d := ensureDerived(t)
+	if d.chans == nil {
+		d.chans = map[reflect.ChanDir]*mtype.Type{}
+	} else if c := d.chans[dir]; c != nil {
+		return c
+	}
+	c := mtype.SymChan(dir, t)
+	d.chans[dir] = c
+	return c
+}
+
+// SymMap returns the canonical map[k]e, registered in k's derived cache, Rtype nil.
+func SymMap(k, e *mtype.Type) *mtype.Type {
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	d := ensureDerived(k)
+	if d.maps == nil {
+		d.maps = map[*mtype.Type]*mtype.Type{}
+	} else if m := d.maps[e]; m != nil {
+		return m
+	}
+	m := mtype.SymMap(k, e)
+	d.maps[e] = m
+	return m
 }
 
 // PointerTo returns the canonical pointer type with element t, memoized.

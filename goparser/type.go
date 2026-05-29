@@ -79,7 +79,7 @@ func (p *Parser) resolveEllipsisArray(elemTyp *vm.Type, toks Tokens, braceIdx in
 		}
 		idx++
 	}
-	return vm.ArrayOf(idx, elemTyp), nil
+	return vm.SymArray(idx, elemTyp), nil
 }
 
 // constIntKey evaluates `keyToks` as a constant integer expression
@@ -158,16 +158,16 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 			if !ok {
 				return nil, 0, ErrSize
 			}
-			return vm.ArrayOf(size, typ), 1 + i, nil
+			return vm.SymArray(size, typ), 1 + i, nil
 		}
-		return vm.SliceOf(typ), 1 + i, nil
+		return vm.SymSlice(typ), 1 + i, nil
 
 	case lang.Mul:
 		typ, i, err := p.parseTypeExpr(in[1:])
 		if err != nil {
 			return nil, 0, err
 		}
-		return vm.PointerTo(typ), 1 + i, nil
+		return vm.SymPtr(typ), 1 + i, nil
 
 	case lang.Func:
 		// Get argument and return token positions depending on function pattern:
@@ -283,7 +283,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		return vm.ChanOf(reflect.RecvDir, elemTyp), 2 + i, nil
+		return vm.SymChan(reflect.RecvDir, elemTyp), 2 + i, nil
 
 	case lang.Chan:
 		if len(in) < 2 {
@@ -298,7 +298,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		return vm.ChanOf(dir, elemTyp), skip + i, nil
+		return vm.SymChan(dir, elemTyp), skip + i, nil
 
 	case lang.Map:
 		if len(in) < 3 || in[1].Tok != lang.BracketBlock {
@@ -316,7 +316,7 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		return vm.MapOf(ktyp, etyp), 2 + i, nil
+		return vm.SymMap(ktyp, etyp), 2 + i, nil
 
 	case lang.Interface:
 		if len(in) < 2 || in[1].Tok != lang.BraceBlock {
@@ -374,7 +374,10 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 			if err != nil {
 				return nil, 0, err
 			}
-			methods = append(methods, vm.IfaceMethod{Name: lt[0].Str, ID: -1, Rtype: vm.MaterializeRtype(methodType)})
+			// Sig carries the symbolic signature; Rtype materializes it when its
+			// params/returns are all known (native sigs), so comp's reflect-based
+			// iface dispatch keeps working; interpreted-typed sigs fall back to Sig.
+			methods = append(methods, vm.IfaceMethod{Name: lt[0].Str, ID: -1, Sig: methodType, Rtype: vm.MaterializeRtype(methodType)})
 		}
 		// Use any as underlying reflect type; method set is tracked in IfaceMethods.
 		return &vm.Type{
@@ -501,7 +504,7 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 			return nil, nil, false, err
 		}
 		if variadic && i == len(list)-1 {
-			typ = vm.SliceOf(typ)
+			typ = vm.SymSlice(typ)
 		}
 		if param != "" {
 			p.addSymVar(i, len(list), param, typ, flag)
@@ -587,7 +590,7 @@ func (p *Parser) parseFuncParams(argBlock Token, out Tokens) (typ *vm.Type, inNa
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return vm.FuncOf(arg, ret, isVariadic), baseNames(argNames), baseNames(retNames), nil
+	return vm.SymFunc(arg, ret, isVariadic), baseNames(argNames), baseNames(retNames), nil
 }
 
 func (p *Parser) parseFuncSig(in Tokens) (typ *vm.Type, inNames, outNames []string, err error) {
@@ -660,6 +663,10 @@ func (p *Parser) parseEmbeddedField(lt Tokens) (fieldType, origType *vm.Type) {
 	}
 	ft := *typ
 	ft.Name = name
+	// The clone is a field reference, not a forward declaration: clear Placeholder
+	// (inherited from the source if it was still a placeholder when embedded) so
+	// MaterializeRtype resolves the field via its Base instead of bailing.
+	ft.Placeholder = false
 	// reflect.StructField.PkgPath must be empty for exported fields and the
 	// owning package's path for unexported ones. The cloned type may carry
 	// its own PkgPath (e.g. "errors" on a defined named type); reset to the
@@ -672,7 +679,7 @@ func (p *Parser) parseEmbeddedField(lt Tokens) (fieldType, origType *vm.Type) {
 	}
 	ft.Base = typ
 	if isPtr {
-		return vm.PointerTo(&ft), typ
+		return vm.SymPtr(&ft), typ
 	}
 	return &ft, typ
 }
@@ -784,5 +791,5 @@ func (p *Parser) parseStructType(in Tokens) (*vm.Type, error) {
 			tags = append(tags, tag)
 		}
 	}
-	return vm.StructOf(fields, embedded, tags), nil
+	return vm.SymStruct(fields, embedded, tags), nil
 }

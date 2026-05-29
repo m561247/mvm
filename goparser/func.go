@@ -356,7 +356,7 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 		if recvTypSym, _, ok := p.symGet(strings.TrimPrefix(recvTypName, "*")); ok && recvTypSym.IsType() {
 			recvTyp := recvTypSym.Type
 			if strings.HasPrefix(recvTypName, "*") {
-				recvTyp = vm.PointerTo(recvTyp)
+				recvTyp = vm.SymPtr(recvTyp)
 			}
 			p.addSymVar(0, 1, recvScoped, recvTyp, parseTypeRecv)
 		}

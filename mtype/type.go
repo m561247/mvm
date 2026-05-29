@@ -19,6 +19,7 @@ type Method struct {
 	EmbedIface bool         // Path leads to an embedded interface field; dispatch through it
 	PtrRecv    bool         // true if the method has a pointer receiver (e.g. *T)
 	Rtype      reflect.Type // bound method signature (no receiver); nil if unknown. Per-type, so it disambiguates same-named methods (e.g. Unwrap() error vs Unwrap() []error) that share a global method ID.
+	Sig        *Type        // symbolic bound method signature (no receiver); the materialize-time source of Rtype. Preferred over Rtype for signature comparison when both methods carry it.
 }
 
 // IsResolved reports whether this method slot has been populated with
@@ -78,6 +79,7 @@ type IfaceMethod struct {
 	Name  string
 	ID    int          // global method ID; -1 = not yet assigned
 	Rtype reflect.Type // method signature (no receiver, as declared in the interface body); nil if unknown
+	Sig   *Type        // symbolic method signature, the materialize-time source of Rtype
 }
 
 // TypeElem describes one member of a constraint interface's type-element union,
@@ -135,7 +137,12 @@ func (t *Type) Implements(iface *Type) bool {
 		if mt := t.ResolveMethodType(im.ID); mt != nil && (isPtr || !mt.Methods[im.ID].PtrRecv) {
 			// Method IDs are global by name; require matching signatures so e.g.
 			// Unwrap() []error does not satisfy interface{ Unwrap() error }.
-			if !sigCompatible(im.Rtype, mt.Methods[im.ID].Rtype) {
+			m := mt.Methods[im.ID]
+			if im.Sig != nil && m.Sig != nil {
+				if !sigTypeCompatible(im.Sig, m.Sig) {
+					return false
+				}
+			} else if !sigCompatible(im.Rtype, m.Rtype) {
 				return false
 			}
 			continue
@@ -147,6 +154,20 @@ func (t *Type) Implements(iface *Type) bool {
 		return iface.NativeImplements(t.Rtype)
 	}
 	return true
+}
+
+// sigTypeCompatible reports whether two receiver-free signatures, expressed as
+// symbolic func *Types, match. Lenient: a nil (unknown) side matches.
+func sigTypeCompatible(want, have *Type) bool {
+	if want == nil || have == nil || want == have {
+		return true
+	}
+	if want.Kind() != reflect.Func || have.Kind() != reflect.Func {
+		return true
+	}
+	return identicalTypes(want.Params, have.Params) &&
+		identicalTypes(want.Returns, have.Returns) &&
+		want.IsVariadic() == have.IsVariadic()
 }
 
 // sigCompatible reports whether two receiver-free method signatures match.
@@ -451,7 +472,7 @@ func SymBasic(k reflect.Kind) *Type { return &Type{kind: k} }
 // SymPtr builds a symbolic *elem with Rtype unset for comp to materialize (see
 // vm.MaterializeRtype); SymSlice/SymMap/SymArray/SymChan are the parse-time
 // counterparts to vm's rtype-building PointerTo/SliceOf/... .
-func SymPtr(elem *Type) *Type { return &Type{kind: reflect.Pointer, ElemType: elem} }
+func SymPtr(elem *Type) *Type { return &Type{Name: elem.Name, kind: reflect.Pointer, ElemType: elem} }
 
 // SymSlice builds a symbolic []elem.
 func SymSlice(elem *Type) *Type { return &Type{kind: reflect.Slice, ElemType: elem} }
@@ -467,6 +488,16 @@ func SymArray(n int, elem *Type) *Type {
 // SymChan builds a symbolic chan-elem with direction dir.
 func SymChan(dir reflect.ChanDir, elem *Type) *Type {
 	return &Type{kind: reflect.Chan, ChanDir: dir, ElemType: elem}
+}
+
+// SymFunc builds a symbolic func type (Rtype unset); comp materializes it.
+func SymFunc(arg, ret []*Type, variadic bool) *Type {
+	return &Type{kind: reflect.Func, Params: arg, Returns: ret, Variadic: variadic}
+}
+
+// SymStruct builds a symbolic struct type (Rtype unset); comp materializes it.
+func SymStruct(fields []*Type, embedded []EmbeddedField, tags []string) *Type {
+	return &Type{kind: reflect.Struct, Fields: fields, Embedded: embedded, Tags: tags}
 }
 
 // funcTypes memoizes FuncOf by signature fingerprint; entries hold their input
@@ -635,6 +666,10 @@ func writeString(b *strings.Builder, s string) {
 
 // FieldIndex returns the index of struct field name.
 func (t *Type) FieldIndex(name string) []int {
+	if t.Rtype == nil {
+		idx, _ := t.symFieldLookup(name)
+		return idx
+	}
 	for _, f := range reflect.VisibleFields(t.Rtype) {
 		if f.Name == name {
 			return f.Index
@@ -642,6 +677,97 @@ func (t *Type) FieldIndex(name string) []int {
 	}
 	idx, _ := t.embeddedFieldLookup(name)
 	return idx
+}
+
+// symField is one entry of a symbolic visible-field walk: a field's name, its
+// reflect-style index path, and its mvm field type.
+type symField struct {
+	name  string
+	index []int
+	typ   *Type
+}
+
+// symVisibleFields walks t's symbolic Fields/Embedded graph (no Rtype) and
+// returns visible fields with promotion: shallowest depth wins, names that are
+// ambiguous at their shallowest depth are excluded (matching reflect.VisibleFields).
+func (t *Type) symVisibleFields() []symField {
+	type item struct {
+		t     *Type
+		index []int
+	}
+	var out []symField
+	resolved := map[string]bool{}
+	seen := map[*Type]bool{t: true}
+	current := []item{{t, nil}}
+	for len(current) > 0 {
+		var next []item
+		var level []symField
+		count := map[string]int{}
+		for _, it := range current {
+			st := it.t
+			if st != nil && st.Kind() == reflect.Pointer {
+				st = st.ElemType
+			}
+			if st == nil || st.Kind() != reflect.Struct {
+				continue
+			}
+			embSet := make(map[int]bool, len(st.Embedded))
+			for _, e := range st.Embedded {
+				embSet[e.FieldIdx] = true
+			}
+			for i, f := range st.Fields {
+				idx := append(append([]int{}, it.index...), i)
+				level = append(level, symField{name: f.Name, index: idx, typ: f})
+				count[f.Name]++
+				if embSet[i] {
+					ft := f
+					if ft != nil && ft.Kind() == reflect.Pointer {
+						ft = ft.ElemType
+					}
+					if ft != nil && !seen[ft] {
+						seen[ft] = true
+						next = append(next, item{ft, idx})
+					}
+				}
+			}
+		}
+		for _, sf := range level {
+			if !resolved[sf.name] && count[sf.name] == 1 {
+				out = append(out, sf)
+			}
+		}
+		for name := range count {
+			resolved[name] = true
+		}
+		current = next
+	}
+	return out
+}
+
+// symFieldLookup is the Rtype-free counterpart of FieldLookup.
+func (t *Type) symFieldLookup(name string) ([]int, *Type) {
+	// A defined type (type T1 T) clones its source's Fields, which may have been
+	// empty when the source was still a forward-declared placeholder; delegate to
+	// the now-finalized underlying via Base.
+	if len(t.Fields) == 0 && t.Base != nil && t.Base != t {
+		return t.Base.FieldLookup(name)
+	}
+	for _, sf := range t.symVisibleFields() {
+		if sf.name != name {
+			continue
+		}
+		if ft := t.resolveFieldByPath(sf.index); ft != nil {
+			if ft.Base != nil && ft.Base.Name != "" {
+				ft.Name = ft.Base.Name
+			} else {
+				ft.Name = ""
+			}
+			ft.PkgPath = sf.typ.PkgPath
+			return sf.index, ft
+		}
+		return sf.index, &Type{Name: sf.typ.Name, PkgPath: sf.typ.PkgPath, Rtype: sf.typ.Rtype, kind: sf.typ.Kind()}
+	}
+	return nil, nil
 }
 
 // FieldType returns the type of struct field name, using mvm-level info when available.
@@ -652,6 +778,9 @@ func (t *Type) FieldType(name string) *Type {
 
 // FieldLookup returns the index path and type of struct field name in a single pass.
 func (t *Type) FieldLookup(name string) ([]int, *Type) {
+	if t.Rtype == nil {
+		return t.symFieldLookup(name)
+	}
 	for _, f := range reflect.VisibleFields(t.Rtype) {
 		if f.Name != name {
 			continue
@@ -900,6 +1029,42 @@ func structLayout(fields []*Type) layout {
 		off++
 	}
 	return layout{alignUp(off, maxAlign), maxAlign}
+}
+
+// FieldOffset returns the byte offset of the field reached by the reflect-style
+// index path within struct t, computed symbolically (value-embed promotion;
+// Go's unsafe.Offsetof does not cross pointer embeds).
+func (t *Type) FieldOffset(path []int) uintptr {
+	var off uintptr
+	cur := t
+	for _, i := range path {
+		if cur != nil && cur.Kind() == reflect.Pointer {
+			cur = cur.ElemType
+		}
+		if cur == nil || i >= len(cur.Fields) {
+			break
+		}
+		off += cur.fieldOffsetAt(i)
+		cur = cur.Fields[i]
+	}
+	return off
+}
+
+// fieldOffsetAt returns the offset of field index i within struct t's own layout.
+func (t *Type) fieldOffsetAt(i int) uintptr {
+	off := uintptr(0)
+	for j := 0; j < len(t.Fields); j++ {
+		fl := t.Fields[j].layout()
+		if fl.align == 0 {
+			fl.align = 1
+		}
+		off = alignUp(off, fl.align)
+		if j == i {
+			return off
+		}
+		off += fl.size
+	}
+	return off
 }
 
 func alignUp(n, a uintptr) uintptr {
