@@ -89,10 +89,10 @@ func (s *Symbol) IsType() bool { return s.Kind == Type }
 func (s *Symbol) IsFunc() bool { return s.Kind == Func }
 
 // IsPtr returns true if symbol is a pointer.
-func (s *Symbol) IsPtr() bool { return s.Type.Rtype.Kind() == reflect.Pointer }
+func (s *Symbol) IsPtr() bool { return s.Type.Kind() == reflect.Pointer }
 
 // IsInt returns true if symbol is an int.
-func (s *Symbol) IsInt() bool { return s.Type.Rtype.Kind() == reflect.Int }
+func (s *Symbol) IsInt() bool { return s.Type.Kind() == reflect.Int }
 
 // IsParam reports whether s is a function parameter slot.
 func (s *Symbol) IsParam() bool { return s.Index < 0 && s.Index != UnsetAddr }
@@ -129,6 +129,16 @@ func (sm SymMap) Get(name, scope string) (sym *Symbol, sc string, ok bool) {
 	return sym, scope, ok
 }
 
+// sameNamedType matches cand against the receiver by *Type identity (recvCanon
+// is recv's Base-walked canonical, so a clone matches its source), falling back
+// to rtype equality only when both already carry one -- never materializing.
+func sameNamedType(cand, recv, recvCanon *vm.Type, recvRt reflect.Type) bool {
+	if cand == recv || vm.CanonicalType(cand) == recvCanon {
+		return true
+	}
+	return recvRt != nil && cand.Rtype != nil && cand.Rtype == recvRt
+}
+
 // MethodByName returns the method symbol and the field index path to the receiver
 // (empty for direct methods, non-empty for promoted methods through embedded fields).
 func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
@@ -159,13 +169,23 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 		// Methods are registered under the short receiver name (`*T.M`), so
 		// prefer whichever candidate key actually has a registered method.
 		if typName == "" {
-			rtype := sym.Type.Rtype
-			if rtype.Kind() == reflect.Pointer {
-				rtype = rtype.Elem()
+			// Match the symbol table's named value type by *Type identity; strip a
+			// pointer wrapper symbolically (interpreted ptrs carry ElemType).
+			recv := sym.Type
+			if recv.IsPtr() && recv.ElemType != nil {
+				recv = recv.ElemType
+			}
+			recvCanon := vm.CanonicalType(recv)
+			recvRt := recv.Rtype
+			if recvRt != nil && recvRt.Kind() == reflect.Pointer {
+				recvRt = recvRt.Elem()
 			}
 			var firstName string
 			for k, s := range sm {
-				if s.Kind != Type || s.Type == nil || s.Type.Rtype != rtype || k == "" {
+				if s.Kind != Type || s.Type == nil || k == "" {
+					continue
+				}
+				if !sameNamedType(s.Type, recv, recvCanon, recvRt) {
 					continue
 				}
 				if firstName == "" {
@@ -196,12 +216,19 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 		// `type durationValue time.Duration` from hijacking calls intended
 		// for the stdlib's *time.Duration.String.
 		if typName != "" {
-			ptype := sym.Type.Rtype
-			if ptype.Kind() == reflect.Pointer {
-				ptype = ptype.Elem()
+			// Probe for a native method (a stdlib bridge like time.Duration.String)
+			// only when the canonical underlying is native; interpreted types have
+			// none, so skip the probe (and the materialization it forced).
+			nativeVal, nativePtr := false, false
+			if canon := vm.CanonicalType(sym.Type); canon != nil && canon.Rtype != nil {
+				rt := canon.Rtype
+				ptype := rt
+				if ptype.Kind() == reflect.Pointer {
+					ptype = ptype.Elem()
+				}
+				_, nativeVal = rt.MethodByName(name)
+				_, nativePtr = reflect.PointerTo(ptype).MethodByName(name)
 			}
-			_, nativeVal := sym.Type.Rtype.MethodByName(name)
-			_, nativePtr := reflect.PointerTo(ptype).MethodByName(name)
 			if !nativeVal && !nativePtr {
 				if m := sm.qualifiedMethodLookup(sym.Type, typName, name); m != nil {
 					return m, nil
@@ -215,22 +242,31 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 
 // qualifiedMethodLookup finds a method registered at a pkg-qualified canonical
 // key (Path B step 2, [[project_phase2_path_b_step2_funcs_methods]]). It searches
-// sm for a Type Symbol whose underlying Rtype matches recv's (after stripping a
-// pointer wrapper) and whose key ends in ".<typName>", then probes `<key>.<method>`
-// and `*<key>.<method>`.
+// sm for a Type Symbol matching recv and whose key ends in ".<typName>", then
+// probes `<key>.<method>` and `*<key>.<method>`.
 //
-// Two distinct mvm Types can share the same Rtype (e.g. `compact.Tag` and the
-// outer `language.Tag` are both `struct{P30 int}` in x/text via `type Tag compact.Tag`).
-// Rtype-only matching would pick one at random via Go's map iteration -- the root
-// cause of [[project_isroot_iface_dispatch_recursion]]. So a candidate whose
-// Symbol *vm.Type pointer equals recv wins immediately; an rtype-only match is
-// kept as fallback in case recv has no entry of its own.
+// Matching is by *Type identity, not rtype: two distinct mvm Types can share the
+// same Rtype (e.g. `compact.Tag` and the outer `language.Tag`, both `struct{P30
+// int}` in x/text via `type Tag compact.Tag`), and rtype-only matching would pick
+// one at random -- the root cause of [[project_isroot_iface_dispatch_recursion]].
+// An rtype-equality match is kept only as a fallback for native types.
 func (sm SymMap) qualifiedMethodLookup(recv *vm.Type, typName, method string) *Symbol {
-	if recv == nil || recv.Rtype == nil {
+	if recv == nil {
 		return nil
 	}
-	rt := recv.Rtype
-	if rt.Kind() == reflect.Pointer {
+	// Methods register under the value type: strip a pointer wrapper symbolically
+	// (interpreted ptrs carry ElemType) and canonicalize so a clone matches its
+	// source. Identity matching below avoids materializing an interpreted type.
+	rv := recv
+	if rv.IsPtr() && rv.ElemType != nil {
+		rv = rv.ElemType
+	}
+	rvCanon := vm.CanonicalType(rv)
+	rt := rv.Rtype // native value-type rtype, fallback only
+	if rt == nil && rvCanon != nil {
+		rt = rvCanon.Rtype
+	}
+	if rt != nil && rt.Kind() == reflect.Pointer {
 		rt = rt.Elem()
 	}
 	suffix := "." + typName
@@ -245,24 +281,22 @@ func (sm SymMap) qualifiedMethodLookup(recv *vm.Type, typName, method string) *S
 		if k == "" || s.Kind != Type || s.Type == nil || !strings.HasSuffix(k, suffix) {
 			continue
 		}
-		srt := s.Type.Rtype
-		if srt == nil {
-			continue
-		}
-		if srt.Kind() == reflect.Pointer {
-			srt = srt.Elem()
-		}
-		if srt != rt {
-			continue
-		}
 		m := probe(k)
 		if m == nil {
 			continue
 		}
-		if s.Type == recv {
+		cv := s.Type
+		if cv.IsPtr() && cv.ElemType != nil {
+			cv = cv.ElemType
+		}
+		if cv == rv || vm.CanonicalType(cv) == rvCanon {
 			return m
 		}
-		if fallback == nil {
+		srt := cv.Rtype
+		if srt != nil && srt.Kind() == reflect.Pointer {
+			srt = srt.Elem()
+		}
+		if rt != nil && srt == rt && fallback == nil {
 			fallback = m
 		}
 	}

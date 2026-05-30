@@ -244,7 +244,7 @@ func (p *Parser) registerParamsFromSym(s *symbol.Symbol) {
 		if name == "" {
 			continue
 		}
-		p.addSymVar(i, len(s.OutNames), p.scopedName(name), &vm.Type{Rtype: s.Type.Rtype.Out(i)}, parseTypeOut)
+		p.addSymVar(i, len(s.OutNames), p.scopedName(name), s.Type.ReturnType(i), parseTypeOut)
 	}
 }
 
@@ -356,7 +356,7 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 		if recvTypSym, _, ok := p.symGet(strings.TrimPrefix(recvTypName, "*")); ok && recvTypSym.IsType() {
 			recvTyp := recvTypSym.Type
 			if strings.HasPrefix(recvTypName, "*") {
-				recvTyp = vm.PointerTo(recvTyp)
+				recvTyp = vm.SymPtr(recvTyp)
 			}
 			p.addSymVar(0, 1, recvScoped, recvTyp, parseTypeRecv)
 		}
@@ -432,7 +432,7 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 		var initTypes []*vm.Type
 		for j, name := range p.namedOut {
 			typ := s.Type.Returns[n-1-j]
-			switch typ.Rtype.Kind() {
+			switch typ.Kind() {
 			case reflect.Struct, reflect.Array, reflect.Slice, reflect.Map:
 				initVars = append(initVars, name)
 				initTypes = append(initTypes, typ)

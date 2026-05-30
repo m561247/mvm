@@ -19,7 +19,7 @@ const (
 	elemComparable                   // built-in comparable
 	elemExact                        // arg.Rtype must equal typ.Rtype
 	elemInterface                    // arg must Implement typ (method-set interface)
-	elemApprox                       // ~T: arg.Rtype.Kind() must match typ.Rtype.Kind()
+	elemApprox                       // ~T: arg.Kind() must match typ.Kind()
 	elemTypeParamRef                 // arg must equal typeArgs[paramRef]
 )
 
@@ -157,7 +157,7 @@ func (p *Parser) constraintError(c tpConstraint, arg *vm.Type) error {
 	return &constraintErr{
 		loc: p.Sources.FormatPos(c.pos),
 		pos: c.pos,
-		msg: fmt.Sprintf("type %s does not satisfy constraint", arg.Rtype),
+		msg: fmt.Sprintf("type %s does not satisfy constraint", typeArgName(arg)),
 	}
 }
 
@@ -206,11 +206,11 @@ func (p *Parser) checkConstraint(c tpConstraint, arg *vm.Type, typeArgs []*vm.Ty
 // types (whose methods are invisible to reflect.Implements) are checked by
 // method name against the parser's registered method symbols.
 func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
-	if arg == nil || arg.Rtype == nil {
+	if arg == nil {
 		return true
 	}
 	// Native concrete type vs native interface: reflect can decide.
-	if iface.Rtype != nil && iface.Rtype.NumMethod() > 0 && arg.Rtype.Implements(iface.Rtype) {
+	if iface.Rtype != nil && iface.Rtype.NumMethod() > 0 && arg.Rtype != nil && arg.Rtype.Implements(iface.Rtype) {
 		return true
 	}
 	iface.EnsureIfaceMethods()
@@ -227,7 +227,7 @@ func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
 	// `error`) still pass via their reflect method set.
 	recvNames := argRecvTypeNames(arg)
 	for _, im := range iface.IfaceMethods {
-		if hasNativeMethod(arg.Rtype, im.Name) {
+		if arg.Rtype != nil && hasNativeMethod(arg.Rtype, im.Name) {
 			continue
 		}
 		if p.hasMethodSym(recvNames, im.Name) {
@@ -442,15 +442,18 @@ func (p *Parser) bindTypeParams(params []typeParam, typeArgs []*vm.Type) func() 
 			break
 		}
 		ta := typeArgs[i]
-		if ta == nil || ta.Rtype == nil {
-			continue // unresolved type arg: leave the name to resolve (or error) normally rather than panic in NewValue
+		if ta == nil {
+			continue // unresolved type arg: leave the name to resolve (or error) normally
+		}
+		if ta.Rtype == nil {
+			vm.MaterializeRtype(ta) // post-flip inferred args are symbolic; materialize so the binding is usable
 		}
 		sym := &symbol.Symbol{
 			Kind:  symbol.Type,
 			Name:  tp.name,
 			Index: symbol.UnsetAddr,
 			Type:  ta,
-			Value: vm.NewValue(ta.Rtype),
+			Value: typeTokenValue(ta),
 			Used:  true,
 		}
 		set(tp.name, sym)
@@ -729,7 +732,7 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 	// Match each argument to the corresponding parameter type from the parsed signature.
 	// If the parameter type name is a type parameter, infer it from the argument.
 	params := genSym.Type.Params
-	isVariadic := genSym.Type.Rtype.IsVariadic() && len(params) > 0
+	isVariadic := genSym.Type.IsVariadic() && len(params) > 0
 	// A spread call `f(s...)` passes the whole slice in the variadic slot, so it
 	// matches the variadic param `[]T` directly; per-element calls `f(a, b)` do
 	// not. Go forbids mixing spread with extra variadic elements, so a spread
@@ -862,10 +865,10 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		fieldName := t.Str[1:] // Strip leading ".".
 		// Auto-dereference pointer types for field access (Go: s.F works for *T).
 		structTyp := leftTyp
-		if structTyp.Rtype.Kind() == reflect.Pointer {
+		if structTyp.Kind() == reflect.Pointer {
 			structTyp = structTyp.Elem()
 		}
-		if structTyp.Rtype.Kind() == reflect.Struct {
+		if structTyp.Kind() == reflect.Struct {
 			if ft := structTyp.FieldType(fieldName); ft != nil {
 				return ft, 1 + ln
 			}
@@ -897,13 +900,13 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		case lang.Not:
 			return p.Symbols["bool"].Type, 1 + ln
 		case lang.Addr:
-			return vm.PointerTo(inner), 1 + ln
+			return vm.SymPtr(inner), 1 + ln
 		case lang.Deref:
-			if inner.Rtype.Kind() == reflect.Pointer {
+			if inner.Kind() == reflect.Pointer {
 				return inner.Elem(), 1 + ln
 			}
 		case lang.Arrow:
-			if inner.Rtype.Kind() == reflect.Chan {
+			if inner.Kind() == reflect.Chan {
 				return inner.Elem(), 1 + ln
 			}
 		}
@@ -964,7 +967,7 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 				if firstArgType == nil {
 					return nil, 0
 				}
-				return vm.PointerTo(firstArgType), totalLen
+				return vm.SymPtr(firstArgType), totalLen
 			}
 			s, _, ok := p.Symbols.Get(fnTok.Str, p.scope)
 			if !ok {
@@ -1019,7 +1022,7 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		if containerTyp == nil {
 			return nil, 0
 		}
-		switch containerTyp.Rtype.Kind() {
+		switch containerTyp.Kind() {
 		case reflect.Slice, reflect.Array, reflect.Map:
 			return containerTyp.Elem(), 1 + il + cl
 		case reflect.String:
@@ -1049,11 +1052,11 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 			return nil, 0
 		}
 		total += cl
-		switch containerTyp.Rtype.Kind() {
+		switch containerTyp.Kind() {
 		case reflect.Slice, reflect.String:
 			return containerTyp, total
 		case reflect.Array:
-			return vm.SliceOf(containerTyp.Elem()), total
+			return vm.SymSlice(containerTyp.Elem()), total
 		}
 		return nil, 0
 

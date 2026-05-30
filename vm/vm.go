@@ -119,6 +119,7 @@ const (
 	TypeAssert             // iface -- v [ok] ; assert iface holds type at mem[$1]; $2=0 panics, $2=1 ok form
 	TypeBranch             // iface -- ; pop iface; if iface doesn't hold type at mem[$2] (or $2==-1 for nil), ip += $1
 	WrapFunc               // mvmFuncVal -- MvmFunc ; wrap mvm func in reflect.MakeFunc for native callbacks; $0=typeIdx, $1=depth from sp (0=top)
+	MkMethodExpr           // -- f ; push func value for interpreted method expression T.M; $0=method code global, $1=method-expr (recv-first) typeIdx
 
 	// Goroutine and channel opcodes.
 	GoCall     // f [a1..ai] -- ; spawn goroutine; $0=narg
@@ -658,11 +659,37 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 			mem[idx] = Value{num: uint64(uint32(bits)), ref: zuint32}
 		case reflect.Uint64:
 			mem[idx] = Value{num: bits, ref: zuint64}
+		case reflect.Uintptr:
+			mem[idx] = Value{num: bits, ref: zuintptr}
 		case reflect.Float32:
 			mem[idx] = Value{num: math.Float64bits(float64(float32(math.Float64frombits(bits)))), ref: zfloat32}
 		case reflect.Float64:
 			mem[idx] = Value{num: bits, ref: zfloat64}
 		}
+		// Keep a defined numeric type's named rtype (e.g. `type Grams int` with
+		// String): the canonical zXXX ref above dropped it, so a later box into
+		// an interface would lose its methods.
+		// Gated on NumMethod so plain numeric conversions keep the shared-ref
+		// fast path.
+		if dstType.NumMethod() > 0 {
+			mem[idx].ref = reflect.Zero(dstType)
+		}
+
+	case isNum(srcKind) && (dstKind == reflect.Complex64 || dstKind == reflect.Complex128):
+		// numeric -> complex (a constant conversion in Go; reflect.Convert
+		// rejects int/float -> complex, so build it from the real part here).
+		var re float64
+		switch {
+		case isFloat(srcKind):
+			re = math.Float64frombits(v.num)
+		case srcKind >= reflect.Uint && srcKind <= reflect.Uintptr:
+			re = float64(v.num)
+		default:
+			re = float64(int64(v.num))
+		}
+		nv := reflect.New(dstType).Elem()
+		nv.SetComplex(complex(re, 0))
+		mem[idx] = Value{ref: nv}
 
 	case isNum(srcKind) && dstKind == reflect.String:
 		// int/rune -> string (e.g. string(65) -> "A").
@@ -701,6 +728,17 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 		} else {
 			mem[idx] = FromReflect(reflect.NewAt(dstType.Elem(), up))
 		}
+
+	case srcKind == reflect.Pointer && dstKind == reflect.Pointer:
+		// *T -> *U via unsafe reinterpretation.
+		// reflect.Value.Convert for two pointer types requires
+		// name-identity on the elem types (haveIdenticalType compares
+		// nameFor strictly), so it rejects conversions Go's spec allows
+		// -- e.g., `(*ipNetValue)(p)` where p is *net.IPNet and
+		// ipNetValue is `type ipNetValue net.IPNet`.  reflect.NewAt with
+		// the same underlying pointer matches Go's language-level
+		// convertibility for unnamed-pointer types.
+		mem[idx] = FromReflect(reflect.NewAt(dstType.Elem(), v.ref.UnsafePointer()))
 
 	default:
 		// Fallback: use reflect.
@@ -835,6 +873,16 @@ func packRetIP(retIP, nret, frameBase int) uint64 {
 	return uint64(uint32(retIP)) | uint64(nret&retNretMask)<<32 | uint64(frameBase)<<48
 }
 
+// A defer entry's mem[dh-2] slot packs isX (bits 0..1: 0 VM, 1 native, 2
+// builtin), narg (bits 2..62), and deferStartedFlag (bit 63), via the helpers
+// below. The flag lets panicUnwind skip an already-dispatched defer (Go's
+// _defer.started) rather than re-run one whose body panicked before deferRet.
+const deferStartedFlag = uint64(1) << 63
+
+func packDefer(narg, isX int) uint64 { return uint64(narg<<2 | isX) }
+func deferNarg(packed uint64) int    { return int((packed &^ deferStartedFlag) >> 2) }
+func deferIsX(packed uint64) int     { return int(packed & 3) }
+
 func growStack(mem []Value, sp, need int) []Value {
 	n := max(len(mem)*2, sp+1+need+256)
 	newMem := make([]Value, n)
@@ -854,6 +902,10 @@ func (m *Machine) Run() (err error) {
 	defer SetActiveMachine(prev)
 
 	// Append sentinel instructions so negative-IP handlers become normal opcodes.
+	// Save baseCodeLen too: a re-entrant Run (CallFunc from a native callback)
+	// overwrites it, and panicAddr() reads it freshly, so leaving the inner value
+	// would point stageUnwind at a sentinel that the code trim below removed.
+	savedBaseCodeLen := m.baseCodeLen
 	sentBase := len(m.code)
 	m.baseCodeLen = sentBase
 	m.code = append(m.code, Instruction{Op: DeferRet}, Instruction{Op: PanicUnwind}, Instruction{Op: Exit})
@@ -874,6 +926,7 @@ func (m *Machine) Run() (err error) {
 	defer func() {
 		m.mem, m.ip, m.fp = mem[:sp+1], ip, fp
 		m.code = m.code[:sentBase]
+		m.baseCodeLen = savedBaseCodeLen
 	}()
 
 	for {
@@ -954,20 +1007,19 @@ func (m *Machine) Run() (err error) {
 				m.heap = nil
 			} else {
 				rv := fval.ref
-				// Method-call sentinel: IfaceCall placed a boundProxyCall on
-				// the stack because the target method has registered arg
-				// proxies or a native method hook. Unwrap it and thread the
-				// method identity to bridgeArgs (for proxies) or to the hook
-				// lookup further down.
-				var proxyRecvType reflect.Type
-				var proxyMethod string
-				var proxyRecv reflect.Value
-				if rv.IsValid() && rv.Type() == boundProxyCallRtype {
-					bpc := rv.Interface().(boundProxyCall)
-					rv = bpc.Fn
-					proxyRecvType = bpc.RecvType
-					proxyMethod = bpc.Method
-					proxyRecv = bpc.Recv
+				// Method-call sentinel: IfaceCall placed a boundHookCall on
+				// the stack because the target method has a registered
+				// NativeMethodHook. Unwrap it and thread (RecvType, Method,
+				// Recv) to the hook lookup further down.
+				var hookRecvType reflect.Type
+				var hookMethod string
+				var hookRecv reflect.Value
+				if rv.IsValid() && rv.Type() == boundHookCallRtype {
+					bhc := rv.Interface().(boundHookCall)
+					rv = bhc.Fn
+					hookRecvType = bhc.RecvType
+					hookMethod = bhc.Method
+					hookRecv = bhc.Recv
 				}
 				if rv.Kind() == reflect.Interface && !rv.IsNil() {
 					rv = rv.Elem()
@@ -979,7 +1031,7 @@ func (m *Machine) Run() (err error) {
 					for i := range in {
 						in[i] = mem[sp-narg+1+i].Reflect()
 					}
-					m.bridgeArgs(in, funcType, rv.Pointer(), proxyRecvType, proxyMethod)
+					m.bridgeArgs(in, funcType, rv)
 					coerceInterfaceArgs(in, funcType)
 					m.wrapFuncArgs(in, mem[sp-narg+1:sp+1], funcType)
 					sp -= narg + 1
@@ -990,27 +1042,13 @@ func (m *Machine) Run() (err error) {
 					m.mem, m.fp, m.ip = mem, fp, ip+1
 					// Invoke the native func/method, converting any Go panic
 					// into an mvm panic so an interpreted recover() can catch it.
-					hook := lookupNativeMethodHook(proxyRecvType, proxyMethod)
-					out, panicked := m.invokeNative(hook, proxyRecv, rv, in, c.B&CallSpreadFlag != 0)
+					hook := lookupNativeMethodHook(hookRecvType, hookMethod)
+					out, panicked := m.invokeNative(hook, hookRecv, rv, in, c.B&CallSpreadFlag != 0)
 					if panicked {
 						ip = m.stageUnwind(ip, fp, mem)
 						continue
 					}
-					nout := funcType.NumOut()
-					for i, v := range out {
-						// When a native func returns an interface value
-						// holding a bridge wrapper of an mvm Iface, restore
-						// the original Iface so subsequent mvm-side operations
-						// (equality, reflect.DeepEqual proxy, etc.) see the
-						// same identity the caller passed in. Only applies
-						// when the static return type is an interface; for
-						// concrete returns the bridge itself is the value.
-						if i < nout && funcType.Out(i).Kind() == reflect.Interface &&
-							v.IsValid() && !v.IsNil() {
-							if ifc, ok := UnbridgeIface(v.Elem()); ok {
-								v = reflect.ValueOf(ifc)
-							}
-						}
+					for _, v := range out {
 						if sp+1 >= len(mem) {
 							mem = growStack(mem, sp, 1)
 						}
@@ -1425,9 +1463,8 @@ func (m *Machine) Run() (err error) {
 					rv = mem[sp].Reflect().Convert(namedType).MethodByName(methodName)
 				}
 				if rv.IsValid() && recvRV.IsValid() &&
-					(hasMethodArgProxies(recvRV.Type(), methodName) ||
-						hasNativeMethodHook(recvRV.Type(), methodName)) {
-					mem[sp] = Value{ref: reflect.ValueOf(boundProxyCall{Fn: rv, RecvType: recvRV.Type(), Method: methodName, Recv: recvRV})}
+					hasNativeMethodHook(recvRV.Type(), methodName) {
+					mem[sp] = Value{ref: reflect.ValueOf(boundHookCall{Fn: rv, RecvType: recvRV.Type(), Method: methodName, Recv: recvRV})}
 					break
 				}
 				mem[sp] = Value{ref: rv}
@@ -1542,7 +1579,8 @@ func (m *Machine) Run() (err error) {
 					if dstTyp.IsInterface() {
 						matched = dstTyp.NativeImplements(rv.Type())
 					} else {
-						matched = rv.Type().AssignableTo(dstTyp.Rtype) || dstTyp.NativeImplements(rv.Type())
+						dstRT := MaterializeRtype(dstTyp)
+						matched = (dstRT != nil && rv.Type().AssignableTo(dstRT)) || dstTyp.NativeImplements(rv.Type())
 					}
 					// Interpreted concrete type round-tripped through native reflect (e.g.
 					// reflect.Value.Interface()): its synthetic rtype carries no native
@@ -1558,24 +1596,6 @@ func (m *Machine) Run() (err error) {
 								matched = true
 							}
 						}
-					}
-				}
-				// If the value is a bridge wrapper (e.g. *BridgeError wrapping an
-				// interpreted value), recover the original value. For an interface
-				// target, restore the interpreted Iface and check satisfaction by
-				// method signature: the bare underlying value is method-less and
-				// assignable to every interpreted interface (Rtype==any), a false
-				// positive. For a concrete target, the underlying value is what the
-				// assertion wants.
-				if !matched && !isNil {
-					if dstTyp.IsInterface() {
-						if bifc, ok := UnbridgeIface(rv); ok && bifc.Typ != nil && bifc.Typ.Implements(dstTyp) {
-							matched, wrapTyp = true, bifc.Typ
-							rv = bifc.Val.Reflect()
-						}
-					} else if orig := unbridgeValue(rv); orig.IsValid() && orig.Type().AssignableTo(dstTyp.Rtype) {
-						rv = orig
-						matched = true
 					}
 				}
 				if matched {
@@ -1701,22 +1721,8 @@ func (m *Machine) Run() (err error) {
 							matched = dtyp.NativeImplements(concrete.Type())
 						}
 					default:
-						matched = concrete.Type().AssignableTo(dtyp.Rtype)
-					}
-					// Bridge wrapper (e.g. *BridgeError) holding an interpreted
-					// value: recover it. For an interface target, restore the
-					// interpreted Iface and match by method signature (the bare
-					// underlying value is methodless and implements every
-					// interpreted interface, a false positive); keep TypeBranch
-					// consistent with the TypeAssert that binds the case variable.
-					if !matched {
-						if dtyp.IsInterface() {
-							if bifc, ok := UnbridgeIface(rv); ok && bifc.Typ != nil {
-								matched = bifc.Typ.Implements(dtyp)
-							}
-						} else if orig := unbridgeValue(rv); orig.IsValid() {
-							matched = orig.Type().AssignableTo(dtyp.Rtype)
-						}
+						dtypRT := MaterializeRtype(dtyp)
+						matched = dtypRT != nil && concrete.Type().AssignableTo(dtypRT)
 					}
 				}
 			} else {
@@ -1797,7 +1803,13 @@ func (m *Machine) Run() (err error) {
 				mem = growStack(mem, sp, 1)
 			}
 			sp++
-			mem[sp] = ValueOf(mem[sp-1-int(c.A)].ref.Len())
+			// An invalid value represents a zero/nil slice/map/chan/string; Go's
+			// len of those is 0, so avoid reflect.Value.Len's zero-Value panic.
+			if src := mem[sp-1-int(c.A)].ref; src.IsValid() {
+				mem[sp] = ValueOf(src.Len())
+			} else {
+				mem[sp] = ValueOf(0)
+			}
 		case Next:
 			if k, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, bool))(); ok {
 				m.assignSlot(&m.globals[int(c.B)], FromReflect(k))
@@ -1852,15 +1864,19 @@ func (m *Machine) Run() (err error) {
 			mem[sp] = Value{num: uint64(int(c.A)), ref: zint}
 		case Pull:
 			v := mem[sp]
-			if c.A != 0 {
-				v = v.CopyArray()
+			seq := emptySeq // invalid (nil slice/map/string) -> empty range, as in Go
+			if v.ref.IsValid() {
+				if c.A != 0 {
+					v = v.CopyArray()
+				}
+				if c.B != 0 {
+					// Range-over-func: wrap a mvm Closure into a native Go func.
+					funcType := m.globals[int(c.B)-1].ref.Type()
+					v = Value{ref: m.wrapForFunc(v, funcType)}
+				}
+				seq = v.Seq()
 			}
-			if c.B != 0 {
-				// Range-over-func: wrap a mvm Closure into a native Go func.
-				funcType := m.globals[int(c.B)-1].ref.Type()
-				v = Value{ref: m.wrapForFunc(v, funcType)}
-			}
-			next, stop := iter.Pull(v.Seq())
+			next, stop := iter.Pull(seq)
 			if sp+2 >= len(mem) {
 				mem = growStack(mem, sp, 2)
 			}
@@ -1869,14 +1885,18 @@ func (m *Machine) Run() (err error) {
 			sp += 2
 		case Pull2:
 			v := mem[sp]
-			if c.A != 0 {
-				v = v.CopyArray()
+			seq2 := emptySeq2 // invalid (nil slice/map) -> empty range, as in Go
+			if v.ref.IsValid() {
+				if c.A != 0 {
+					v = v.CopyArray()
+				}
+				if c.B != 0 {
+					funcType := m.globals[int(c.B)-1].ref.Type()
+					v = Value{ref: m.wrapForFunc(v, funcType)}
+				}
+				seq2 = v.Seq2()
 			}
-			if c.B != 0 {
-				funcType := m.globals[int(c.B)-1].ref.Type()
-				v = Value{ref: m.wrapForFunc(v, funcType)}
-			}
-			next, stop := iter.Pull2(v.Seq2())
+			next, stop := iter.Pull2(seq2)
 			if sp+2 >= len(mem) {
 				mem = growStack(mem, sp, 2)
 			}
@@ -2101,13 +2121,27 @@ func (m *Machine) Run() (err error) {
 			fval := mem[sp-int(c.B)]
 			mem[sp-int(c.B)] = Value{ref: reflect.ValueOf(MvmFunc{Val: fval, GF: m.wrapForFunc(fval, typ.Rtype)})}
 
+		case MkMethodExpr:
+			codeAddr := int(m.globals[int(c.A)].num)
+			exprType := m.globals[int(c.B)].ref.Interface().(*Type)
+			if sp+1 >= len(mem) {
+				mem = growStack(mem, sp, 1)
+			}
+			sp++
+			// Materialize lazily: *T may only resolve after generate (post-attach).
+			mem[sp] = Value{ref: m.makeMethodExprFunc(codeAddr, MaterializeRtype(exprType))}
+
 		case Trap:
 			ip, fp, sp, mem = m.handleTrap(ip, fp, sp, mem)
 			continue
 
 		case Panic:
 			m.panicking = true
-			m.panicVal = mem[sp]
+			if nilInterfacePanic(mem[sp]) {
+				m.panicVal = panicNilErr // Go 1.21+: panic(nil) -> *runtime.PanicNilError
+			} else {
+				m.panicVal = mem[sp]
+			}
 			sp-- // pop the panic argument
 			ip = m.stageUnwind(ip, fp, mem)
 			continue
@@ -2127,8 +2161,8 @@ func (m *Machine) Run() (err error) {
 			dh := int(mem[fp-3].num)
 			if dh != 0 {
 				packed := mem[dh-2].num
-				narg := int(packed >> 2)
-				isX := int(packed & 3)
+				narg := deferNarg(packed)
+				isX := deferIsX(packed)
 				prevHead := int(mem[dh-1].num)
 				funcVal := mem[dh-narg-3]
 				retBase := dh - narg - 3
@@ -2160,11 +2194,12 @@ func (m *Machine) Run() (err error) {
 				}
 				// VM function: pack ip and nret into the returnIP slot, then call.
 				mem[dh].num = uint64(ip) | uint64(nret)<<32
+				mem[dh-2].num |= deferStartedFlag
 				prevHeap := m.heap
 				nip := m.resolveIPAndHeap(funcVal)
 				if nip == nilFuncAddr {
-					// Nil deferred call panics; remaining defers still run. Left on
-					// the chain so the panic unwind pops it (its own nilFuncAddr guard).
+					// Nil deferred call panics; the entry stays on the chain (flagged
+					// started above) for panicUnwind's started guard to pop.
 					m.raiseNilDeref()
 					ip = m.stageUnwind(ip, fp, mem)
 					continue
@@ -2516,7 +2551,8 @@ func (m *Machine) Run() (err error) {
 			mem[sp-1] = ValueOf(n)
 			sp--
 		case DeleteMap:
-			mem[sp-1].ref.SetMapIndex(mem[sp].Reflect(), reflect.Value{})
+			mapVal := mem[sp-1].ref
+			mapVal.SetMapIndex(numReflect(mapVal.Type().Key(), mem[sp]), reflect.Value{})
 			sp--
 		case Clear:
 			clearValue(mem[sp].Reflect())
@@ -2555,7 +2591,7 @@ func (m *Machine) Run() (err error) {
 			sp -= 2
 		case MapIndex:
 			mapVal := mem[sp-1].ref
-			rv := mapVal.MapIndex(mem[sp].Reflect())
+			rv := mapVal.MapIndex(numReflect(mapVal.Type().Key(), mem[sp]))
 			if !rv.IsValid() {
 				rv = reflect.Zero(mapVal.Type().Elem())
 			}
@@ -2563,7 +2599,7 @@ func (m *Machine) Run() (err error) {
 			sp--
 		case MapIndexOk:
 			mapVal := mem[sp-1].ref
-			rv := mapVal.MapIndex(mem[sp].Reflect())
+			rv := mapVal.MapIndex(numReflect(mapVal.Type().Key(), mem[sp]))
 			ok := rv.IsValid()
 			if !ok {
 				rv = reflect.Zero(mapVal.Type().Elem())
@@ -3004,7 +3040,7 @@ func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, i
 	if sp+3 >= len(mem) {
 		mem = growStack(mem, sp, 3)
 	}
-	mem[sp+1] = Value{num: uint64(narg<<2 | isX)}
+	mem[sp+1] = Value{num: packDefer(narg, isX)}
 	mem[sp+2] = Value{num: uint64(prevHead)}
 	mem[sp+3] = Value{} // returnIP placeholder, filled by Return
 	sp += 3
@@ -3015,7 +3051,7 @@ func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, i
 func (m *Machine) deferRet(mem []Value, fp, sp int) ([]Value, int, int) {
 	mem = mem[:sp+1]
 	dh := int(mem[fp-3].num)
-	narg := int(mem[dh-2].num >> 2)
+	narg := deferNarg(mem[dh-2].num)
 	val := mem[dh].num
 	returnIP := int(int32(val & 0xFFFFFFFF))
 	nret := int(val >> 32)
@@ -3041,8 +3077,8 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 	dh := int((*mem)[*fp-3].num)
 	if dh != 0 {
 		packed := (*mem)[dh-2].num
-		narg := int(packed >> 2)
-		isX := int(packed & 3)
+		narg := deferNarg(packed)
+		isX := deferIsX(packed)
 		prevHead := int((*mem)[dh-1].num)
 		funcVal := (*mem)[dh-narg-3]
 		retBase := dh - narg - 3
@@ -3053,6 +3089,10 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 			*sp = len(*mem) - 1
 			*mem = (*mem)[:cap(*mem)]
 			return false, nil
+		}
+		if packed&deferStartedFlag != 0 {
+			// Body already ran and panicked; skip rather than loop re-running it.
+			return popDefer()
 		}
 		if isX == 2 {
 			m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, *mem)
@@ -3074,6 +3114,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		retIPInfo := (*mem)[*fp-2].num
 		nret := int((retIPInfo >> 32) & retNretMask)
 		(*mem)[dh].num = uint64(uint32(panicAddr)) | uint64(nret)<<32
+		(*mem)[dh-2].num |= deferStartedFlag
 		prevHeap := m.heap
 		nip := m.resolveIPAndHeap(funcVal)
 		if nip == nilFuncAddr {
@@ -3210,6 +3251,23 @@ func (m *Machine) raiseNilDeref() {
 	m.panicking = true
 	m.panicVal = Value{ref: reflect.ValueOf(nilPointerPanicValue)}
 }
+
+// nilInterfacePanic reports whether a panic argument is a nil interface (which
+// Go 1.21+ replaces with *runtime.PanicNilError), as opposed to a typed nil
+// like (*int)(nil), which is a non-nil interface and kept as-is.
+func nilInterfacePanic(v Value) bool {
+	if !v.IsValid() {
+		return true
+	}
+	if v.IsIface() {
+		return v.IfaceVal().Typ == nil
+	}
+	return v.ref.Kind() == reflect.Interface && v.ref.IsNil()
+}
+
+// panicNilErr is the value Go 1.21+ panics with for panic(nil). Shared since
+// recover only reads it.
+var panicNilErr = Value{ref: reflect.ValueOf(&runtime.PanicNilError{})}
 
 func (m *Machine) panicAddr() int { return m.baseCodeLen + 1 }
 
@@ -3371,37 +3429,17 @@ func (m *Machine) reflectForSend(val Value, elemType reflect.Type) reflect.Value
 	return rv.Convert(elemType)
 }
 
-// bridgeIface wraps an Iface value for a target interface type, trying
-// InterfaceBridges, then single-method Bridges, then concrete unwrap.
+// bridgeIface returns the underlying reflect.Value for an mvm Iface when
+// passed across a native-call boundary. Synth-attached methods are visible
+// directly on the value's rtype, so no wrapping is needed.
 func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value {
-	if len(m.MethodNames) > 0 {
-		// Prefer the richest registered interface bridge the value fully
-		// implements and that still satisfies targetType, so capabilities
-		// beyond the target survive the native type assertion (e.g. a value
-		// implementing crypto.MessageSigner passed to a crypto.Signer
-		// parameter must still answer signer.(MessageSigner)).
-		if bridgePtrType := m.bestInterfaceBridge(ifc, targetType); bridgePtrType != nil {
-			if w := m.wrapIfaceMulti(ifc, bridgePtrType); w.IsValid() {
-				return w
-			}
-		}
-		if bridgePtrType, ok := InterfaceBridges[targetType]; ok {
-			if w := m.wrapIfaceMulti(ifc, bridgePtrType); w.IsValid() {
-				return w
-			}
-		}
-		if w := m.wrapIface(ifc, targetType); w.IsValid() {
-			return w
-		}
-	}
-	if IfaceFallbackHook != nil {
-		if w := IfaceFallbackHook(m, ifc, targetType); w.IsValid() {
-			return w
-		}
-	}
+	_ = targetType
 	val := ifc.Val.Reflect()
 	if ifc.Typ != nil && (!val.IsValid() || (val.Kind() == reflect.Interface && val.IsNil())) {
 		return reflect.Zero(ifc.Typ.Rtype)
+	}
+	if ifc.Typ != nil && ifc.Typ.Rtype == nil {
+		MaterializeRtype(ifc.Typ)
 	}
 	if ifc.Typ != nil && ifc.Typ.Rtype.Kind() == reflect.Func {
 		if gf := m.wrapForFunc(ifc.Val, ifc.Typ.Rtype); gf.IsValid() {
@@ -3409,75 +3447,6 @@ func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value 
 		}
 	}
 	return val
-}
-
-// ifaceProvidedMethods returns the set of method names the interpreted
-// value supplies. A pointer-receiver method only counts when the value's
-// static type is a pointer, matching Go's method-set rules.
-func (m *Machine) ifaceProvidedMethods(ifc Iface) map[string]bool {
-	if ifc.Typ == nil {
-		return nil
-	}
-	provided := make(map[string]bool)
-	methodTypes, n := ifaceMethodTypes(ifc.Typ)
-	isPtr := ifc.Typ.Rtype != nil && ifc.Typ.Rtype.Kind() == reflect.Pointer
-	for _, mt := range methodTypes[:n] {
-		for id, method := range mt.Methods {
-			if method.Index < 0 || id >= len(m.MethodNames) {
-				continue
-			}
-			if method.PtrRecv && !isPtr {
-				continue
-			}
-			provided[m.MethodNames[id]] = true
-		}
-	}
-	return provided
-}
-
-// bestInterfaceBridge returns the registered InterfaceBridges entry whose
-// interface declares the most methods such that the interface satisfies
-// targetType and the interpreted value provides every one of those methods.
-// This preserves richer capabilities (e.g. crypto.MessageSigner) when the
-// native parameter only requires a sub-interface (crypto.Signer). Returns
-// nil for empty-interface targets or when no fully-implemented bridge exists.
-func (m *Machine) bestInterfaceBridge(ifc Iface, targetType reflect.Type) reflect.Type {
-	if targetType.Kind() != reflect.Interface || targetType.NumMethod() == 0 {
-		return nil
-	}
-	// provided is built lazily: the common case (no registered bridge
-	// satisfies targetType, e.g. error / fmt.Stringer) returns before
-	// allocating it or walking the value's method set.
-	var provided map[string]bool
-	var best reflect.Type
-	bestN := 0
-	for ifaceType, bridgePtrType := range InterfaceBridges {
-		nm := ifaceType.NumMethod()
-		if nm <= bestN || !ifaceType.Implements(targetType) {
-			continue
-		}
-		if provided == nil {
-			if provided = m.ifaceProvidedMethods(ifc); len(provided) == 0 {
-				return nil
-			}
-		}
-		if !interfaceMethodsCovered(ifaceType, provided) {
-			continue
-		}
-		best, bestN = bridgePtrType, nm
-	}
-	return best
-}
-
-// interfaceMethodsCovered reports whether provided contains every method
-// name declared by ifaceType.
-func interfaceMethodsCovered(ifaceType reflect.Type, provided map[string]bool) bool {
-	for i := range ifaceType.NumMethod() {
-		if !provided[ifaceType.Method(i).Name] {
-			return false
-		}
-	}
-	return true
 }
 
 func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
@@ -3567,21 +3536,28 @@ func (t *typesIndex) lookup(globals []Value, rt reflect.Type) *Type {
 		// carry a field/base name distinct from the type name and falsely trip the
 		// SameAs ambiguity check.
 		var register func(v *Type)
+		index := func(rt reflect.Type, v *Type) {
+			if rt == nil || ambiguous[rt] {
+				return
+			}
+			if prev, ok := t.m[rt]; ok {
+				if prev != v && !prev.SameAs(v) {
+					delete(t.m, rt)
+					ambiguous[rt] = true
+				}
+			} else {
+				t.m[rt] = v
+			}
+		}
 		register = func(v *Type) {
 			if v == nil || visited[v] {
 				return
 			}
 			visited[v] = true
-			if v.Rtype != nil && !ambiguous[v.Rtype] {
-				if prev, ok := t.m[v.Rtype]; ok {
-					if prev != v && !prev.SameAs(v) {
-						delete(t.m, v.Rtype)
-						ambiguous[v.Rtype] = true
-					}
-				} else {
-					t.m[v.Rtype] = v
-				}
-			}
+			index(v.Rtype, v)
+			// A synth attach swapped Rtype; compiler-captured rtypes (e.g. a
+			// closure param type) may still reference the pre-swap rtype.
+			index(PriorRtype(v), v)
 			for _, p := range v.Params {
 				register(p)
 			}
@@ -3695,7 +3671,7 @@ func (rs *runnerState) releaseRunner(m *Machine) {
 // not a runtime.Error, e.g. *interp.ExitError from a virtualized os.Exit -- is
 // re-panicked so Run's recoverPanic terminates the program rather than letting
 // recover() swallow it.
-func (m *Machine) invokeNative(hook NativeMethodHook, proxyRecv, rv reflect.Value, in []reflect.Value, spread bool) (out []reflect.Value, panicked bool) {
+func (m *Machine) invokeNative(hook NativeMethodHook, hookRecv, rv reflect.Value, in []reflect.Value, spread bool) (out []reflect.Value, panicked bool) {
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -3733,7 +3709,7 @@ func (m *Machine) invokeNative(hook NativeMethodHook, proxyRecv, rv reflect.Valu
 	}()
 	switch {
 	case hook != nil && !spread:
-		return hook(m, proxyRecv, in), false
+		return hook(m, hookRecv, in), false
 	case spread:
 		// For spread calls (f(s...)), unwrap Iface values inside the variadic
 		// slice and use CallSlice.
@@ -3768,6 +3744,34 @@ func (m *Machine) makeCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 		runner := rs.acquireRunner()
 		defer rs.releaseRunner(runner)
 		out, err := runner.callPooled(fval, fnType, args)
+		if err != nil {
+			panic(err)
+		}
+		return out
+	})
+}
+
+// makeMethodExprFunc builds the method-expression func value: a native func of
+// type exprType (func(recv, params...) rets) that binds args[0] as the receiver
+// (like makeMethodCell) and runs the method body on a pooled runner.
+func (m *Machine) makeMethodExprFunc(codeAddr int, exprType reflect.Type) reflect.Value {
+	ins := make([]reflect.Type, exprType.NumIn()-1)
+	for i := range ins {
+		ins[i] = exprType.In(i + 1)
+	}
+	outs := make([]reflect.Type, exprType.NumOut())
+	for i := range outs {
+		outs[i] = exprType.Out(i)
+	}
+	innerType := reflect.FuncOf(ins, outs, exprType.IsVariadic())
+	rs := m.captureRunnerState()
+	return reflect.MakeFunc(exprType, func(args []reflect.Value) []reflect.Value {
+		cell := new(Value)
+		*cell = FromReflect(args[0])
+		clo := Value{ref: reflect.ValueOf(Closure{Code: codeAddr, Heap: []*Value{cell}})}
+		runner := rs.acquireRunner()
+		defer rs.releaseRunner(runner)
+		out, err := runner.callPooled(clo, innerType, args[1:])
 		if err != nil {
 			panic(err)
 		}
@@ -4021,7 +4025,7 @@ func (m *Machine) execBuiltinDeferred(op Op, base, narg int, mem []Value) {
 	case ChanClose:
 		mem[base].ref.Close()
 	case DeleteMap:
-		mem[base].ref.SetMapIndex(mem[base+1].Reflect(), reflect.Value{})
+		mem[base].ref.SetMapIndex(numReflect(mem[base].ref.Type().Key(), mem[base+1]), reflect.Value{})
 	case CopySlice:
 		reflect.Copy(mem[base].ref, mem[base+1].ref)
 	case Clear:
@@ -4308,13 +4312,11 @@ func numReflect(t reflect.Type, src Value) reflect.Value {
 	return src.Reflect()
 }
 
-// bridgeArgs scans native-call arguments for Iface values and replaces them
-// with wrapper instances that implement Go interfaces via registered bridges.
-// Non-bridged Iface values are unwrapped to their concrete value.
-func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fnPtr uintptr, recvType reflect.Type, methodName string) {
+// bridgeArgs unwraps any Iface-typed arguments to the underlying concrete
+// reflect.Value for the native call boundary.
+func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fn reflect.Value) {
 	for i, rv := range in {
 		if !rv.IsValid() || rv.Type() != ifaceRtype {
-			// Also check inside interface{} wrapping.
 			if rv.IsValid() && rv.Kind() == reflect.Interface && !rv.IsNil() &&
 				rv.Elem().Type() == ifaceRtype {
 				rv = rv.Elem()
@@ -4323,15 +4325,8 @@ func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fnPtr ui
 			}
 		}
 		ifc := rv.Interface().(Iface)
-		var factory ProxyFactory
-		if fnPtr != 0 {
-			factory = lookupFuncArgProxy(fnPtr, i)
-		}
-		if factory == nil && recvType != nil && methodName != "" {
-			factory = lookupMethodArgProxy(recvType, methodName, i)
-		}
-		if factory != nil {
-			in[i] = factory(m, ifc)
+		if st := m.bridgePtrToIface(ifc, ifc.Val.Reflect(), fn); st.IsValid() {
+			in[i] = st
 			continue
 		}
 		targetType := paramTypeFor(funcType, i)
@@ -4404,343 +4399,6 @@ func (m *Machine) wrapFuncArgs(in []reflect.Value, args []Value, funcType reflec
 			in[i] = gf
 		}
 	}
-}
-
-// ifaceMethodTypes returns the types whose Methods make up typ's method set:
-// typ, its ElemType (for pointers, since methods register on T not *T), and the
-// same for each type along the Base chain. A struct-field shallow copy has empty
-// Methods but links via Base to the source type that carries methods registered
-// after the copy was taken (e.g. a named-basic field type like `type Grams int`);
-// walking Base lets interface bridging find those methods, matching MethodByName.
-//
-// The [6] bound is ample: Base chains are collapsed to depth 1 at creation
-// (goparser decl.go points a copy's Base at its source's Base, never nesting),
-// so at most typ+ElemType plus one Base level+ElemType is produced.
-func ifaceMethodTypes(typ *Type) (types [6]*Type, n int) {
-	push := func(t *Type) {
-		if t != nil && n < len(types) {
-			types[n] = t
-			n++
-		}
-	}
-	for cur := typ; cur != nil; cur = cur.Base {
-		push(cur)
-		if cur.Rtype != nil && cur.Rtype.Kind() == reflect.Pointer {
-			push(cur.ElemType)
-		}
-	}
-	return
-}
-
-// errorSliceRtype is []error, used to detect the multi-error
-// Unwrap() []error signature so it bridges distinctly from the
-// single-error Unwrap() error.
-var errorSliceRtype = reflect.TypeOf([]error(nil))
-
-// bridgeMethodName maps an interpreted method to the bridge-registry key
-// used for selection.
-func bridgeMethodName(name string, method Method) string {
-	if name == "Unwrap" && method.Rtype != nil &&
-		method.Rtype.NumOut() == 1 && method.Rtype.Out(0) == errorSliceRtype {
-		return "UnwrapMulti"
-	}
-	return name
-}
-
-// wrapIface creates a bridge value that implements a Go interface.
-func (m *Machine) wrapIface(ifc Iface, targetType reflect.Type) reflect.Value {
-	if ifc.Typ == nil {
-		return reflect.Value{}
-	}
-
-	// For non-empty interfaces, build a set of required method names.
-	// For interface{}/any, use DisplayBridges as the filter.
-	nonEmpty := targetType.Kind() == reflect.Interface && targetType.NumMethod() > 0
-	var required map[string]bool
-	if nonEmpty {
-		required = make(map[string]bool, targetType.NumMethod())
-		for i := range targetType.NumMethod() {
-			required[targetType.Method(i).Name] = true
-		}
-	} else {
-		required = DisplayBridges
-	}
-
-	// Single pass: collect all methods that have registered bridges.
-	var bridged [8]bridgedMethod
-	count := 0
-
-	methodTypes, n := ifaceMethodTypes(ifc.Typ)
-	isPtr := ifc.Typ.Rtype.Kind() == reflect.Pointer
-	for _, mt := range methodTypes[:n] {
-		for id, method := range mt.Methods {
-			if id >= len(m.MethodNames) || !method.IsResolved() {
-				continue
-			}
-			// Pointer-receiver methods are not part of the value type's
-			// method set: mvm registers them on T with PtrRecv=true but
-			// in Go semantics they only belong to *T's method set.
-			if method.PtrRecv && !isPtr {
-				continue
-			}
-			name := bridgeMethodName(m.MethodNames[id], method)
-			if _, ok := Bridges[name]; !ok {
-				continue
-			}
-			if count < len(bridged) {
-				bridged[count] = bridgedMethod{name, method}
-				count++
-			}
-		}
-	}
-
-	// Multi-method composite bridges are checked first: every declared
-	// method must be present on the source so wrapIfaceMulti leaves no
-	// Fn<MethodName> field nil.
-	if nonEmpty && count >= 3 {
-		for _, mcb := range multiCompositeBridges {
-			if len(mcb.Methods) > count || !subsetOfBridged(mcb.Methods, bridged[:count]) {
-				continue
-			}
-			if !mcb.Type.Implements(targetType) {
-				continue
-			}
-			if w := m.wrapIfaceMulti(ifc, mcb.Type); w.IsValid() {
-				return w
-			}
-		}
-	}
-
-	// Try composite bridge if 2+ bridgeable methods and target is a non-empty interface.
-	if count >= 2 && nonEmpty && len(CompositeBridges) > 0 {
-		for i := 0; i < count; i++ {
-			for j := i + 1; j < count; j++ {
-				key := [2]string{bridged[i].name, bridged[j].name}
-				if key[0] > key[1] {
-					key[0], key[1] = key[1], key[0]
-				}
-				compType, ok := CompositeBridges[key]
-				if !ok {
-					continue
-				}
-				if !compType.Implements(targetType) {
-					continue
-				}
-				if w := m.wrapIfaceMulti(ifc, compType); w.IsValid() {
-					return w
-				}
-			}
-		}
-	}
-
-	// Single-method fallback. Prefer "primary" bridges (Error, String,
-	// GoString) over Format because BridgeError/String/GoString now also
-	// dispatch user Format via FnFormat (populated by populateBridgeAux),
-	// AND they satisfy native type assertions.
-	for _, primary := range primaryBridgeOrder {
-		if w := m.tryBridge(ifc, bridged[:count], required, targetType, nonEmpty, primary); w.IsValid() {
-			return w
-		}
-	}
-	// Last resort: any matching bridge (catches Format-only types).
-	for _, bm := range bridged[:count] {
-		if w := m.tryBridge(ifc, bridged[:count], required, targetType, nonEmpty, bm.name); w.IsValid() {
-			return w
-		}
-	}
-
-	return reflect.Value{}
-}
-
-// primaryBridgeOrder lists method names whose single-method bridge type
-// also satisfies higher-level Go interfaces.
-var primaryBridgeOrder = [...]string{"Error", "String", "GoString"}
-
-// tryBridge attempts to build a single-method bridge for the named
-// method against targetType. Returns an invalid Value if no method on
-// ifc with that name has a registered bridge that satisfies the target.
-func (m *Machine) tryBridge(ifc Iface, bridged []bridgedMethod, required map[string]bool, targetType reflect.Type, nonEmpty bool, name string) reflect.Value {
-	if !required[name] {
-		return reflect.Value{}
-	}
-	for _, bm := range bridged {
-		if bm.name != name {
-			continue
-		}
-		bridgePtrType := Bridges[bm.name]
-		bridge := reflect.New(bridgePtrType.Elem())
-		if nonEmpty && !bridge.Type().Implements(targetType) {
-			continue
-		}
-		fnField := bridge.Elem().FieldByName("Fn")
-		if bm.method.EmbedIface {
-			fnField.Set(m.makeEmbedIfaceClosure(ifc, bm.method, bm.name, fnField.Type()))
-		} else {
-			fnField.Set(m.makeBridgeClosure(ifc, bm.method, fnField.Type()))
-		}
-		m.populateBridgeAux(bridge.Elem(), ifc, bridged, bm.name)
-		return bridge
-	}
-	return reflect.Value{}
-}
-
-// populateBridgeAux fills optional bridge fields after the primary
-// method closure is set. Ifc preserves the
-// full Iface so UnbridgeIface can restore it at native->mvm return
-// boundaries. FnFormat routes fmt verbs to the interpreted type's
-// own Format method when present, so user-defined fmt.Formatter
-// bodies are invoked instead of the display fallback. skipName avoids
-// overwriting the field already set by the caller.
-func (m *Machine) populateBridgeAux(elem reflect.Value, ifc Iface, bridged []bridgedMethod, skipName string) {
-	if valField := elem.FieldByName("Val"); valField.IsValid() {
-		if rv := ifc.Val.Reflect(); rv.IsValid() {
-			valField.Set(reflect.ValueOf(rv.Interface()))
-		}
-	}
-	if ifcField := elem.FieldByName("Ifc"); ifcField.IsValid() && ifcField.Type() == ifaceMetaType {
-		ifcField.Set(reflect.ValueOf(ifc))
-	}
-	if skipName == "Format" {
-		return
-	}
-	if fmtField := elem.FieldByName("FnFormat"); fmtField.IsValid() {
-		for _, bm := range bridged {
-			if bm.name != "Format" || bm.method.EmbedIface {
-				continue
-			}
-			fmtField.Set(m.makeBridgeClosure(ifc, bm.method, fmtField.Type()))
-			return
-		}
-	}
-}
-
-// ifaceMetaType is the reflect.Type of vm.Iface, used to gate setting
-// of optional "Ifc" bridge fields.
-var ifaceMetaType = reflect.TypeOf(Iface{})
-
-// bridgedMethod pairs a bridgeable method with its registered name.
-// Hoisted to package scope so populateBridgeAux can take a slice of them.
-type bridgedMethod struct {
-	name   string
-	method Method
-}
-
-func subsetOfBridged(want []string, have []bridgedMethod) bool {
-	for _, name := range want {
-		found := false
-		for i := range have {
-			if have[i].name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func (m *Machine) wrapIfaceMulti(ifc Iface, bridgePtrType reflect.Type) reflect.Value {
-	if ifc.Typ == nil {
-		return reflect.Value{}
-	}
-
-	bridge := reflect.New(bridgePtrType.Elem())
-	elem := bridge.Elem()
-	matched := false
-
-	methodTypes, n := ifaceMethodTypes(ifc.Typ)
-	isPtr := ifc.Typ.Rtype.Kind() == reflect.Pointer
-	for _, mt := range methodTypes[:n] {
-		for id, method := range mt.Methods {
-			if method.Index < 0 || id >= len(m.MethodNames) {
-				continue
-			}
-			// Pointer-receiver methods are not part of the value type's
-			// method set: mvm registers them on T with PtrRecv=true but
-			// in Go semantics they only belong to *T's method set.
-			if method.PtrRecv && !isPtr {
-				continue
-			}
-			fnField := elem.FieldByName("Fn" + bridgeMethodName(m.MethodNames[id], method))
-			if !fnField.IsValid() {
-				continue
-			}
-			// Value-receiver methods called on a pointer need the pointer
-			// dereferenced at each call time so mutations are visible.
-			deref := isPtr && !method.PtrRecv
-			fnField.Set(m.makeBridgeClosureImpl(ifc, method, fnField.Type(), deref))
-			matched = true
-		}
-	}
-
-	if !matched {
-		return reflect.Value{}
-	}
-	// FnFormat is auto-populated above by the Fn<MethodName> loop, so skip it here.
-	m.populateBridgeAux(elem, ifc, nil, "Format")
-	return bridge
-}
-
-func (m *Machine) makeBridgeClosure(ifc Iface, method Method, fnType reflect.Type) reflect.Value {
-	return m.makeBridgeClosureImpl(ifc, method, fnType, false)
-}
-
-func (m *Machine) makeEmbedIfaceClosure(ifc Iface, method Method, name string, fnType reflect.Type) reflect.Value {
-	ptrVal := ifc.Val
-	path := method.Path
-	zeroOut := func() []reflect.Value {
-		out := make([]reflect.Value, fnType.NumOut())
-		for i := range out {
-			out[i] = reflect.Zero(fnType.Out(i))
-		}
-		return out
-	}
-	return reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
-		rv := reflect.Indirect(ptrVal.Reflect())
-		for _, idx := range path {
-			if rv.Kind() == reflect.Pointer {
-				if rv.IsNil() {
-					return zeroOut()
-				}
-				rv = rv.Elem()
-			}
-			rv = rv.Field(idx)
-		}
-		rv = Exportable(rv)
-		if rv.Kind() == reflect.Interface {
-			if rv.IsNil() {
-				return zeroOut()
-			}
-			rv = rv.Elem()
-		}
-		fn := rv.MethodByName(name)
-		if !fn.IsValid() {
-			return zeroOut()
-		}
-		return fn.Call(args)
-	})
-}
-
-func (m *Machine) makeBridgeClosureImpl(ifc Iface, method Method, fnType reflect.Type, deref bool) reflect.Value {
-	cell, fval := m.makeMethodCell(ifc, method)
-	if !deref {
-		return m.makeCallFunc(fval, fnType)
-	}
-	// For value-receiver methods: dereference the pointer at each call.
-	ptrVal := ifc.Val
-	rs := m.captureRunnerState()
-	return reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
-		*cell = FromReflect(reflect.Indirect(ptrVal.Reflect()))
-		runner := rs.acquireRunner()
-		defer rs.releaseRunner(runner)
-		out, err := runner.callPooled(fval, fnType, args)
-		if err != nil {
-			panic(err)
-		}
-		return out
-	})
 }
 
 func (m *Machine) makeMethodCell(ifc Iface, method Method) (*Value, Value) {

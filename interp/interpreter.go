@@ -64,6 +64,7 @@ type Interp struct {
 	*comp.Compiler
 	*vm.Machine
 	stdlibPatched bool
+	synthAttached map[*vm.Type]bool // types already passed through AttachSynthMethods
 	Stats         Stats
 }
 
@@ -119,6 +120,11 @@ func (i *Interp) evalCompiled(compile func() error) (res reflect.Value, err erro
 
 	i.Machine.MethodNames = i.Compiler.MethodNames()
 	i.Machine.MethodFuncTypes = i.Compiler.MethodFuncTypes()
+
+	// Materialize every reachable type's rtype (goparser builds them symbolically
+	// post-flip), so the synth attach sees layout rtypes and the VM never reads a
+	// nil Rtype at run time.
+	i.MaterializeAll()
 
 	if err := i.attachSynthMethods(); err != nil {
 		return res, i.withSourceContext(err)

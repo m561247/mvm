@@ -106,10 +106,10 @@ func (p *Parser) inferRangeTypes(operand Tokens, lhs []Tokens, lhsPositions []in
 		return
 	}
 	setType := func(i int, t *vm.Type) { p.setLHSType(i, t, lhs, lhsPositions, out) }
-	switch rt.Rtype.Kind() {
+	switch rt.Kind() {
 	case reflect.Slice, reflect.Array, reflect.String:
 		setType(0, p.Symbols["int"].Type)
-		if rt.Rtype.Kind() == reflect.String {
+		if rt.Kind() == reflect.String {
 			setType(1, p.Symbols["rune"].Type)
 		} else {
 			setType(1, rt.Elem())
@@ -142,7 +142,7 @@ func (p *Parser) inferDefineType(rhs Tokens, scopedName string) {
 	if compositeIdx >= 0 && rhs[compositeIdx].Tok == lang.Composite && rhs[compositeIdx].Str != "" {
 		if s, _, ok := p.Symbols.Get(rhs[compositeIdx].Str, p.scope); ok && s.Kind == symbol.Type && s.Type != nil {
 			if hasAddr {
-				sym.Type = vm.PointerTo(s.Type)
+				sym.Type = vm.SymPtr(s.Type)
 			} else {
 				sym.Type = s.Type
 			}
@@ -174,7 +174,7 @@ func (p *Parser) inferCallDefineTypes(rhs Tokens, lhs []Tokens, lhsPositions []i
 		}
 		return
 	}
-	for i := 0; i < len(lhs) && i < ft.Rtype.NumOut(); i++ {
+	for i := 0; i < len(lhs) && i < ft.NumOut(); i++ {
 		p.setLHSType(i, ft.ReturnType(i), lhs, lhsPositions, out)
 	}
 }

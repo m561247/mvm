@@ -631,13 +631,13 @@ func (p *Parser) registerStructPlaceholder(key, short string) *vm.Type {
 	// instead. (Same guard also avoids re-patching an already-finalized struct,
 	// which would corrupt the other package's type.)
 	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
-		s.Type != nil && s.Type.Rtype != nil &&
-		s.Type.Rtype.Kind() == reflect.Struct && s.Type.Placeholder {
+		s.Type != nil &&
+		s.Type.Kind() == reflect.Struct && s.Type.Placeholder {
 		return s.Type
 	}
 	ph := vm.NewStructType(short)
 	ph.Name = short
-	p.SymAdd(symbol.UnsetAddr, key, vm.NewValue(ph.Rtype), symbol.Type, ph)
+	p.SymAdd(symbol.UnsetAddr, key, typeTokenValue(ph), symbol.Type, ph)
 	return ph
 }
 
@@ -653,11 +653,11 @@ func (p *Parser) registerInterfacePlaceholder(key, short string) *vm.Type {
 	// placeholder instead.
 	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
 		s.Type != nil && s.Type.Rtype != nil &&
-		s.Type.Rtype.Kind() == reflect.Interface && s.Type.Placeholder {
+		s.Type.Kind() == reflect.Interface && s.Type.Placeholder {
 		return s.Type
 	}
 	ph := &vm.Type{Rtype: vm.AnyRtype, Name: short, Placeholder: true}
-	p.SymAdd(symbol.UnsetAddr, key, vm.NewValue(ph.Rtype), symbol.Type, ph)
+	p.SymAdd(symbol.UnsetAddr, key, typeTokenValue(ph), symbol.Type, ph)
 	return ph
 }
 

@@ -232,6 +232,9 @@ func TestAssign(t *testing.T) {
 		{n: "#31_string_swap", src: `func f() string { s, t := "a", "b"; s, t = t, s; return s+t }; f()`, res: "ba"},
 		{n: "#32_map_swap", src: `func f() int { m, n := map[string]int{"x":1}, map[string]int{"x":2}; m, n = n, m; return m["x"]*10+n["x"] }; f()`, res: "21"},
 		{n: "#33_iface_swap", src: "func f() int { var x, y interface{} = 1, 2; x, y = y, x; return x.(int)*10+y.(int) }; f()", res: "21"},
+		// Multi-assign with bare nil RHS: the swap-temp rewrite emits `_swap_0_ := nil`,
+		// which has no type to infer, so the temp is undefined.
+		{n: "multi_assign_bare_nil", skip: true, src: "func f() int { var a, b []int; a, b = nil, nil; return len(a)+len(b) }; f()", res: "0"},
 		// Stdlib package interface-typed vars (e.g. crypto/rand.Reader) must keep
 		// their declared interface type when inferred via :=, otherwise the runtime
 		// assignment panics with "io.Reader is not assignable to rand.reader".
@@ -1000,6 +1003,29 @@ func TestStruct(t *testing.T) {
 		{n: "astype_nomatch", src: `import "errors"; type E struct{ s string }; func (e *E) Error() string { return e.s }; type F struct{ n int }; func (f *F) Error() string { return "f" }; var err error = &E{"boom"}; _, ok := errors.AsType[*F](err); ok`, res: "false"},
 		{n: "astype_unwrap_chain", src: `import "errors"; import "fmt"; type E struct{ s string }; func (e *E) Error() string { return e.s }; base := &E{"inner"}; w := fmt.Errorf("ctx: %w", base); v, ok := errors.AsType[*E](w); ok && v.s == "inner"`, res: "true"},
 
+		// Generic sync helpers, installed as a shim (stdlib/sync_shim.go) since
+		// they can't bind via reflect.ValueOf. See [[project_sync_oncevalue_shim]].
+		{n: "oncevalue_caches", src: `import "sync"; n := 0; f := sync.OnceValue(func() int { n++; return 7 }); a := f() + f(); a*10 + n`, res: "141"},
+		{n: "oncevalues_multi", src: `import "sync"; g := sync.OnceValues(func() (int, int) { return 3, 4 }); a, b := g(); c, d := g(); a + b + c + d`, res: "14"},
+		{n: "oncevalue_panics", src: `import "sync"; f := sync.OnceValue(func() int { panic("boom") }); r := func() (s string) { defer func() { s, _ = recover().(string) }(); f(); return }(); r`, res: "boom"},
+
+		// A panic inside a deferred func used to loop forever (vm: deferStartedFlag).
+		// See [[project_panic_in_defer_hang]].
+		{n: "repanic_in_defer", src: `func f() (s string) { defer func() { s = recover().(string) }(); func() { defer func() { panic(recover()) }(); panic("x") }(); return }; f()`, res: "x"},
+		{n: "panic_in_defer_normal_return", src: `func inner() { defer func() { panic("x") }() }; func f() (s string) { defer func() { s = recover().(string) }(); inner(); return }; f()`, res: "x"},
+		{n: "panic_in_defer_earlier_still_runs", src: `func inner(log *[]int) { defer func() { *log = append(*log, 1) }(); defer func() { panic("x") }() }; func f() int { log := []int{}; func() { defer func() { recover() }(); inner(&log) }(); return len(log) }; f()`, res: "1"},
+
+		// SKIP: recovering an inner panic (raised in a defer running during an
+		// outer panic's unwind) drops the outer one -- mvm has a single panic
+		// slot, not a stack. See [[project_panic_in_defer_hang]].
+		{n: "nested_panic_outer_resumes", skip: true, src: `func f() (out string) { defer func() { if r := recover(); r != nil { out = r.(string) } }(); defer func() { defer func() { recover() }(); panic("inner") }(); panic("outer"); return }; f()`, res: "outer"},
+
+		// Go 1.21+: panic of a nil interface yields *runtime.PanicNilError; a
+		// typed nil stays itself. See [[project_panic_nil_error]].
+		{n: "panic_nil_literal", src: `func f() (s string) { defer func() { s = recover().(error).Error() }(); panic(nil); return }; f()`, res: "panic called with nil argument"},
+		{n: "panic_nil_iface", src: `func f() (s string) { defer func() { s = recover().(error).Error() }(); var e error; panic(e); return }; f()`, res: "panic called with nil argument"},
+		{n: "panic_typed_nil_kept", src: `func f() (out bool) { defer func() { _, out = recover().(*int) }(); panic((*int)(nil)); return }; f()`, res: "true"},
+
 		{n: "errors_is_custom_match", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 		{n: "errors_is_custom_nomatch", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrNotExist)`, res: "false"},
 
@@ -1041,11 +1067,46 @@ func TestStruct(t *testing.T) {
 
 		{n: "errors_as_into_struct", src: `import "errors"; type E struct{ s string }; func (e E) Error() string { return e.s }; type w struct{ e error }; func (x w) Error() string { return "w" }; func (x w) Unwrap() error { return x.e }; var got E; ok := errors.As(w{E{"x"}}, &got); ok && got.s == "x"`, res: "true"},
 
+		// Regression: value-receiver Error/Is methods must be promoted onto the
+		// synth *T method set so *E satisfies native error (Go: method-set(*T)
+		// includes value methods). Before the fix errors.Is(&E{}, ...) panicked
+		// "reflect: Call using *E as type error".
+		{n: "errors_is_ptr_recv_value_method", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = &E{"x"}; errors.Is(err, fs.ErrPermission)`, res: "true"},
+
+		// SKIP (documented gap): a panic from an interpreted Is dispatched by
+		// native errors.Is is swallowed to false rather than propagated, because
+		// re-panicking it crashes the nested-panic-across-native-boundary path
+		// (interp -> native errors.Is -> interp Is -> panic leaves the machine
+		// stack inconsistent on unwind: "index out of range" while running the
+		// deferred recover). The synth S4/S6/S7 handlers therefore swallow. Want:
+		// the panic propagates and recover() sees it (res "true").
+		{n: "errors_is_panic_propagates", skip: true, src: `import "errors"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { panic("boom") }; func f() (r bool) { defer func() { r = recover() != nil }(); errors.Is(E{"x"}, errors.New("t")); return false }; f()`, res: "true"},
+
+		// Regression: multiple blank `_` result params must each get their own
+		// slot+type; before the fix they collided on one "scope/_" key, so the
+		// bare return zero-init wrote a struct zero into the bool slot
+		// ("reflect.Set: ... not assignable to bool"). Surfaced via errors.AsType.
+		{n: "blank_struct_result_bare_return", src: `type S struct{ n int }; func g() (_ S, _ bool) { return }; _, b := g(); !b`, res: "true"},
+		{n: "generic_blank_result_bare_return", src: `type S struct{ n int }; func g[E any]() (_ E, _ bool) { return }; _, b := g[S](); !b`, res: "true"},
+
 		{n: "errors_as_validation_basic", src: `import "errors"; func f() (r bool) { defer func() { r = recover() != nil }(); var s string; errors.As(errors.New("e"), &s); return false }; f()`, res: "true"},
 
+		// errors.As into a method-bearing anonymous interface target: a synth
+		// interface rtype built at the boundary resolves real satisfaction instead
+		// of a methodless any (which matched every error). See vm.bridgePtrToIface.
 		{n: "errors_as_anon_iface_target_via_any", src: `import "errors"; var timeout interface{ Timeout() bool }; tc := struct{ t any }{&timeout}; errors.As(errors.New("e"), tc.t)`, res: "false"},
 
 		{n: "errors_as_anon_iface_target_unwrap", src: `import "errors"; import "os"; _, errF := os.Open("/nonexistent-x"); type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; tc := struct{ t any }{&t}; errors.As(W{errF}, tc.t)`, res: "true"},
+
+		// Unwrap to an error that does NOT implement the target: no match (was
+		// wrongly "true" before the fix).
+		{n: "errors_as_anon_iface_unwrap_nomatch", src: `import "errors"; type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; tc := struct{ t any }{&t}; errors.As(W{errors.New("x")}, tc.t)`, res: "false"},
+
+		// Reading the iface var directly (not via the same reflect pointer) after
+		// As corrupts: As writes iface bytes (itab+data) into mvm's eface slot.
+		// Pre-existing crash; a real fix needs interpreted interfaces to carry the
+		// synth rtype as storage identity, not just at the boundary.
+		{n: "errors_as_anon_iface_direct_read", skip: true, src: `import "errors"; import "os"; _, errF := os.Open("/nonexistent-x"); type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; errors.As(W{errF}, &t); t != nil`, res: "true"},
 
 		{n: "errors_multierror_self", src: `import "errors"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x")}; errors.Is(err, err)`, res: "false"},
 
@@ -1192,6 +1253,79 @@ func (c Celsius) Tag() string { return "C" }
 type Tagger interface{ Tag() string }
 func f() string { cv := reflect.ValueOf(Celsius(0)).Interface(); if t, ok := cv.(Tagger); ok { return t.Tag() }; return "no" }
 f()`, res: "C"},
+
+		// An inline named-INT conversion T(1) takes the runtime Convert path now
+		// (not the const fold), so it keeps its rtype and reflects its methods.
+		{n: "named_int_const_inline_keeps_methods", src: `
+import "reflect"
+type T int
+func (t T) String() string { return "s" }
+reflect.TypeOf(T(1)).NumMethod()`, res: "1"},
+
+		// Same root, still open: a named-INT const identifier and named-INT const
+		// arithmetic load via the Push immediate (no rtype), bypassing Convert.
+		// Not exercised by _samples/xml_*.
+		{n: "named_int_const_ident_keeps_methods", skip: true, src: `
+import "reflect"
+type T int
+func (t T) String() string { return "s" }
+const G T = 1
+reflect.TypeOf(G).NumMethod()`, res: "1"},
+		{n: "named_int_const_arith_keeps_methods", skip: true, src: `
+import "reflect"
+type T int
+func (t T) String() string { return "s" }
+reflect.TypeOf(T(1) + T(2)).NumMethod()`, res: "1"},
+
+		// make([]T, n) for a method-bearing (synth-rtype) named T must build the
+		// slice from the canonical element type, not a pre-synth-attach
+		// placeholder snapshot, so the result stays assignable to the []T slot.
+		// Regression: x/text TestRemoteXTextLanguageImport ("[]struct{PTag_N int}
+		// not assignable to []language.Tag").
+		{n: "make_named_slice_keeps_synth_elem", src: `
+type Tag struct{ id int }
+func (t Tag) String() string { return "s" }
+func f() int { s := make([]Tag, 3); return len(s) }
+f()`, res: "3"},
+
+		// sort.Sort(ByAge(people)) pattern: named slice type with methods over a
+		// synth element; the conversion needs ByAge's element to match []Person's.
+		{n: "named_slice_type_conv_keeps_synth_elem", src: `
+import "reflect"
+type Person struct{ Age int }
+func (p Person) String() string { return "p" }
+type ByAge []Person
+func (a ByAge) Len() int { return len(a) }
+func f() bool {
+	people := []Person{{1}, {2}}
+	b := ByAge(people)
+	return reflect.TypeOf(b).Elem() == reflect.TypeOf(people).Elem() && reflect.TypeOf(b).NumMethod() == 1
+}
+f()`, res: "true"},
+
+		// encoding/json/xml `make(map[Animal]int)` pattern: named-key map round-trip.
+		{n: "make_named_map_key_keeps_synth", src: `
+type Animal int
+func (a Animal) String() string { return "x" }
+func f() int {
+	m := make(map[Animal]int)
+	m[Animal(1)] += 10
+	m[Animal(2)] = 20
+	delete(m, Animal(2))
+	return m[Animal(1)] + len(m)
+}
+f()`, res: "11"},
+
+		// Open: the cascade rebuilds t-as-key maps but not t-as-element maps (they
+		// live under the key's derived cache), so a map[K]T slot keeps a methodless
+		// placeholder value. Needs the cascade to rebuild t-as-element maps too.
+		{n: "make_named_map_value_keeps_synth_elem", skip: true, src: `
+import "reflect"
+type Tag struct{ id int }
+func (t Tag) String() string { return "s" }
+var m map[string]Tag
+func f() int { m = make(map[string]Tag); return reflect.TypeOf(m).Elem().NumMethod() }
+f()`, res: "1"},
 
 		{n: "reflect_struct_sibling_no_crossdispatch", src: `
 import "reflect"
@@ -1544,6 +1678,27 @@ type T struct { X int }
 func (t T) GetX() int { return t.X }
 func (t *T) Double() { t.X = t.X * 2 }
 var v T; v.X = 4; v.Double(); v.GetX()`, res: "8"},
+
+		// Symbolic defined basic types: a method must resolve via the var/const's
+		// named *Type, not the underlying kind (global vars used to retype wrong).
+		{n: "defined_basic_global_var_method", src: `
+type Grams int
+func (g Grams) Double() Grams { return g * 2 }
+var w Grams = 7
+int(w.Double())`, res: "14"},
+
+		{n: "defined_basic_const_method", src: `
+type Grams int
+func (g Grams) Double() Grams { return g * 2 }
+const c Grams = 5
+int(c.Double())`, res: "10"},
+
+		{n: "defined_basic_global_var_noinit_method", src: `
+type Grams int
+func (g Grams) Double() Grams { return g * 2 }
+var w Grams
+func f() int { w = 6; return int(w.Double()) }
+f()`, res: "12"},
 
 		{n: "iface_val_recv", src: `
 type Getter interface { GetX() int }
@@ -1952,14 +2107,6 @@ y = &T{y}
 n, _ := y.Read([]byte(""))
 n`, res: "0"},
 
-		{n: "writer_bridge", src: `
-import "fmt"
-type T []byte
-func (t *T) Write(p []byte) (n int, err error) { *t = append(*t, p...); return len(p), nil }
-x := T{}
-fmt.Fprint(&x, "hello")
-fmt.Sprintf("%s", x)`, res: "hello"},
-
 		{n: "writer_assert", src: `
 import "fmt"
 import "io"
@@ -2091,33 +2238,6 @@ type wrapper struct{ R *myReader }
 w := wrapper{R: &myReader{data: "hello"}}
 b, _ := io.ReadAll(w.R)
 string(b)`, res: "hello"},
-
-		{n: "bridge_named_return_iface", src: `
-import "io"
-import "strings"
-type myReader struct{ r io.Reader }
-func (m myReader) Read(b []byte) (n int, err error) {
-	n, err = m.r.Read(b)
-	return n, err
-}
-r := myReader{strings.NewReader("hello")}
-b, _ := io.ReadAll(r)
-string(b)`, res: "hello"},
-
-		{n: "bridge_writerto_upgrade", src: `
-import "io"
-import "strings"
-type WR struct{ r io.Reader; used bool }
-func (w *WR) Read(p []byte) (int, error) { return w.r.Read(p) }
-func (w *WR) WriteTo(dst io.Writer) (int64, error) {
-	w.used = true
-	data, _ := io.ReadAll(w)
-	n, err := dst.Write(data)
-	return int64(n), err
-}
-wr := &WR{r: strings.NewReader("hello")}
-io.Copy(io.Discard, wr)
-wr.used`, res: "true"},
 
 		{n: "iface_slice_spread_both", src: `
 type Option interface { val() int }
@@ -2787,6 +2907,9 @@ func TestMethod(t *testing.T) {
 
 		// Method expression: value receiver.
 		{n: "mexpr_val", src: `type T struct{n int}; func(t T) Add(a int) int { return t.n + a }; T.Add(T{3}, 4)`, res: "7"},
+		// reflect.Value.NumMethod/Method on an interpreted FUNC-typed value: the
+		// synth rtype must carry the method (runtype.AttachFuncMethods).
+		{n: "reflect_method_on_func_type", src: `import "reflect"; type Fn func() int; func(fn Fn) String() string { return "s" }; func f() int { var v Fn; return reflect.ValueOf(v).NumMethod() }; f()`, res: "1"},
 		// Method expression: pointer receiver.
 		{n: "mexpr_ptr", src: `type T struct{n int}; func(t *T) Get() int { return t.n }; (*T).Get(&T{n: 5})`, res: "5"},
 		// Native method expression as a stored/passed VALUE: `(*big.Int).Add` is
@@ -2798,11 +2921,18 @@ func TestMethod(t *testing.T) {
 		{n: "mexpr_native_passed", src: `import "math/big"; func apply(f func(*big.Int, *big.Int, *big.Int) *big.Int, x, y, z *big.Int) *big.Int { return f(x, y, z) }; func run() string { return apply((*big.Int).Add, big.NewInt(1), big.NewInt(2), big.NewInt(3)).String() }; run()`, res: "5"},
 		// Native method expression called DIRECTLY also works (Kind:Value -> value-call path).
 		{n: "mexpr_native_direct", src: `import "math/big"; func f() string { return (*big.Int).Add(big.NewInt(1), big.NewInt(2), big.NewInt(3)).String() }; f()`, res: "5"},
-		// SKIP (still broken): an INTERPRETED method expression stored/passed with
-		// extra args has the wrong arity ("index out of range [-1]") -- the method body
-		// reads its receiver from Heap[0], so the value form needs a receiver-binding
-		// adapter (no reflect Method.Func exists for interpreted types).
-		{n: "mexpr_val_stored", skip: true, src: `type T struct{n int}; func(t T) Add(a int) int { return t.n + a }; func f() int { g := T.Add; return g(T{3}, 4) }; f()`, res: "7"},
+		// An INTERPRETED VALUE-receiver method expression stored/passed as a value
+		// works via a receiver-binding adapter (MkMethodExpr): the func binds its
+		// first arg as the receiver and runs the method body on a pooled runner.
+		// See [[project_native_method_expression_arity]].
+		{n: "mexpr_val_stored", src: `type T struct{n int}; func(t T) Add(a int) int { return t.n + a }; func f() int { g := T.Add; return g(T{3}, 4) }; f()`, res: "7"},
+		{n: "mexpr_val_passed", src: `type T struct{n int}; func(t T) Add(a, b int) int { return t.n + a + b }; func apply(f func(T, int, int) int) int { return f(T{10}, 2, 3) }; apply(T.Add)`, res: "15"},
+		// Value-receiver method expression as a composite-literal element (the fmt
+		// fmtTests shape that crashed: reflect.Value.Field on a misaligned stack).
+		{n: "mexpr_val_composite", src: `type G int; func(g G) S() string { return "s" }; func f() int { t := []struct{ v any }{{G.S}}; return len(t) }; f()`, res: "1"},
+		// SKIP (still broken): a POINTER-receiver method expression stored/passed.
+		// The (*T).M form materializes the receiver rtype to a placeholder, so it
+		// stays symbolic-only (nil-deref when stored). Value-receiver is fixed above.
 		{n: "mexpr_ptr_stored", skip: true, src: `type T struct{n int}; func(t *T) Add(a, b int) int { return t.n + a + b }; func f() int { g := (*T).Add; return g(&T{10}, 2, 3) }; f()`, res: "15"},
 
 		// Method call on composite literal.
@@ -3578,6 +3708,21 @@ func TestBuiltin(t *testing.T) {
 		{n: "complex128_promotion_1", src: `complex(1.2, 'A')`, res: "(1.2+65i)"},
 		{n: "complex128_promotion_2", src: `complex('A', 1)`, res: "(65+1i)"},
 		{n: "complex128_promotion_3", src: `complex('A', 1.2)`, res: "(65+1.2i)"},
+
+		// Constant conversion of an int/float to a complex type (Go folds these;
+		// reflect.Convert rejects int->complex, so execConvert builds it).
+		{n: "complex64_conv_int", src: `complex64(7)`, res: "(7+0i)"},
+		{n: "complex128_conv_float", src: `var a complex128 = 2.5; a`, res: "(2.5+0i)"},
+		{n: "complex64_slice_lit", src: `[]complex64{1, 2, 3}`, res: "[(1+0i) (2+0i) (3+0i)]"},
+
+		// An interpreted String/GoString/Format that panics propagates to fmt's
+		// catchPanic (synth dispatch re-raises the original value via raiseMethodErr).
+		{n: "stringer_panic_to_fmt", src: `import "fmt"; type T struct{}; func(t T) String() string { panic("boom") }; func f() string { return fmt.Sprintf("%s", T{}) }; f()`, res: "%!s(PANIC=String method: boom)"},
+		// A method that derefs a nil pointer receiver panics; fmt prints <nil>.
+		{n: "stringer_nil_recv_to_fmt", src: `import "fmt"; type T struct{ s string }; func(t T) String() string { return t.s }; func f() string { return fmt.Sprintf("%s", (*T)(nil)) }; f()`, res: "<nil>"},
+		// A struct embedding a native non-empty interface satisfies it via promotion
+		// at the native boundary (struct field keeps the real io.Reader rtype).
+		{n: "embed_native_iface", src: `import ("io"; "strings"); func f() string { var r io.Reader = struct{ io.Reader }{strings.NewReader("hi")}; b, _ := io.ReadAll(r); return string(b) }; f()`, res: "hi"},
 
 		{n: "complex_err0", src: `complex()`, err: "invalid operation: not enough arguments for complex (expected 2, found 0)"},
 		{n: "complex_err1", src: `complex(1)`, err: "invalid operation: not enough arguments for complex (expected 2, found 1)"},

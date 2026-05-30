@@ -3,47 +3,57 @@ package stdlib
 import "github.com/mvm-sh/mvm/goparser"
 
 // errorsGenericShim provides an interpreted definition of errors.AsType, the
-// generic finder added in Go 1.26. It cannot be exposed as a reflect.ValueOf
-// binding (Go generics are not introspectable via reflect), so the rest of the
-// errors package stays a native bridge (stdlib/core/errors.go, patched by
-// stdlib/errorsx) while AsType is supplied here as source and instantiated
-// through the normal generic pipeline.
+// go1.26 generic that cannot be expressed as a reflect.ValueOf binding (the
+// rest of errors is bound natively in stdlib/core/errors.go). It is reached
+// only by interpreted callers; native bridged packages use compiled errors.
 //
-// This is a self-recursive simplification of the upstream AsType+asType pair:
-// it avoids the lazy **E accumulator and the unexported helper, recursing on
-// AsType[E] directly. It is behaviorally equivalent for matching purposes (a
-// fresh As target is allocated per call either way).
+// The body is the verbatim upstream source: it uses only type assertions and
+// builtins, so it references no errors symbol (nativeRefs is nil). Mirrors
+// stdlib/reflect_shim.go.
 const errorsGenericShim = `package errors
 
 func AsType[E error](err error) (E, bool) {
-	for err != nil {
+	if err == nil {
+		var zero E
+		return zero, false
+	}
+	var pe *E // lazily initialized
+	return asType(err, &pe)
+}
+
+func asType[E error](err error, ppe **E) (_ E, _ bool) {
+	for {
 		if e, ok := err.(E); ok {
 			return e, true
 		}
 		if x, ok := err.(interface{ As(any) bool }); ok {
-			var pe E
-			if x.As(&pe) {
-				return pe, true
+			if *ppe == nil {
+				*ppe = new(E)
+			}
+			if x.As(*ppe) {
+				return **ppe, true
 			}
 		}
 		switch x := err.(type) {
 		case interface{ Unwrap() error }:
 			err = x.Unwrap()
+			if err == nil {
+				return
+			}
 		case interface{ Unwrap() []error }:
-			for _, e := range x.Unwrap() {
-				if t, ok := AsType[E](e); ok {
-					return t, true
+			for _, err := range x.Unwrap() {
+				if err == nil {
+					continue
+				}
+				if x, ok := asType(err, ppe); ok {
+					return x, true
 				}
 			}
-			var zero E
-			return zero, false
+			return
 		default:
-			var zero E
-			return zero, false
+			return
 		}
 	}
-	var zero E
-	return zero, false
 }
 `
 

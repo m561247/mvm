@@ -268,36 +268,36 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 			typeName := in[l-2].Str
 			fieldName := in[l-1].Str[1:]
 			ts, _, ok := p.Symbols.Get(typeName, p.scope)
-			if !ok || ts.Type == nil || ts.Type.Rtype == nil {
+			if !ok || ts.Type == nil {
 				return nil, nil, 0, p.undef(typeName, in[l-2])
 			}
-			rt := ts.Type.Rtype
-			if rt.Kind() == reflect.Pointer {
-				rt = rt.Elem()
+			st := ts.Type
+			if st.Kind() == reflect.Pointer {
+				st = st.ElemType
 			}
-			if rt.Kind() != reflect.Struct {
+			if st == nil || st.Kind() != reflect.Struct {
 				return nil, nil, 0, fmt.Errorf("unsafe.Offsetof: %s is not a struct", typeName)
 			}
-			f, ok := rt.FieldByName(fieldName)
-			if !ok {
+			path := st.FieldIndex(fieldName)
+			if path == nil {
 				return nil, nil, 0, fmt.Errorf("unsafe.Offsetof: no field %s in %s", fieldName, typeName)
 			}
-			return constant.MakeUint64(uint64(f.Offset)), p.Symbols["uintptr"].Type, 6, nil
+			return constant.MakeUint64(uint64(st.FieldOffset(path))), p.Symbols["uintptr"].Type, 6, nil
 		}
 
 		// unsafe.Sizeof / unsafe.Alignof: the argument only contributes its
 		// type, so pre-detect common forms whose arg isn't const-evaluable
 		// (Var, composite literal, selector) before the generic args loop.
 		if narg == 1 {
-			if rt, op, consumed, err := p.unsafeSizeArg(in, l); op != "" {
+			if at, op, consumed, err := p.unsafeSizeArg(in, l); op != "" {
 				if err != nil {
 					return nil, nil, 0, err
 				}
 				var val uintptr
 				if op == "Sizeof" {
-					val = rt.Size()
+					val = at.Size()
 				} else {
-					val = uintptr(rt.Align())
+					val = uintptr(at.Align())
 				}
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, consumed, nil
 			}
@@ -306,32 +306,32 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		// len/cap of an array or *array variable (bare or field access) is constant per Go spec.
 		if narg == 1 {
 			var fname string
-			var rt reflect.Type
+			var at *vm.Type
 			var n int
 			switch {
 			case l >= 2 && in[l-1].Tok == lang.Ident && in[l-2].Tok == lang.Ident:
 				if s, _, ok := p.Symbols.Get(in[l-1].Str, p.scope); ok && s.Type != nil {
-					fname, rt, n = in[l-2].Str, s.Type.Rtype, 3
+					fname, at, n = in[l-2].Str, s.Type, 3
 				}
 			case l >= 3 && in[l-1].Tok == lang.Period && in[l-2].Tok == lang.Ident && in[l-3].Tok == lang.Ident:
 				if s, _, ok := p.Symbols.Get(in[l-2].Str, p.scope); ok && s.Type != nil {
-					bt := s.Type.Rtype
+					bt := s.Type
 					if bt.Kind() == reflect.Pointer {
-						bt = bt.Elem()
+						bt = bt.ElemType
 					}
-					if bt.Kind() == reflect.Struct {
-						if f, ok2 := bt.FieldByName(in[l-1].Str[1:]); ok2 {
-							fname, rt, n = in[l-3].Str, f.Type, 4
+					if bt != nil && bt.Kind() == reflect.Struct {
+						if ft := bt.FieldType(in[l-1].Str[1:]); ft != nil {
+							fname, at, n = in[l-3].Str, ft, 4
 						}
 					}
 				}
 			}
-			if rt != nil && (fname == "len" || fname == "cap") {
-				if rt.Kind() == reflect.Pointer {
-					rt = rt.Elem()
+			if at != nil && (fname == "len" || fname == "cap") {
+				if at.Kind() == reflect.Pointer {
+					at = at.ElemType
 				}
-				if rt.Kind() == reflect.Array {
-					return constant.MakeInt64(int64(rt.Len())), nil, n, nil
+				if at != nil && at.Kind() == reflect.Array {
+					return constant.MakeInt64(int64(at.Len())), nil, n, nil
 				}
 			}
 		}
@@ -363,14 +363,14 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 				if argTyp == nil {
 					argTyp = defaultConstType(args[0], p)
 				}
-				if argTyp == nil || argTyp.Rtype == nil {
+				if argTyp == nil || argTyp.Kind() == reflect.Invalid {
 					return nil, nil, 0, fmt.Errorf("unsafe.%s: argument has no type", fname)
 				}
 				var val uintptr
 				if fname == "Sizeof" {
-					val = argTyp.Rtype.Size()
+					val = argTyp.Size()
 				} else {
-					val = uintptr(argTyp.Rtype.Align())
+					val = uintptr(argTyp.Align())
 				}
 				return constant.MakeUint64(uint64(val)), p.Symbols["uintptr"].Type, totalLen + 2 /* Ident + Period */, nil
 			}
@@ -410,6 +410,25 @@ func isUnsignedKind(k reflect.Kind) bool {
 	return k >= reflect.Uint && k <= reflect.Uintptr
 }
 
+// isBasicKind reports whether k is a non-composite Go basic kind.
+func isBasicKind(k reflect.Kind) bool {
+	return (k >= reflect.Bool && k <= reflect.Complex128) || k == reflect.String
+}
+
+// definedOverNativeComposite reports that t is a defined composite (type ipValue
+// net.IP) over a NATIVE underlying with no own symbolic structure -- deferring it
+// (vs the eager native Rtype) lets comp materialize from Base post-attach.
+func definedOverNativeComposite(t *vm.Type) bool {
+	if t.Base == nil || t.Base.Rtype == nil || t.ElemType != nil || t.KeyType != nil || len(t.Fields) != 0 {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Chan, reflect.Map, reflect.Struct:
+		return true
+	}
+	return false
+}
+
 // ErrConstOverflow reports a constant that cannot be represented in its type --
 // the gc "constant X overflows T" compile error. It is a hard parse error so
 // ParseAll does not skip past it (which would otherwise mask it as a later
@@ -433,7 +452,7 @@ func (e ErrConstOverflow) Error() string {
 func (e ErrConstOverflow) ErrPos() int { return e.Pos }
 
 func (p *Parser) overflowErr(cv constant.Value, typ *vm.Type, tok Token) ErrConstOverflow {
-	return ErrConstOverflow{Value: cv.String(), Type: typ.Rtype.String(), Loc: p.Sources.FormatPos(tok.Pos), Pos: tok.Pos}
+	return ErrConstOverflow{Value: cv.String(), Type: typ.String(), Loc: p.Sources.FormatPos(tok.Pos), Pos: tok.Pos}
 }
 
 // OverflowsType reports whether the integer constant cv cannot be represented in
@@ -447,7 +466,7 @@ func OverflowsType(cv constant.Value, typ *vm.Type) bool {
 	if cv == nil || typ == nil {
 		return false
 	}
-	k := typ.Rtype.Kind()
+	k := typ.Kind()
 	signed := k >= reflect.Int && k <= reflect.Int64
 	unsigned := isUnsignedKind(k)
 	if !signed && !unsigned {
@@ -457,7 +476,7 @@ func OverflowsType(cv constant.Value, typ *vm.Type) bool {
 	if i.Kind() != constant.Int {
 		return false // not an integer constant; truncation is a separate concern
 	}
-	bits := uint(typ.Rtype.Size()) * 8 // type sizes are small
+	bits := uint(typ.Size()) * 8 // type sizes are small
 	if unsigned {
 		if constant.Sign(i) < 0 {
 			return true
@@ -481,7 +500,7 @@ func OverflowsType(cv constant.Value, typ *vm.Type) bool {
 // Returns the argument's reflect.Type, the op name ("Sizeof"/"Alignof"),
 // tokens-consumed-including-Call, and any lookup/resolution error. An empty
 // op means no form matched; the caller falls through to the generic path.
-func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, error) {
+func (p *Parser) unsafeSizeArg(in Tokens, l int) (*vm.Type, string, int, error) {
 	// Locate [unsafe][.Sizeof|.Alignof] ending at either l-3 or l-4.
 	var opIdx int
 	switch {
@@ -498,7 +517,7 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 
 	symType := func(tok Token, name string) (*vm.Type, error) {
 		s, _, ok := p.symGet(name)
-		if !ok || s.Type == nil || s.Type.Rtype == nil {
+		if !ok || s.Type == nil || s.Type.Kind() == reflect.Invalid {
 			return nil, p.undef(name, tok)
 		}
 		return s.Type, nil
@@ -511,7 +530,7 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 			if err != nil {
 				return nil, op, 0, err
 			}
-			return t.Rtype, op, 5, nil
+			return t, op, 5, nil
 		case lang.Period:
 			if in[l-2].Tok != lang.Ident {
 				return nil, "", 0, nil
@@ -520,18 +539,19 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 			if err != nil {
 				return nil, op, 0, err
 			}
-			rt := base.Rtype
-			if rt.Kind() == reflect.Pointer {
-				rt = rt.Elem()
+			bt := base
+			if bt.Kind() == reflect.Pointer {
+				bt = bt.ElemType
 			}
-			if rt.Kind() != reflect.Struct {
+			if bt == nil || bt.Kind() != reflect.Struct {
 				return nil, op, 0, fmt.Errorf("unsafe.%s: %s is not a struct", op, in[l-2].Str)
 			}
-			f, ok := rt.FieldByName(in[l-1].Str[1:])
-			if !ok {
-				return nil, op, 0, fmt.Errorf("unsafe.%s: no field %s in %s", op, in[l-1].Str[1:], in[l-2].Str)
+			field := in[l-1].Str[1:]
+			_, ft := bt.FieldLookup(field)
+			if ft == nil {
+				return nil, op, 0, fmt.Errorf("unsafe.%s: no field %s in %s", op, field, in[l-2].Str)
 			}
-			return f.Type, op, 5, nil
+			return ft, op, 5, nil
 		}
 		return nil, "", 0, nil
 	}
@@ -543,7 +563,7 @@ func (p *Parser) unsafeSizeArg(in Tokens, l int) (reflect.Type, string, int, err
 	if err != nil {
 		return nil, op, 0, err
 	}
-	return t.Rtype, op, 4, nil
+	return t, op, 4, nil
 }
 
 func constValue(c constant.Value) any {
@@ -603,19 +623,103 @@ func typedConstValue(c constant.Value, typ *vm.Type) any {
 	if typ == nil || v == nil {
 		return v
 	}
-	return reflect.ValueOf(v).Convert(typ.Rtype).Interface()
+	// A materialized named type keeps the reflect.Convert path so the value
+	// carries that type. Symbolic types (Rtype nil until comp) convert off the
+	// kind, which already enumerates every basic type -- no reflect.Type needed.
+	if typ.Rtype != nil {
+		return reflect.ValueOf(v).Convert(typ.Rtype).Interface()
+	}
+	return basicConst(v, typ.Kind())
+}
+
+// basicConst converts a folded constant (bool/string/int/float64/complex128, as
+// returned by constValue) to the Go value of basic kind k, mirroring
+// reflect.Value.Convert without materializing a reflect.Type.
+func basicConst(v any, k reflect.Kind) any {
+	switch k {
+	case reflect.Bool:
+		return v
+	case reflect.String:
+		if i, ok := v.(int); ok {
+			return string(rune(i))
+		}
+		return v
+	case reflect.Int:
+		return int(asInt64(v))
+	case reflect.Int8:
+		return int8(asInt64(v))
+	case reflect.Int16:
+		return int16(asInt64(v))
+	case reflect.Int32:
+		return int32(asInt64(v))
+	case reflect.Int64:
+		return asInt64(v)
+	case reflect.Uint:
+		return uint(asInt64(v))
+	case reflect.Uint8:
+		return uint8(asInt64(v))
+	case reflect.Uint16:
+		return uint16(asInt64(v))
+	case reflect.Uint32:
+		return uint32(asInt64(v))
+	case reflect.Uint64:
+		return uint64(asInt64(v))
+	case reflect.Uintptr:
+		return uintptr(asInt64(v))
+	case reflect.Float32:
+		return float32(asFloat64(v))
+	case reflect.Float64:
+		return asFloat64(v)
+	case reflect.Complex64:
+		return complex64(asComplex128(v))
+	case reflect.Complex128:
+		return asComplex128(v)
+	}
+	return v
+}
+
+func asInt64(v any) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	}
+	return 0
+}
+
+func asFloat64(v any) float64 {
+	switch x := v.(type) {
+	case int:
+		return float64(x)
+	case float64:
+		return x
+	}
+	return 0
+}
+
+func asComplex128(v any) complex128 {
+	switch x := v.(type) {
+	case int:
+		return complex(float64(x), 0)
+	case float64:
+		return complex(x, 0)
+	case complex128:
+		return x
+	}
+	return 0
 }
 
 func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
-	rt := typ.Rtype
+	k := typ.Kind()
 	switch {
-	case rt.Kind() >= reflect.Int && rt.Kind() <= reflect.Int64:
+	case k >= reflect.Int && k <= reflect.Int64:
 		if cv.Kind() == constant.Float {
 			f, _ := constant.Float64Val(cv)
 			return constant.MakeInt64(int64(f))
 		}
 		return constant.ToInt(cv)
-	case isUnsignedKind(rt.Kind()):
+	case isUnsignedKind(k):
 		if cv.Kind() == constant.Float {
 			f, _ := constant.Float64Val(cv)
 			return constant.MakeUint64(uint64(f))
@@ -623,11 +727,11 @@ func constConvert(cv constant.Value, typ *vm.Type) constant.Value {
 		// go/constant has no ToUint; extract int64 bits for correct wraparound.
 		v, _ := constant.Int64Val(constant.ToInt(cv))
 		return constant.MakeUint64(uint64(v)) // intentional wraparound
-	case rt.Kind() == reflect.Float32 || rt.Kind() == reflect.Float64:
+	case k == reflect.Float32 || k == reflect.Float64:
 		return constant.ToFloat(cv)
-	case rt.Kind() == reflect.Complex64 || rt.Kind() == reflect.Complex128:
+	case k == reflect.Complex64 || k == reflect.Complex128:
 		return constant.ToComplex(cv)
-	case rt.Kind() == reflect.String:
+	case k == reflect.String:
 		if cv.Kind() == constant.Int {
 			v, _ := constant.Int64Val(cv)
 			return constant.MakeString(string(rune(v))) // intentional int-to-rune conversion
@@ -731,7 +835,7 @@ func FoldBinary(op lang.Token, x constant.Value, xtyp *vm.Type, y constant.Value
 		cv := constant.Shift(x, tok, uint(s))
 		// go/constant uses arithmetic right-shift, which sign-extends negative
 		// values produced by unary ^ on unsigned constants. Reinterpret as unsigned.
-		if op == lang.Shr && xtyp != nil && isUnsignedKind(xtyp.Rtype.Kind()) {
+		if op == lang.Shr && xtyp != nil && isUnsignedKind(xtyp.Kind()) {
 			v, _ := constant.Int64Val(cv)
 			cv = constant.MakeUint64(uint64(v)) // reinterpret signed bits as unsigned
 		}
@@ -763,9 +867,9 @@ func FoldUnary(op lang.Token, x constant.Value, xtyp *vm.Type) (constant.Value, 
 	// go/constant has no unsigned integer kind: ^ on 0 gives -1 (arbitrary
 	// precision), not the width-limited complement Go requires for typed
 	// unsigned constants. Recompute using the correct bit width.
-	if op == lang.BitComp && xtyp != nil && isUnsignedKind(xtyp.Rtype.Kind()) {
+	if op == lang.BitComp && xtyp != nil && isUnsignedKind(xtyp.Kind()) {
 		v, _ := constant.Uint64Val(x)
-		bits := xtyp.Rtype.Size() * 8
+		bits := xtyp.Size() * 8
 		mask := ^uint64(0) >> (64 - bits)
 		cv = constant.MakeUint64(^v & mask)
 	}
@@ -868,7 +972,7 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 			if rtype, ok := v.UnwrapType(); ok {
 				nv := vm.NewValue(rtype)
 				p.SymSet(k, &symbol.Symbol{Index: symbol.UnsetAddr, Name: k, Kind: symbol.Type, PkgPath: pp, Value: nv, Type: &vm.Type{Name: rtype.Name(), Rtype: rtype}}) // mvm:symkey-ok: dot-import binds bare names
-			} else {
+			} else if v.IsValid() {
 				// Mirror the pkg-qualified value-load path (compiler.go's Period
 				// handler) which tags the Symbol with its rtype, so a method
 				// expression like `CommandLine.Parse(...)` finds the receiver type.
@@ -894,12 +998,20 @@ func (p *Parser) parsePackageDecl(in Tokens) (out Tokens, err error) {
 	if in[1].Tok != lang.Ident {
 		return out, p.errAt(in[1], "expected package name, got %s", in[1].Tok)
 	}
-	if p.pkgName != "" && p.pkgName != in[1].Str {
+	// X and its external test package X_test share a parser unit under
+	// `mvm test .`; accept that transition so each file's types keep their own
+	// PkgPath. Any other mismatch is a genuine two-packages-in-a-dir error.
+	if p.pkgName != "" && p.pkgName != in[1].Str && !isTestPkgPair(p.pkgName, in[1].Str) {
 		return out, p.errAt(in[1], "package %s; expected %s", in[1].Str, p.pkgName)
 	}
 	p.pkgName = in[1].Str
 	p.backfillPlaceholderPkgPath()
 	return out, err
+}
+
+// isTestPkgPair reports whether one of a, b is the other plus "_test".
+func isTestPkgPair(a, b string) bool {
+	return a == b+"_test" || b == a+"_test"
 }
 
 // backfillPlaceholderPkgPath sets the PkgPath of every still-empty type
@@ -998,7 +1110,7 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 
 	switch {
 	case placeholder != nil:
-		if placeholder.Rtype.Kind() == reflect.Interface {
+		if placeholder.Kind() == reflect.Interface {
 			placeholder.IfaceMethods = typ.IfaceMethods
 			placeholder.TypeElems = typ.TypeElems
 			placeholder.Comparable = typ.Comparable
@@ -1006,12 +1118,19 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		} else {
 			placeholder.SetFields(typ)
 		}
+		// Func-local types miss backfillPlaceholderPkgPath (it runs at the
+		// package decl, before any local type exists); set PkgPath here so %T
+		// renders <pkg>.<Name>. Guard on empty preserves backfilled top-level
+		// types and a reused placeholder.
+		if placeholder.PkgPath == "" {
+			placeholder.PkgPath = p.pkgName
+		}
 		if s, ok := p.Symbols[name]; ok {
-			s.Value = vm.NewValue(placeholder.Rtype)
+			s.Value = typeTokenValue(placeholder)
 		}
 	case isAlias:
 		// `type X = T` aliases share identity with T.
-		p.SymAdd(symbol.UnsetAddr, name, vm.NewValue(typ.Rtype), symbol.Type, typ)
+		p.SymAdd(symbol.UnsetAddr, name, typeTokenValue(typ), symbol.Type, typ)
 	default:
 		// `type X T` defines a new named type.
 		// Clone so we don't mutate the source type's Name/Methods.
@@ -1019,6 +1138,10 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		nt.Name = in[0].Str
 		nt.Methods = nil
 		nt.Placeholder = false
+		if isBasicKind(nt.Kind()) {
+			// Stay symbolic: comp materializes from Base, attach adds the methods.
+			nt.Rtype = nil
+		}
 		if nt.PkgPath == "" {
 			nt.PkgPath = p.pkgName
 		}
@@ -1027,7 +1150,11 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		} else {
 			nt.Base = typ
 		}
-		p.SymAdd(symbol.UnsetAddr, name, vm.NewValue(nt.Rtype), symbol.Type, &nt)
+		if definedOverNativeComposite(&nt) {
+			nt.CaptureKind() // Kind() must survive the Rtype nil
+			nt.Rtype = nil   // defer; comp materializes from Base post-attach
+		}
+		p.SymAdd(symbol.UnsetAddr, name, typeTokenValue(&nt), symbol.Type, &nt)
 	}
 	return out, err
 }
@@ -1051,18 +1178,26 @@ func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 		typ := types[i]
 		typName := typ.Name
 		if typName == "" {
-			typName = typ.Rtype.String()
+			typName = typ.String()
 		}
-		if typ.Rtype.Kind() == reflect.Pointer {
+		if typ.Kind() == reflect.Pointer {
 			typName = "*" + typName // Distinguish "*T" from "T".
 		}
-		// Resolve a symbol-table key whose Type Symbol points at typ.Rtype.
-		// Pointer-identity matters: multiple pkgs can declare the same short
-		// name (e.g. internal/language.Tag vs language.Tag) with different
-		// rtypes; picking a sibling pkg's same-named type would emit Fnew of
-		// the wrong rtype and trip reflect.Set in the SetLocal below.
+		// Resolve a symbol-table key whose Type Symbol denotes typ.
+		// Identity matters: multiple pkgs can declare the same short name (e.g.
+		// internal/language.Tag vs language.Tag); picking a sibling pkg's
+		// same-named type would emit Fnew of the wrong type and trip reflect.Set
+		// in the SetLocal below. Prefer *Type pointer identity (survives nil
+		// Rtype before materialization), falling back to rtype identity for
+		// native types that share a *Type clone but carry the same rtype.
 		matches := func(s *symbol.Symbol) bool {
-			return s != nil && s.Kind == symbol.Type && s.Type != nil && s.Type.Rtype == typ.Rtype
+			if s == nil || s.Kind != symbol.Type || s.Type == nil {
+				return false
+			}
+			if s.Type == typ {
+				return true
+			}
+			return s.Type.Rtype != nil && s.Type.Rtype == typ.Rtype
 		}
 		typKey := ""
 		if sym, sc, ok := p.symGet(typName); ok && matches(sym) {
@@ -1097,7 +1232,7 @@ func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 			// Type not yet in the symbol table; register it now at the
 			// canonical pkgKey (qualified for imported pkgs, bare for main/REPL).
 			typKey = p.pkgKey(typName)
-			p.SymAdd(symbol.UnsetAddr, typKey, vm.NewValue(typ.Rtype), symbol.Type, typ)
+			p.SymAdd(symbol.UnsetAddr, typKey, typeTokenValue(typ), symbol.Type, typ)
 		}
 		out = append(out, newIdent(v, 0))
 		// Carry the resolved type so the compiler resolves the zero-init by
