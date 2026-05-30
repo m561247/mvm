@@ -66,6 +66,8 @@ var shapes = []shape{
 	// fmt.Scanner.Scan; fmt.ScanState is a non-empty interface, so the stub
 	// must carry its exact type for the call ABI.
 	{ID: "S19", Params: ", st fmt.ScanState, verb rune", ArgList: ", st, verb", Results: "error", Imports: []string{"fmt"}},
+	{ID: "S20", Params: ", value string", ArgList: ", value", Results: "error"}, // flag.Value.Set
+	{ID: "S21", Results: "bool"}, // flag.boolFlag.IsBoolFlag
 }
 
 func main() {

@@ -266,6 +266,10 @@ func toSynthMethods(
 			handler = makeHandlerS18(m, t, s.method, s.name, s.ptrRecv)
 		case stubs.ShapeS19:
 			handler = makeHandlerS19(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS20:
+			handler = makeHandlerS20(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS21:
+			handler = makeHandlerS21(m, t, s.method, s.name, s.ptrRecv)
 		}
 		out[i] = stubs.Method{
 			Name:     s.name,
@@ -353,6 +357,8 @@ func detectShape(sig reflect.Type) (stubs.Shape, bool) {
 		return stubs.ShapeS7, true
 	case nin == 0 && nout == 1 && sig.Out(0).Kind() == reflect.Int:
 		return stubs.ShapeS8, true
+	case nin == 0 && nout == 1 && sig.Out(0).Kind() == reflect.Bool:
+		return stubs.ShapeS21, true
 	case nin == 0 && nout == 1 && isAnyType(sig.Out(0)):
 		return stubs.ShapeS12, true
 	case nin == 0 && nout == 2 &&
@@ -367,6 +373,9 @@ func detectShape(sig reflect.Type) (stubs.Shape, bool) {
 	case nin == 1 && nout == 1 &&
 		isByteSlice(sig.In(0)) && isErrorType(sig.Out(0)):
 		return stubs.ShapeS3, true
+	case nin == 1 && nout == 1 &&
+		sig.In(0).Kind() == reflect.String && isErrorType(sig.Out(0)):
+		return stubs.ShapeS20, true
 	case nin == 1 && nout == 1 &&
 		isErrorType(sig.In(0)) && sig.Out(0).Kind() == reflect.Bool:
 		return stubs.ShapeS4, true
@@ -756,6 +765,36 @@ func makeHandlerS19(m *Machine, t *Type, method Method, name string, ptrRecv boo
 			return errors.New("synth: S19 dispatch produced wrong arity")
 		}
 		return reflectToError(out[0])
+	}
+}
+
+// makeHandlerS20 bridges shape S20: (T).Set(string) error.
+func makeHandlerS20(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS20 {
+	methodSig := method.Rtype
+	return func(recv unsafe.Pointer, value string) error {
+		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		argv := []reflect.Value{reflect.ValueOf(value)}
+		out, err := callMethod(m, t, name, rv, method, methodSig, argv)
+		if err != nil {
+			return err
+		}
+		if len(out) != 1 {
+			return errors.New("synth: S20 dispatch produced wrong arity")
+		}
+		return reflectToError(out[0])
+	}
+}
+
+// makeHandlerS21 bridges shape S21: (T).IsBoolFlag() bool.
+func makeHandlerS21(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS21 {
+	methodSig := method.Rtype
+	return func(recv unsafe.Pointer) bool {
+		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
+		if err != nil || len(out) != 1 {
+			return false
+		}
+		return out[0].Bool()
 	}
 }
 
