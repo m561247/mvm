@@ -379,3 +379,52 @@ func main() {
 		t.Errorf("SlotsUsedS1 delta = %d, want %d (T + *T; alias dedup broken if 4)", got, want)
 	}
 }
+
+// An interpreted UnmarshalJSON returning a concrete struct error must
+// propagate through the synth S3 bridge without an IsNil-on-struct panic
+// (the github.com/google/uuid TestJSONUnmarshal regression).
+func TestSynthUnmarshalConcreteError(t *testing.T) {
+	t.Setenv("MVM_SYNTH", "1")
+
+	const src = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type lenError struct{ n int }
+
+func (e lenError) Error() string { return fmt.Sprintf("bad length %d", e.n) }
+
+type Tagged struct{ X int }
+
+func (t *Tagged) UnmarshalJSON(data []byte) error {
+	if len(data) != 99 {
+		return lenError{n: len(data)}
+	}
+	t.X = len(data)
+	return nil
+}
+
+func main() {
+	var v Tagged
+	err := json.Unmarshal([]byte("[1,2,3,4]"), &v)
+	if err == nil {
+		fmt.Print("no error")
+		return
+	}
+	fmt.Print("err: ", err)
+}
+`
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	if _, err := i.Eval("a.go", src); err != nil {
+		t.Fatalf("Eval: %v\nstderr: %s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "err: bad length 9"; got != want {
+		t.Errorf("stdout = %q, want %q\nstderr: %s", got, want, stderr.String())
+	}
+}

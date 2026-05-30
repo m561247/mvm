@@ -489,14 +489,10 @@ func makeHandlerS2(m *Machine, t *Type, method Method, name string, ptrRecv bool
 			return nil, errors.New("synth: S2 dispatch produced wrong arity")
 		}
 		var data []byte
-		if !out[0].IsNil() {
+		if out[0].IsValid() && (out[0].Kind() != reflect.Slice || !out[0].IsNil()) {
 			data = out[0].Bytes()
 		}
-		var rerr error
-		if !out[1].IsNil() {
-			rerr, _ = out[1].Interface().(error)
-		}
-		return data, rerr
+		return data, reflectToError(out[1])
 	}
 }
 
@@ -512,11 +508,8 @@ func makeHandlerS3(m *Machine, t *Type, method Method, name string, ptrRecv bool
 		if len(out) != 1 {
 			return errors.New("synth: S3 dispatch produced wrong arity")
 		}
-		if out[0].IsNil() {
-			return nil
-		}
-		rerr, _ := out[0].Interface().(error)
-		return rerr
+		// reflectToError, not bare IsNil: the return may be a concrete struct error.
+		return reflectToError(out[0])
 	}
 }
 
