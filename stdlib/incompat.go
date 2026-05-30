@@ -12,6 +12,11 @@ package stdlib
 //
 // Drop the entry the moment the underlying limitation is fixed.
 var Incompat = map[string]map[string]string{
+	"crypto": {
+		// Signer.Sign's signature matches no synth method shape, so an
+		// interpreted signer stays methodless and fails reflect.Call.
+		"TestSignMessage": "interpreted type can't satisfy native crypto.Signer via reflect.Call (synth attaches only fixed method shapes)",
+	},
 	"flag": {
 		// flag.isZeroValue builds reflect.New(BridgeFlagValue).String() to
 		// compare against DefValue; the freshly-zeroed bridge has nil func
