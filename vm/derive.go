@@ -507,6 +507,13 @@ func LiveFieldRtype(f *mtype.Type) reflect.Type {
 	// Derived type over a clone elem/key: re-derive from the canonical inner to
 	// pick up cascade updates landed only on the canonical's derived chain.
 	if canonical.ElemType != nil && canonical.ElemType.Base != nil {
+		// A NAMED value-composite (e.g. `type Trace []Frame`) carries its own
+		// method-bearing rtype; re-deriving from the element would drop the name
+		// and methods. Its element is kept fresh by PatchSynthSliceElem. Pointers
+		// have no identity beyond *elem, so they always re-derive.
+		if canonical.Name != "" && canonical.Rtype.Kind() != reflect.Pointer {
+			return canonical.Rtype
+		}
 		elemC := CanonicalType(canonical.ElemType)
 		switch canonical.Rtype.Kind() {
 		case reflect.Pointer:

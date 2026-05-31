@@ -428,3 +428,49 @@ func main() {
 		t.Errorf("stdout = %q, want %q\nstderr: %s", got, want, stderr.String())
 	}
 }
+
+// A named slice type with a method, used as a struct field, must keep its named
+// identity (and method set) -- not degrade to the underlying []elem. fmt must
+// dispatch the named type's Format, not default slice formatting.
+// (github.com/pkg/errors TestStackTraceFormat regression.)
+func TestSynthNamedSliceField(t *testing.T) {
+	t.Setenv("MVM_SYNTH", "1")
+
+	const src = `package main
+
+import "fmt"
+
+type Frame int
+
+func (f Frame) Format(s fmt.State, verb rune) { fmt.Fprintf(s, "F%d", int(f)) }
+
+type Trace []Frame
+
+func (t Trace) Format(s fmt.State, verb rune) {
+	if s.Flag('+') {
+		for _, f := range t {
+			fmt.Fprint(s, "\n")
+			f.Format(s, verb)
+		}
+		return
+	}
+	fmt.Fprint(s, "[bare]")
+}
+
+func main() {
+	t := Trace{Frame(1), Frame(2)}
+	box := struct{ Tr Trace }{t}
+	fmt.Printf("%T|%+v|%v", box.Tr, box.Tr, box.Tr)
+}
+`
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	if _, err := i.Eval("a.go", src); err != nil {
+		t.Fatalf("Eval: %v\nstderr: %s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "main.Trace|\nF1\nF2|[bare]"; got != want {
+		t.Errorf("stdout = %q, want %q\nstderr: %s", got, want, stderr.String())
+	}
+}
