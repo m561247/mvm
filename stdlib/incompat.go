@@ -67,7 +67,8 @@ func SkipReason(pkgPath, testName string) string {
 // caller set it): their stress tests loop 1e5-1e8 times -- minutes under the
 // interpreter. Only list pkgs whose tests scale down under -short, not skip.
 var ShortByDefault = map[string]bool{
-	"sync/atomic": true,
+	"sync/atomic":   true,
+	"crypto/subtle": true,
 }
 
 // ForceShort reports whether pkgPath's tests should default to -short.
