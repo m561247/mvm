@@ -3475,6 +3475,18 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 		if pf, ok := val.ref.Interface().(MvmFunc); ok {
 			return pf.GF
 		}
+		// Storing into an interface slot narrower than interface{} (e.g.
+		// image.Image): bridge an mvm Iface to the concrete it wraps, or unwrap
+		// an interface{}-boxed value through its element -- both to satisfy
+		// reflect assignability. Mirrors reflectForSend.
+		if funcType.Kind() == reflect.Interface && funcType != AnyRtype {
+			if val.IsIface() {
+				return m.bridgeIface(val.IfaceVal(), funcType)
+			}
+			if rv := val.Reflect(); rv.IsValid() && rv.Kind() == reflect.Interface && rv.Type() != funcType {
+				return interfaceToInterface(rv, funcType)
+			}
+		}
 		return numReflect(funcType, val)
 	}
 	rv := val.Reflect()
