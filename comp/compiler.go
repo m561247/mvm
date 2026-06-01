@@ -1001,6 +1001,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			leftStart := codeStarts[len(stack)-2]
+			rightStart := codeStarts[len(stack)-1]
 			right, left := pop(), pop()
 			if h, err := foldBinaryConst(t, left, right, leftStart); err != nil {
 				return err
@@ -1011,12 +1012,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			typ := arithmeticOpType(right, left)
-			// emitNumConvert (not emitConstConvert) so a numeric operand mvm
-			// models as typed but Go treats as untyped -- e.g. math.MaxUint64 --
-			// widens, matching the comparison paths. A genuine typed-var
-			// mismatch has already errored above.
-			c.emitNumConvert(t, typ, symbol.Vtype(right), 0)
-			c.emitNumConvert(t, typ, symbol.Vtype(left), 1)
+			c.convertOperand(t, right, rightStart, typ, 0)
+			c.convertOperand(t, left, leftStart, typ, 1)
 			push(&symbol.Symbol{Kind: constKind(right, left), Type: typ})
 			switch t.Tok {
 			case lang.Add:
@@ -1183,6 +1180,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			leftStart := codeStarts[len(stack)-2]
+			s2Start := codeStarts[len(stack)-1]
 			s2, s1 := pop(), pop()
 			if h, err := foldBinaryConst(t, s1, s2, leftStart); err != nil {
 				return err
@@ -1193,8 +1191,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			typ := arithmeticOpType(s2, s1)
-			c.emitNumConvert(t, typ, s2.Type, 0)
-			c.emitNumConvert(t, typ, s1.Type, 1)
+			c.convertOperand(t, s2, s2Start, typ, 0)
+			c.convertOperand(t, s1, leftStart, typ, 1)
 			push(&symbol.Symbol{Kind: symbol.Value, Type: booleanOpType(s2, s1)})
 			switch t.Tok {
 			case lang.Greater:
@@ -1220,6 +1218,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			leftStart := codeStarts[len(stack)-2]
+			s2Start := codeStarts[len(stack)-1]
 			s2, s1 := pop(), pop()
 			if h, err := foldBinaryConst(t, s1, s2, leftStart); err != nil {
 				return err
@@ -1230,8 +1229,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			typ := arithmeticOpType(s2, s1)
-			c.emitNumConvert(t, typ, s2.Type, 0)
-			c.emitNumConvert(t, typ, s1.Type, 1)
+			c.convertOperand(t, s2, s2Start, typ, 0)
+			c.convertOperand(t, s1, leftStart, typ, 1)
 			push(&symbol.Symbol{Type: booleanOpType(s2, s1)})
 			c.emit(t, vm.Equal)
 			c.emit(t, vm.Not)
@@ -2015,6 +2014,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			leftStart := codeStarts[len(stack)-2]
+			s2Start := codeStarts[len(stack)-1]
 			s2, s1 := pop(), pop()
 			if h, err := foldBinaryConst(t, s1, s2, leftStart); err != nil {
 				return err
@@ -2025,8 +2025,8 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				return err
 			}
 			typ := arithmeticOpType(s2, s1)
-			c.emitNumConvert(t, typ, s2.Type, 0)
-			c.emitNumConvert(t, typ, s1.Type, 1)
+			c.convertOperand(t, s2, s2Start, typ, 0)
+			c.convertOperand(t, s1, leftStart, typ, 1)
 			push(&symbol.Symbol{Type: booleanOpType(s2, s1)})
 			c.emit(t, vm.Equal)
 
@@ -3001,12 +3001,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 	return err
 }
 
-// errIfMismatch enforces gc's rule that a binary numeric op needs identical
-// operand types unless one side is an untyped constant (Go spec, Operators).
-// It fires only between operands whose static type mvm tracks reliably (see
-// isVarKind), so it never rejects valid code that mixes a typed var with an
-// untyped stdlib constant (e.g. f >= math.MaxUint64), nor touches interface,
-// pointer, nil or string comparisons.
+// errIfMismatch rejects a numeric binary op on two differently-typed operands,
+// as gc does. Gated to isVarKind operands so a typed var mixed with an untyped
+// stdlib constant (f >= math.MaxUint64) and interface/nil/string compares pass.
 func (c *Compiler) errIfMismatch(t goparser.Token, left, right *symbol.Symbol) error {
 	if !isVarKind(left) || !isVarKind(right) {
 		return nil
@@ -3023,9 +3020,8 @@ func isVarKind(s *symbol.Symbol) bool {
 	case symbol.Var, symbol.LocalVar:
 		return true
 	case symbol.Value:
-		// An anonymous Value is a computed temporary with a reliable static
-		// type; a named Value is a package binding that may be an untyped
-		// constant mvm models as typed, so leave it lenient.
+		// Anonymous Value: a computed temporary (reliable type). A named Value
+		// is a package binding, maybe an untyped const mvm models as typed.
 		return s.Name == ""
 	}
 	return false
@@ -3097,6 +3093,39 @@ func (c *Compiler) emitNumConvert(t goparser.Token, lhsType, rhsType *vm.Type, d
 	if isNumericConvType(lhsType) && isNumericConvType(rhsType) {
 		c.emit(t, vm.Convert, c.typeSym(lhsType).Index, depth)
 	}
+}
+
+// convertOperand coerces a binary-op operand to typ: an untyped constant folds
+// at compile time (foldConstLoad), anything else converts at runtime via Convert.
+func (c *Compiler) convertOperand(t goparser.Token, s *symbol.Symbol, off int, typ *vm.Type, depth int) {
+	st := symbol.Vtype(s)
+	if typ == nil || st == nil || typ.Identical(st) || !isNumericConvType(typ) || !isNumericConvType(st) {
+		return
+	}
+	if c.foldConstLoad(s, off, typ) {
+		return
+	}
+	c.emit(t, vm.Convert, c.typeSym(typ).Index, depth)
+}
+
+// foldConstLoad converts a constant operand to typ at compile time, rewriting
+// its single load instruction at off. Declines (false) for a non-constant, an
+// unrecognized load, or a value overflowing a sized integer typ.
+func (c *Compiler) foldConstLoad(s *symbol.Symbol, off int, typ *vm.Type) bool {
+	if s.Kind != symbol.Const || s.Cval == nil || off < 0 || off >= len(c.Code) {
+		return false
+	}
+	if op := c.Code[off].Op; op != vm.Push && op != vm.GetGlobal {
+		return false
+	}
+	if isOverflowCheckedType(typ) && goparser.OverflowsType(s.Cval, typ) {
+		return false
+	}
+	cv := goparser.ConstConvert(s.Cval, typ)
+	val := vm.ValueOf(goparser.TypedConstValue(cv, typ))
+	c.Code[off] = c.constLoadInstr(val, typ, c.Code[off].Pos)
+	s.Cval, s.Value, s.Type = cv, val, typ
+	return true
 }
 
 func booleanOpType(_, _ *symbol.Symbol) *vm.Type { return vm.TypeOf(true) }
@@ -3337,17 +3366,22 @@ func isOverflowCheckedType(typ *vm.Type) bool {
 // immediate Push for a signed integer that fits int32, otherwise a GetGlobal of
 // a fresh data slot (floats, strings, wide and unsigned ints).
 func (c *Compiler) emitConstLoad(t goparser.Token, val vm.Value, typ *vm.Type) {
+	c.Code = append(c.Code, c.constLoadInstr(val, typ, vm.Pos(t.Pos)))
+}
+
+// constLoadInstr builds (without appending) the single load instruction for val
+// of type typ -- see emitConstLoad.
+func (c *Compiler) constLoadInstr(val vm.Value, typ *vm.Type, pos vm.Pos) vm.Instruction {
 	if typ != nil {
 		if k := typ.Kind(); k >= reflect.Int && k <= reflect.Int64 {
 			if v := val.Int(); v >= -1<<31 && v < 1<<31 {
-				c.emit(t, vm.Push, int(v))
-				return
+				return vm.Instruction{Op: vm.Push, A: int32(v), Pos: pos}
 			}
 		}
 	}
 	di := len(c.Data)
 	c.Data = append(c.Data, val)
-	c.emit(t, vm.GetGlobal, di)
+	return vm.Instruction{Op: vm.GetGlobal, A: int32(di), Pos: pos}
 }
 
 // emitConstImm emits a constant identifier as an immediate Push when it is a

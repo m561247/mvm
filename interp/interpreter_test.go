@@ -11,6 +11,7 @@ import (
 	"github.com/mvm-sh/mvm/lang/golang"
 	"github.com/mvm-sh/mvm/stdlib"
 	_ "github.com/mvm-sh/mvm/stdlib/all"
+	"github.com/mvm-sh/mvm/vm"
 )
 
 type etest struct {
@@ -164,6 +165,8 @@ func TestNumericWidening(t *testing.T) {
 		{n: "float64_eq_int_const", src: `var v float64 = 10.0; v == 10`, res: "true"},
 		{n: "float64_neq_int_const", src: `var v float64 = 11.0; v != 10`, res: "true"},
 
+		// #30: two differently-typed numeric vars error like gc (no implicit
+		// widen); only an untyped constant operand widens.
 		{n: "int_var_div_float_var", src: `a := 10; b := 12.5; a / b`, err: "mismatched types int and float64"},
 		{n: "int_var_add_float_var", src: `a := 10; b := 12.5; a + b`, err: "mismatched types int and float64"},
 		{n: "float_var_lt_int_var", src: `a := 10; b := 12.5; b < a`, err: "mismatched types float64 and int"},
@@ -171,8 +174,7 @@ func TestNumericWidening(t *testing.T) {
 		{n: "named_int_add_int_var", src: `type I int; var x I = 1; y := 2; x + y`, err: "mismatched types main.I and int"},
 		{n: "computed_int_div_float_var", src: `a := 3; b := 1.5; (a*2) / b`, err: "mismatched types int and float64"},
 		{n: "float_ge_maxuint64_const", src: `import "math"; var f float64 = 42; f >= math.MaxUint64`, res: "false"},
-		// The same untyped const must widen in arithmetic too, not have its uint64
-		// bits read as a float (that gave NaN; x == x is false only for NaN).
+		// Untyped const widens in arithmetic too (was NaN; x == x is false only for NaN).
 		{n: "float_add_maxuint64_const", src: `import "math"; var f float64 = 42; x := f + math.MaxUint64; x == x`, res: "true"},
 
 		// Float equality must follow IEEE, not raw bit equality: NaN != NaN and
@@ -181,6 +183,45 @@ func TestNumericWidening(t *testing.T) {
 		{n: "nan_eq_self_false", src: `import "math"; x := math.NaN(); x == x`, res: "false"},
 		{n: "neg_zero_eq_pos_zero", src: `import "math"; math.Copysign(0, -1) == 0.0`, res: "true"},
 	})
+}
+
+// TestConstConvertFolding checks that an untyped-constant operand folds to its
+// context type at compile time (no runtime Convert), counting Convert ops in the
+// compile-only bytecode. Value tests can't catch this -- a runtime Convert is
+// also correct.
+func TestConstConvertFolding(t *testing.T) {
+	count := func(src string) int {
+		intp := interp.NewInterpreter(golang.GoSpec)
+		intp.ImportPackageValues(stdlib.Values)
+		if err := intp.Compile("test", src); err != nil {
+			t.Fatalf("compile %q: %v", src, err)
+		}
+		n := 0
+		for _, ins := range intp.Code {
+			if ins.Op == vm.Convert {
+				n++
+			}
+		}
+		return n
+	}
+	cases := []struct {
+		name, src string
+		want      int
+	}{
+		{"baseline", `1`, 0},
+		{"var_add_const", `b := 12.5; b + 2`, 0},
+		{"const_add_var", `b := 12.5; 2 + b`, 0}, // const buried below the var load
+		{"var_lt_const", `var v float64 = 5.5; v < 10`, 0},
+		{"const_lt_var", `var v float64 = 5.5; 10 < v`, 0},
+		{"var_eq_const", `var v float64 = 10.0; v == 10`, 0},
+		{"explicit_conv", `a := 10; b := 12.5; float64(a) / b`, 1}, // the explicit float64(a)
+		{"named_pkg_const", `import "math"; var f float64 = 42; f >= math.MaxUint64`, 2},
+	}
+	for _, c := range cases {
+		if got := count(c.src); got != c.want {
+			t.Errorf("%s: %q Convert count = %d, want %d", c.name, c.src, got, c.want)
+		}
+	}
 }
 
 func TestParseErrorPos(t *testing.T) {
