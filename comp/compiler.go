@@ -2452,6 +2452,12 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					// Swap 0 1: put code addr below cell (MkClosure convention: code at sp-n-1).
 					// MkClosure 1: produce Closure{code, [receiver_cell]}.
 					c.emit(t, vm.HeapAlloc)
+					if m.Index == symbol.UnsetAddr {
+						// Method instantiated during this Phase-2 statement (e.g. (*Generic[T])(x).M()); its body is drained after it.
+						// Reserve the global slot now so GetGlobal references it and the later Label fills it.
+						m.Index = len(c.Data)
+						c.Data = append(c.Data, m.Value)
+					}
 					c.emit(t, vm.GetGlobal, m.Index)
 					c.emit(t, vm.Swap, 0, 1)
 					c.emit(t, vm.MkClosure, 1)
