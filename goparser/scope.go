@@ -94,6 +94,14 @@ func (p *Parser) popScope() {
 	p.scope = p.scope[:j]
 }
 
+// ctrlFrame is one active for/switch/select. stop is set only for range loops,
+// letting a labeled break/continue unwind the iterators of crossed ranges.
+type ctrlFrame struct {
+	userLabel   string // labelName form, "" if none
+	hasContinue bool   // for-loops only (continue targets)
+	stop        *Token // range Stop token, else nil
+}
+
 func (p *Parser) pushBreakScope(prefix, pendingLabel string, hasContinue bool) func() {
 	label := prefix + strconv.Itoa(p.labelCount[p.scope])
 	p.labelCount[p.scope]++
@@ -110,8 +118,50 @@ func (p *Parser) pushBreakScope(prefix, pendingLabel string, hasContinue bool) f
 		}
 		p.labeledJump[pendingLabel] = [2]string{cont, p.breakLabel}
 	}
+	p.ctrlStack = append(p.ctrlStack, ctrlFrame{userLabel: pendingLabel, hasContinue: hasContinue})
 	return func() {
+		p.ctrlStack = p.ctrlStack[:len(p.ctrlStack)-1]
 		p.breakLabel, p.continueLabel = savedBreak, savedContinue
 		p.popScope()
 	}
+}
+
+// markRangeStop sets the range Stop on the innermost (currently parsing) frame.
+func (p *Parser) markRangeStop(stop Token) {
+	p.ctrlStack[len(p.ctrlStack)-1].stop = &stop
+}
+
+// ctrlIndexByLabel finds the active frame with the given label, or -1.
+func (p *Parser) ctrlIndexByLabel(key string) int {
+	for i := len(p.ctrlStack) - 1; i >= 0; i-- {
+		if p.ctrlStack[i].userLabel == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// innermostContinueIndex returns the innermost for-loop frame, or -1.
+func (p *Parser) innermostContinueIndex() int {
+	for i := len(p.ctrlStack) - 1; i >= 0; i-- {
+		if p.ctrlStack[i].hasContinue {
+			return i
+		}
+	}
+	return -1
+}
+
+// rangeStopsAbove returns the Stop tokens for range loops nested inside
+// ctrlStack[targetIdx], innermost first.
+func (p *Parser) rangeStopsAbove(targetIdx int) Tokens {
+	if targetIdx < 0 {
+		return nil
+	}
+	var out Tokens
+	for i := len(p.ctrlStack) - 1; i > targetIdx; i-- {
+		if s := p.ctrlStack[i].stop; s != nil {
+			out = append(out, *s)
+		}
+	}
+	return out
 }

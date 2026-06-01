@@ -44,6 +44,7 @@ type Parser struct {
 	continueLabel     string
 	pendingLabel      string               // user label preceding the current for/switch statement
 	labeledJump       map[string][2]string // maps user label to [continueLabel, breakLabel]
+	ctrlStack         []ctrlFrame          // active for/switch/select frames (for labeled break/continue range unwind)
 	clonum            int                  // closure instance number, package-global counter
 	funcN             int                  // anonymous-function counter within the current outer function
 	initNum           int                  // init function instance counter

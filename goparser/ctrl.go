@@ -85,6 +85,7 @@ func (p *Parser) parseChanSend(in Tokens, arrowIdx int) (out Tokens, err error) 
 
 func (p *Parser) parseBreak(in Tokens) (out Tokens, err error) {
 	var label string
+	targetIdx := len(p.ctrlStack) - 1 // innermost frame
 	switch len(in) {
 	case 1:
 		label = p.breakLabel
@@ -92,20 +93,26 @@ func (p *Parser) parseBreak(in Tokens) (out Tokens, err error) {
 		if in[1].Tok != lang.Ident {
 			return nil, errBreak
 		}
-		j, ok := p.labeledJump[p.labelName(in[1].Str)]
+		key := p.labelName(in[1].Str)
+		j, ok := p.labeledJump[key]
 		if !ok {
 			return nil, errBreak
 		}
 		label = j[1]
+		if i := p.ctrlIndexByLabel(key); i >= 0 {
+			targetIdx = i
+		}
 	default:
 		return nil, errBreak
 	}
+	out = append(out, p.rangeStopsAbove(targetIdx)...)
 	out = append(out, newGoto(label, in[0].Pos))
 	return out, err
 }
 
 func (p *Parser) parseContinue(in Tokens) (out Tokens, err error) {
 	var label string
+	targetIdx := p.innermostContinueIndex() // innermost for-loop
 	switch len(in) {
 	case 1:
 		label = p.continueLabel
@@ -113,14 +120,19 @@ func (p *Parser) parseContinue(in Tokens) (out Tokens, err error) {
 		if in[1].Tok != lang.Ident {
 			return nil, errContinue
 		}
-		j, ok := p.labeledJump[p.labelName(in[1].Str)]
+		key := p.labelName(in[1].Str)
+		j, ok := p.labeledJump[key]
 		if !ok || j[0] == "" {
 			return nil, errContinue
 		}
 		label = j[0]
+		if i := p.ctrlIndexByLabel(key); i >= 0 {
+			targetIdx = i
+		}
 	default:
 		return nil, errContinue
 	}
+	out = append(out, p.rangeStopsAbove(targetIdx)...)
 	out = append(out, newGoto(label, in[0].Pos))
 	return out, err
 }
@@ -163,6 +175,7 @@ func (p *Parser) parseFor(in Tokens) (out Tokens, err error) {
 			n, _ := last.Arg[0].(int)
 			cond = Tokens{newNext(p.breakLabel, in[1].Pos, n)}
 			final = Tokens{newToken(lang.Stop, "", in[1].Pos, n)}
+			p.markRangeStop(final[0]) // also unwound by a labeled break/continue out of this range
 		} else {
 			cond = pre[0]
 		}
