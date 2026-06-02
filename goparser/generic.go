@@ -209,8 +209,16 @@ func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
 	if arg == nil {
 		return true
 	}
+	// A composite type argument parsed before materialization (e.g. *fs.PathError)
+	// has a nil Rtype but carries its components, so derive the rtype now; the
+	// reflect method-set checks below need it to see a bridged pointer's methods.
+	// bindTypeParams materializes the same arg later, so this only moves it up.
+	argRt := arg.Rtype
+	if argRt == nil {
+		argRt = vm.MaterializeRtype(arg)
+	}
 	// Native concrete type vs native interface: reflect can decide.
-	if iface.Rtype != nil && iface.Rtype.NumMethod() > 0 && arg.Rtype != nil && arg.Rtype.Implements(iface.Rtype) {
+	if iface.Rtype != nil && iface.Rtype.NumMethod() > 0 && argRt != nil && argRt.Implements(iface.Rtype) {
 		return true
 	}
 	iface.EnsureIfaceMethods()
@@ -227,7 +235,7 @@ func (p *Parser) argImplementsIface(arg, iface *vm.Type) bool {
 	// `error`) still pass via their reflect method set.
 	recvNames := argRecvTypeNames(arg)
 	for _, im := range iface.IfaceMethods {
-		if arg.Rtype != nil && hasNativeMethod(arg.Rtype, im.Name) {
+		if argRt != nil && hasNativeMethod(argRt, im.Name) {
 			continue
 		}
 		if p.hasMethodSym(recvNames, im.Name) {
