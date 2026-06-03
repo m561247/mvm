@@ -63,6 +63,9 @@ var Incompat = map[string]map[string]string{
 	"unicode/utf8": {
 		"TestRuneCountNonASCIIAllocation": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
 	},
+	"strconv": {
+		"TestAllocationsFromBytes": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
+	},
 	"testing": {
 		"TestAllocsPerRun": "self-test of AllocsPerRun; mvm interpreter allocates more than the native expectation of 1",
 	},

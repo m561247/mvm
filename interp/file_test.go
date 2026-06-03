@@ -80,6 +80,22 @@ func runFile(t *testing.T, p string) {
 	}
 }
 
+func TestUndefinedVarInitPosition(t *testing.T) {
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	_, err := i.Eval("repro.go", "package main\n\nvar x = undefinedSym\n\nfunc main() { _ = x }\n")
+	if err == nil {
+		t.Fatal("got nil error, want undefined: undefinedSym")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "repro.go:3") {
+		t.Errorf("error not positioned at the var decl: %q", msg)
+	}
+	if strings.Contains(msg, "<shim>") {
+		t.Errorf("error misattributed to a shim source: %q", msg)
+	}
+}
+
 func TestImportDiamond(t *testing.T) {
 	// Both pkg2 and pkg3 import pkg1. Verify pkg1 is registered once.
 	src := `package main

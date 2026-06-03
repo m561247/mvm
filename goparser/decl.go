@@ -1319,12 +1319,12 @@ func (p *Parser) parseVarLine(in Tokens) (out Tokens, err error) {
 		}
 		out = append(out, toks...)
 		if undefinedType {
-			out = append(out, newToken(lang.Define, "", 0, len(vars)))
+			out = append(out, newToken(lang.Define, "", in[0].Pos, len(vars)))
 			if p.funcScope != "" && len(vars) == 1 {
 				p.inferDefineType(toks, vars[0])
 			}
 		} else {
-			out = append(out, newToken(lang.Assign, "", 0, len(vars)))
+			out = append(out, newToken(lang.Assign, "", in[0].Pos, len(vars)))
 		}
 		return out, err
 	}
@@ -1338,9 +1338,9 @@ func (p *Parser) parseVarLine(in Tokens) (out Tokens, err error) {
 		out = append(out, newIdent(vars[i], 0))
 		out = append(out, v...)
 		if undefinedType {
-			out = append(out, newToken(lang.Define, "", 0, 1))
+			out = append(out, newToken(lang.Define, "", in[0].Pos, 1))
 		} else {
-			out = append(out, newToken(lang.Assign, "", 0, 1))
+			out = append(out, newToken(lang.Assign, "", in[0].Pos, 1))
 		}
 	}
 	return out, err
