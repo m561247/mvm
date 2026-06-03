@@ -465,6 +465,12 @@ func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
 	}
 	driver.WriteString("}, []testing.InternalExample{")
 	for _, e := range examples {
+		// Examples have no *testing.T to self-skip, so omit a skiplisted one and
+		// note it; the matrix counts only --- PASS/FAIL, so omitted != failed.
+		if reason := stdlib.SkipReason(pkgPath, e.name); reason != "" {
+			fmt.Fprintf(os.Stderr, "--- SKIP: %s (mvm: %s)\n", e.name, reason)
+			continue
+		}
 		fmt.Fprintf(&driver, "{Name: %q, F: %s, Output: %q, Unordered: %t},",
 			e.name, e.name, e.output, e.unordered)
 	}

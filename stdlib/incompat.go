@@ -66,6 +66,16 @@ var Incompat = map[string]map[string]string{
 	"testing": {
 		"TestAllocsPerRun": "self-test of AllocsPerRun; mvm interpreter allocates more than the native expectation of 1",
 	},
+	"time": {
+		// //go:linkname funcs (timeAbs etc.) stay nil; calling one panics.
+		"TestLinkname": "uses //go:linkname to reach private time funcs; mvm does not parse linkname directives",
+
+		// Need Local=America/Los_Angeles, forced by time's internal init() which
+		// can't run against the bridge; pass under TZ=America/Los_Angeles.
+		"ExampleDate":        "expects local zone America/Los_Angeles; time's internal ForceUSPacificForTesting init cannot run against the bridge",
+		"ExampleTime_Format": "expects local zone America/Los_Angeles; time's internal ForceUSPacificForTesting init cannot run against the bridge",
+		"ExampleParse":       "expects local zone America/Los_Angeles; time's internal ForceUSPacificForTesting init cannot run against the bridge",
+	},
 }
 
 // GenericOnly lists stdlib packages with an all-generic API: no reflect bridge
