@@ -2138,6 +2138,11 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if s, ok = c.symAt(t.Str); !ok {
 					// It could be either an undefined symbol or a key ident in a literal composite expr.
 					s = &symbol.Symbol{Name: t.Str}
+				} else if s.Kind == symbol.Const {
+					// Copy so foldConstLoad's per-use type rewrite doesn't fix the
+					// shared const's type and overflow a later use's context.
+					cs := *s
+					s = &cs
 				}
 			}
 			push(s)

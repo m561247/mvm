@@ -165,6 +165,10 @@ func TestNumericWidening(t *testing.T) {
 		{n: "float64_eq_int_const", src: `var v float64 = 10.0; v == 10`, res: "true"},
 		{n: "float64_neq_int_const", src: `var v float64 = 11.0; v != 10`, res: "true"},
 
+		// Untyped const folds per use: a uint64 compare must not fix its type and
+		// overflow the later int64 negation.
+		{n: "untyped_const_multi_context", src: `const c = 1 << 63; func f(n uint64) int64 { if n == c { return -c }; return 0 }; f(1 << 63)`, res: "-9223372036854775808"},
+
 		// #30: two differently-typed numeric vars error like gc (no implicit
 		// widen); only an untyped constant operand widens.
 		{n: "int_var_div_float_var", src: `a := 10; b := 12.5; a / b`, err: "mismatched types int and float64"},
