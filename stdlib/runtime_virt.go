@@ -10,28 +10,17 @@ import (
 	"github.com/mvm-sh/mvm/vm"
 )
 
-// frameKey is the dedup key for sentinelByFrame: the bytecode position
-// IP plus the source position Pos uniquely identify a call site within
-// a single program. Two calls to runtime.Callers from the same line
-// reuse the same sentinel, which bounds runtimeFuncMeta growth at the
-// number of distinct interpreted call sites rather than the number of
-// stack captures.
-//
-// M is included because distinct Machines have disjoint code spaces but
-// overlapping IP ranges; without it, the first Machine to register
-// sentinel{IP:0,...} would steal that key from every other Machine's
-// frame zero. M is the *vm.Machine pointer of the Machine that walked
-// the frame.
+// frameKey is the dedup key for sentinelByFrame.
 //
 // Lifetime caveat: sentinelByFrame is a process-global sync.Map with no
 // deletion path. Including *Machine makes the key set grow as
 // O(distinct Machines x distinct call sites) rather than O(call sites),
-// and each entry also pins one runtimeFuncMeta entry in vm. For
-// long-lived hosts that spawn many short-lived interpreters this is a
+// and each entry also pins one runtimeFuncMeta entry in vm.
+// For long-lived hosts that spawn many short-lived interpreters this is a
 // slow leak (the agent-pool runners share a Machine across invocations,
-// so they don't contribute new keys per call). A proper bound would
-// move the cache onto vm.Machine and run a finalizer to drop the
-// matching runtimeFuncMeta entries; deferred because captured
+// so they don't contribute new keys per call).
+// A proper bound would move the cache onto vm.Machine and run a finalizer
+// to drop the matching runtimeFuncMeta entries; deferred because captured
 // pkg/errors-style stack traces can legitimately outlive the Machine
 // that produced them, which complicates cleanup-on-GC.
 type frameKey struct {
@@ -42,43 +31,58 @@ type frameKey struct {
 
 var sentinelByFrame sync.Map // frameKey -> *runtime.Func
 
-// init registers a PackagePatcher for "runtime" so that interpreted code
-// calling runtime.Callers / runtime.FuncForPC observes the interpreter's
-// own call stack instead of the host Go stack frames inside vm.Machine.
-//
-// The replacement Callers walks m's frame-pointer chain and produces one
-// synthetic uintptr per yielded interpreter frame. Each synthetic PC is
-// the address of a freshly allocated *runtime.Func sentinel registered
-// with vm.RegisterRuntimeFunc, so vm.nativeMethodLookup intercepts the
-// later Name()/FileLine() calls on the sentinel and returns the recorded
-// metadata. PCs that do not match a sentinel fall through to the host
-// runtime.FuncForPC, preserving behavior for code that captured real
-// host PCs.
 func init() {
 	RegisterPackagePatcher("runtime", patchRuntime)
 }
 
 func patchRuntime(_ *vm.Machine, values map[string]vm.Value) {
 	values["Callers"] = vm.FromReflect(reflect.ValueOf(func(skip int, pcs []uintptr) int {
-		// makeCallFunc spawns a fresh Machine for native callbacks, so the
-		// Machine passed to the patcher is not necessarily the one running
-		// when this bridge fires. Resolve the live one through the
-		// active-machine stack.
 		active := vm.ActiveMachine()
 		if active == nil {
 			return 0
 		}
 		return mvmCallers(active, skip, pcs)
 	}))
+	values["Caller"] = vm.FromReflect(reflect.ValueOf(func(skip int) (uintptr, string, int, bool) {
+		active := vm.ActiveMachine()
+		if active == nil {
+			return 0, "", 0, false
+		}
+		return mvmCaller(active, skip)
+	}))
 	values["FuncForPC"] = vm.FromReflect(reflect.ValueOf(mvmFuncForPC))
 	values["CallersFrames"] = vm.FromReflect(reflect.ValueOf(mvmCallersFrames))
 }
 
+// mvmCaller mirrors runtime.Caller for the live interpreter stack.
+func mvmCaller(m *vm.Machine, skip int) (pc uintptr, file string, line int, ok bool) {
+	di := m.DebugInfo()
+	if di == nil {
+		return 0, "", 0, false
+	}
+	drop := skip
+	if drop < 0 {
+		drop = 0
+	}
+	m.WalkCallStack(func(f vm.StackFrame) bool {
+		if drop > 0 {
+			drop--
+			return true
+		}
+		rf := internSentinel(m, di, f)
+		pc = uintptr(unsafe.Pointer(rf)) + 1
+		if info := vm.LookupRuntimeFunc(rf); info != nil {
+			file = info.File
+			line = info.Line
+		}
+		ok = true
+		return false
+	})
+	return pc, file, line, ok
+}
+
 // mvmFrames replaces *runtime.Frames for code that consumes PCs produced
-// by the virtualized runtime.Callers. The native runtime.CallersFrames
-// would not recognize our synthetic sentinel PCs and would yield empty
-// frames; this implementation preserves the PC and resolves names/files
-// via mvmFuncForPC.
+// by the virtualized runtime.Callers.
 type mvmFrames struct {
 	pcs []uintptr
 	pos int
@@ -113,9 +117,6 @@ func mvmCallersFrames(callers []uintptr) *mvmFrames {
 }
 
 // mvmCallers fills pcs with synthetic PCs for the live interpreter stack.
-// The skip semantics mirror runtime.Callers: skip=0 identifies Callers
-// itself. mvm has no Callers vm-frame, so we drop the first (skip-1)
-// interpreter frames before recording.
 func mvmCallers(m *vm.Machine, skip int, pcs []uintptr) int {
 	if len(pcs) == 0 {
 		return 0
@@ -148,17 +149,7 @@ func mvmCallers(m *vm.Machine, skip int, pcs []uintptr) int {
 
 // internSentinel returns a *runtime.Func sentinel for the given frame,
 // reusing a previously allocated one when the (Machine, IP, Pos) call
-// site has been seen before. First-encounter sentinels are registered
-// with vm.RegisterRuntimeFunc. The intern cache bounds runtimeFuncMeta
-// size at O(distinct call sites across all interpreters) instead of
-// O(stack captures). Keying on the Machine pointer is what keeps two
-// interpreters running on different goroutines from stealing each
-// other's frame-zero sentinel.
-//
-// di is threaded through instead of derived from m.DebugInfo() because
-// m.DebugInfo() invokes a debugInfoFn callback that rebuilds the
-// DebugInfo on demand; mvmCallers hoists the result before the
-// WalkCallStack loop so each frame doesn't re-trigger the rebuild.
+// site has been seen before.
 func internSentinel(m *vm.Machine, di *vm.DebugInfo, f vm.StackFrame) *runtime.Func {
 	key := frameKey{M: m, IP: f.IP, Pos: uint32(f.Pos)}
 	if v, ok := sentinelByFrame.Load(key); ok {
@@ -208,8 +199,7 @@ func mvmFuncForPC(pc uintptr) *runtime.Func {
 
 // qualifyFuncName turns a debug-info label such as "TestFormatNew" into
 // "github.com/pkg/errors.TestFormatNew" using the import-path prefix of
-// the function's source file. file has the form "<pkgPath>/<filename>"
-// (set by goparser's source registry).
+// the function's source file.
 //
 // Method labels are normalized to Go's stack-trace convention:
 //   - "T.M" -> "<pkg>.T.M"
