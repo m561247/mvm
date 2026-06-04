@@ -1314,6 +1314,9 @@ func (m *Machine) Run() (err error) {
 			frameBase := int(retIPInfo >> 48)
 			ip = int(int32(retIPInfo))
 			ofp := fp
+			if len(m.iterStack) != 0 {
+				m.dropIterFrames(ofp) // early return out of a range loop skips Stop
+			}
 			fpVal := mem[fp-1].num
 			if fpVal&heapSavedFlag != 0 {
 				fp = int(fpVal &^ heapSavedFlag)
