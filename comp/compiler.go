@@ -1174,17 +1174,24 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				}
 				m[slot] = true
 			}
+			// Func slots are interface{} boxes; pass the func type (+1; 0=none)
+			// so AddrLocal retypes the slot, making &f a *func(...).
+			funcRetypeOp := 0
+			if srcType != nil && srcType.Kind() == reflect.Func {
+				funcRetypeOp = c.typeSym(srcType).Index + 1
+			}
 			switch {
 			case n > 0 && c.Code[n-1].Op == vm.Index:
 				c.Code[n-1].Op = vm.IndexAddr
 			case concrete && n > 0 && c.Code[n-1].Op == vm.GetLocal:
 				c.Code[n-1].Op = vm.AddrLocal
+				c.Code[n-1].B = int32(funcRetypeOp)
 				markAddressed(int(c.Code[n-1].A))
 			case concrete && n > 0 && c.Code[n-1].Op == vm.GetLocal2:
 				idx := int(c.Code[n-1].B)
 				c.Code[n-1].Op = vm.GetLocal
 				c.Code[n-1].B = 0
-				c.emit(t, vm.AddrLocal, idx)
+				c.emit(t, vm.AddrLocal, idx, funcRetypeOp)
 				markAddressed(idx)
 			default:
 				c.emit(t, vm.Addr)
@@ -3969,7 +3976,7 @@ func (c *Compiler) compileBuiltin(
 		}
 		typeSym := (*stack)[len(*stack)-1]
 		if typeSym.Kind != symbol.Type {
-			return true, errors.New("first argument to new must be a type")
+			return true, c.errAt(t, "first argument to new must be a type")
 		}
 		c.removeFnew(typeSym.Index)
 		pop() // type arg

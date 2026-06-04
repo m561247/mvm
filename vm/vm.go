@@ -46,7 +46,7 @@ const (
 	// Instruction effect on stack: values consumed -- values produced.
 	Nop          Op = iota // --
 	Addr                   // a -- &a ;
-	AddrLocal              // -- &local ; push pointer to mem[fp-1+$1]; promotes slot to addressable storage on first use so writes via the pointer propagate back
+	AddrLocal              // -- &local ; push pointer to mem[fp-1+$1]; promotes slot to addressable storage so writes via the pointer propagate back; $2!=0 retypes a func slot to func type globals[$2-1]
 	Append                 // slice [v0..vn-1] -- slice' ; append $0 values to slice
 	AppendSlice            // slice [v0..vn-1] -- slice' ; pack $0 values into []T, reflect.AppendSlice; elem type at mem[$1]; $0=0 means spread mode: append(a, b...)
 	Call                   // f [a1 .. ai] -- [r1 .. rj] ; r1, ... = prog[f](a1, ...); B bit 15 = spread flag
@@ -1186,8 +1186,14 @@ func (m *Machine) Run() (err error) {
 			ptr := mem[sp-1]
 			val := mem[sp]
 			elem := ptr.ref.Elem()
-			numSet(elem, val)
 			sp -= 2
+			if elem.Kind() == reflect.Func && elem.CanAddr() {
+				// *p = f: wrap the mvm func value into a Go func (reflect.Set
+				// rejects the Closure/code-address representation).
+				m.setFuncField(elem, val)
+				break
+			}
+			numSet(elem, val)
 			// Update the .num cache of any stack slot whose ref shares the
 			// same underlying address, so fused GetLocal*Imm instructions and
 			// num-first reads see the updated value. Scan ALL frames on the
@@ -1205,7 +1211,12 @@ func (m *Machine) Run() (err error) {
 			}
 		case AddrLocal:
 			slot := &mem[int(c.A)+fp-1]
-			if !slot.ref.CanAddr() {
+			switch {
+			case c.B != 0:
+				// Func slot is an interface{} box; retype to the declared func
+				// type ($2-1) so &f is *func(...), not *interface{}.
+				m.retypeFuncSlot(slot, m.globals[int(c.B)-1].ref.Type())
+			case !slot.ref.CanAddr():
 				// Promote to addressable storage so the pushed pointer aliases
 				// the slot. DerefSet keeps slot.num in sync on writes.
 				rt := slot.ref.Type()
@@ -4342,6 +4353,21 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 		src = interfaceToInterface(src, fv.Type())
 	}
 	fv.Set(src)
+}
+
+// retypeFuncSlot retypes an interface{}-boxed func local to addressable storage
+// of its func type, so &f is *func(...). Re-storing via assignSlot keeps the
+// closure recoverable (resolveFuncField) for fast in-VM dispatch.
+func (m *Machine) retypeFuncSlot(slot *Value, funcType reflect.Type) {
+	if slot.ref.IsValid() && slot.ref.Type() == funcType && slot.ref.CanAddr() {
+		return
+	}
+	orig := *slot
+	slot.ref = reflect.New(funcType).Elem()
+	slot.num = 0
+	if !nilEqual(orig) {
+		m.assignSlot(slot, orig)
+	}
 }
 
 func (m *Machine) assignSlot(dst *Value, src Value) {
