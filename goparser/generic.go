@@ -1042,6 +1042,14 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 				if ms, _ := p.Symbols.MethodByName(&symbol.Symbol{Kind: symbol.Type, Name: st.Name, Type: st}, member); ms != nil && ms.Type != nil {
 					return funcReturnType(ms.Type), totalLen
 				}
+				// Native/bridged method: read the return type from the rtype, so a
+				// chain like sig.Params().Variables() types as iter.Seq[*Var] and a
+				// generic call (slices.Collect) can infer from it.
+				if recvTyp.Rtype != nil {
+					if m, ok := recvTyp.Rtype.MethodByName(member); ok && m.Type.NumOut() >= 1 {
+						return &vm.Type{Rtype: m.Type.Out(0)}, totalLen
+					}
+				}
 			}
 			return nil, totalLen
 		}

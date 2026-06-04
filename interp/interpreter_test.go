@@ -3498,6 +3498,19 @@ func TestPanic(t *testing.T) {
 			}
 			f()
 			s`, res: "hello"},
+		{n: "defer_panic_unrecovered", src: `
+			// defer panic(x): fires on return, propagates as error.
+			func f() { defer panic("boom") }
+			f()`, err: "panic: boom"},
+		{n: "defer_panic_recovered", src: `
+			// defer panic(x) fires on return; an earlier-registered deferred
+			// recover catches it.
+			func f() (s string) {
+				defer func() { if r := recover(); r != nil { s = r.(string) } }()
+				defer panic("late")
+				return "normal"
+			}
+			f()`, res: "late"},
 		{n: "#03", src: `
 			// Unrecovered panic still runs defers, but propagates error.
 			s := ""

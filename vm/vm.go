@@ -2233,6 +2233,21 @@ func (m *Machine) Run() (err error) {
 				funcVal := mem[dh-narg-3]
 				retBase := dh - narg - 3
 				if isX == 2 {
+					if Op(funcVal.num) == Panic {
+						// defer panic(arg): begin panicking, drop the pending return
+						// values, then unwind the remaining defers of this frame.
+						if nilInterfacePanic(mem[dh-narg-2]) {
+							m.panicVal = panicNilErr
+						} else {
+							m.panicVal = mem[dh-narg-2]
+						}
+						m.panicking = true
+						mem[fp-3].num = uint64(prevHead)
+						clear(mem[retBase : sp+1])
+						sp = retBase - 1
+						ip = m.stageUnwind(ip, fp, mem)
+						continue
+					}
 					m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, mem)
 					clear(mem[retBase+nret : sp+1])
 					sp = retBase + nret - 1
@@ -3173,6 +3188,16 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 			return popDefer()
 		}
 		if isX == 2 {
+			if Op(funcVal.num) == Panic {
+				// defer panic(arg) reached while already unwinding: the new panic
+				// value replaces the current one; unwinding then resumes.
+				if nilInterfacePanic((*mem)[dh-narg-2]) {
+					m.panicVal = panicNilErr
+				} else {
+					m.panicVal = (*mem)[dh-narg-2]
+				}
+				return popDefer()
+			}
 			m.execBuiltinDeferred(Op(funcVal.num), dh-narg-2, narg, *mem)
 			return popDefer()
 		}

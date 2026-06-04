@@ -30,6 +30,7 @@ var builtinDeferOp = map[string]vm.Op{
 	"delete":  vm.DeleteMap,
 	"copy":    vm.CopySlice,
 	"clear":   vm.Clear,
+	"panic":   vm.Panic,
 }
 
 // Compiler represents the state of a compiler.
