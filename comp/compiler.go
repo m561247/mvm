@@ -888,8 +888,10 @@ func (c *Compiler) emitMapValueWrap(t goparser.Token, elemTyp *vm.Type, vs *symb
 func (c *Compiler) emitTypeOrGlobal(t goparser.Token, sym *symbol.Symbol, index int) {
 	if sym.Kind == symbol.Type {
 		switch sym.Type.Kind() {
-		case reflect.Slice:
-			c.emit(t, vm.Fnew, index, 0)
+		case reflect.Slice, reflect.Map:
+			// B=-1 makes Fnew produce the nil zero value; a composite literal
+			// patches it to a non-nil container (see the Composite handler).
+			c.emit(t, vm.Fnew, index, -1)
 		case reflect.Pointer:
 			c.emit(t, vm.FnewE, index, 1)
 		default:
@@ -1813,10 +1815,10 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 
 		case lang.Composite:
 			sliceLen := t.Arg[0].(int)
-			if sliceLen > 0 {
-				// Patch the matching Fnew by the type's canonical zero-value slot
-				// (the same slot the type ident emitted), shared by rtype whether
-				// that ident carried its type or was resolved by name.
+			// Patch this literal's slice/map Fnew (emitted with B=-1, nil) to
+			// its element count, making it non-nil; empty/map literals
+			// (sliceLen 0) included. Match the type's canonical zero-value slot.
+			{
 				sym := c.Symbols[t.Str]
 				var idx int32
 				if sym != nil && sym.Type != nil {
@@ -1824,12 +1826,10 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				} else if sym != nil {
 					idx = int32(sym.Index)
 				}
-				// Skip Fnews already claimed by a nested composite of the
-				// same type (B != 0 marks the patched length); without this,
-				// `[]E{x, &T{Errors: []E{y}}}` re-patches the inner []E's
-				// Fnew and leaves the outer one at length 0.
+				// B != -1 marks an Fnew already patched by a nested composite;
+				// skip it so `[]E{x, &T{Errors: []E{y}}}` patches the outer one.
 				for i := len(c.Code) - 1; i >= 0; i-- {
-					if c.Code[i].Op == vm.Fnew && c.Code[i].A == idx && c.Code[i].B == 0 {
+					if c.Code[i].Op == vm.Fnew && c.Code[i].A == idx && c.Code[i].B == -1 {
 						c.Code[i].B = int32(sliceLen)
 						break
 					}

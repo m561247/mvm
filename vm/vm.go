@@ -2701,6 +2701,12 @@ func (m *Machine) Run() (err error) {
 			mem[sp] = boolVal(ok)
 		case MapSet:
 			mapVal := mem[sp-2].ref
+			if mapVal.Kind() == reflect.Map && mapVal.IsNil() {
+				// Writing to a nil map is a recoverable runtime panic in Go.
+				m.raiseNilMapAssign()
+				ip = m.stageUnwind(ip, fp, mem)
+				continue
+			}
 			mt := mapVal.Type()
 			mapVal.SetMapIndex(mapKeyReflect(mt.Key(), mem[sp-1]), m.wrapForFunc(mem[sp], mt.Elem()))
 			sp -= 2
@@ -3355,6 +3361,20 @@ func isNilReceiver(rv reflect.Value) bool {
 func (m *Machine) raiseNilDeref() {
 	m.panicking = true
 	m.panicVal = Value{ref: reflect.ValueOf(nilPointerPanicValue)}
+}
+
+// nilMapAssignPanicValue is the runtime.Error for a write to a nil map,
+// captured by triggering it (as for nilPointerPanicValue).
+var nilMapAssignPanicValue = func() (out any) {
+	defer func() { out = recover() }()
+	var nm map[int]int
+	nm[0] = 0 //nolint:staticcheck // intentional nil-map write to capture the panic value
+	return nil
+}()
+
+func (m *Machine) raiseNilMapAssign() {
+	m.panicking = true
+	m.panicVal = Value{ref: reflect.ValueOf(nilMapAssignPanicValue)}
 }
 
 // nilInterfacePanic reports whether a panic argument is a nil interface (which

@@ -152,13 +152,15 @@ func NewValue(typ reflect.Type, arg ...int) Value {
 	}
 	switch typ.Kind() {
 	case reflect.Slice:
-		if len(arg) == 1 {
+		// A negative size is the nil zero value; a non-negative one makes a
+		// non-nil (possibly empty) slice. Same for the map case below.
+		if len(arg) == 1 && arg[0] >= 0 {
 			v := reflect.New(typ).Elem()
 			v.Set(reflect.MakeSlice(typ, arg[0], arg[0]))
 			return Value{ref: v}
 		}
 	case reflect.Map:
-		if len(arg) == 1 {
+		if len(arg) == 1 && arg[0] >= 0 {
 			v := reflect.New(typ).Elem()
 			v.Set(reflect.MakeMapWithSize(typ, arg[0]))
 			return Value{ref: v}
