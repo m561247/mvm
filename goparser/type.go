@@ -232,6 +232,9 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 
 	case lang.Ident:
 		s, _, ok := p.symGet(in[0].Str)
+		if as, _, aok := p.pkgAlias(in[0].Str, in[0].Pos); aok {
+			s, ok = as, true
+		}
 		if !ok {
 			return nil, 0, p.undef(in[0].Str, in[0])
 		}
@@ -705,6 +708,9 @@ func (p *Parser) hasFirstParam(in Tokens) bool {
 		return false
 	}
 	s, _, ok := p.symGet(in[0].Str)
+	if as, _, aok := p.pkgAlias(in[0].Str, in[0].Pos); aok {
+		s, ok = as, true
+	}
 	if ok && s.Kind == symbol.Pkg {
 		// Only treat as a qualified type expression (pkg.Type) if followed by '.'.
 		// Otherwise, the ident is a parameter name that shadows the package

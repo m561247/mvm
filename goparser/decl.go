@@ -187,6 +187,9 @@ func (p *Parser) evalConstExpr(in Tokens) (cval constant.Value, ctyp *vm.Type, l
 		}
 		pkgName := in[l-1].Str
 		s, _, ok := p.Symbols.Get(pkgName, p.scope)
+		if as, _, aok := p.pkgAlias(pkgName, in[l-1].Pos); aok {
+			s, ok = as, true
+		}
 		if !ok || s.Kind != symbol.Pkg {
 			return nil, nil, 0, p.undef(pkgName, in[l-1])
 		}
@@ -997,12 +1000,25 @@ func (p *Parser) parseImportLine(in Tokens) (out Tokens, err error) {
 			}
 		}
 	} else if n != "_" {
-		// pkgKey-qualify so two pkgs both `import "x/y"` keep distinct alias
-		// entries instead of clobbering the bare `y` key.
 		// Blank-import (`import _ "path"`) is side-effect-only per Go spec and
 		// must not bind a name -- registering "_" as a Pkg symbol would shadow
 		// the blank identifier in tuple-assign LHS lookups.
-		p.SymSet(p.pkgKey(n), &symbol.Symbol{Kind: symbol.Pkg, PkgPath: pp, Index: symbol.UnsetAddr, Name: n})
+		sym := &symbol.Symbol{Kind: symbol.Pkg, PkgPath: pp, Index: symbol.UnsetAddr, Name: n}
+		// File-scoped alias: key on the importing file so two files of one unit
+		// can import the same alias to different paths without colliding.
+		if idx := p.Sources.SourceIndex(in[si].Pos); idx >= 0 {
+			p.SymSet(fileScopedAliasKey(n, idx), sym) // mvm:symkey-ok: file-scoped alias, bare by design
+			if p.fileAliases == nil {
+				p.fileAliases = map[int]map[string]*symbol.Symbol{}
+			}
+			if p.fileAliases[idx] == nil {
+				p.fileAliases[idx] = map[string]*symbol.Symbol{}
+			}
+			p.fileAliases[idx][n] = sym
+		}
+		// Keep the pkgKey-qualified entry as the fallback for synthetic (Pos 0)
+		// tokens and the common single-importer case.
+		p.SymSet(p.pkgKey(n), sym)
 	}
 	return out, err
 }

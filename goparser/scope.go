@@ -4,7 +4,36 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/mvm-sh/mvm/symbol"
 )
+
+// fileScopedAliasKey is the symbol-table key for an import alias scoped to the
+// source file at idx. '@' cannot appear in a Go identifier, so the key never
+// collides with a real name or a generic-mangled name.
+func fileScopedAliasKey(name string, idx int) string { return name + "@" + strconv.Itoa(idx) }
+
+// pkgAlias reports a file-scoped package alias ONLY when the package-wide
+// lookup would resolve name to a DIFFERENT package than the source file at pos
+// imported it as -- i.e. a sibling file aliased the same name elsewhere and the
+// shared bare key now points at the wrong package. In that case it returns the
+// file's own Pkg symbol and the file-scoped key to bind it under. In every other
+// case (no collision, single importer, pseudo-packages) it returns false, so the
+// caller's existing resolution runs unchanged.
+func (p *Parser) pkgAlias(name string, pos int) (sym *symbol.Symbol, key string, ok bool) {
+	idx := p.Sources.SourceIndex(pos)
+	if idx < 0 {
+		return nil, "", false
+	}
+	s := p.fileAliases[idx][name]
+	if s == nil {
+		return nil, "", false
+	}
+	if bare, _, found := p.symGet(name); found && bare == s {
+		return nil, "", false // no collision: shared key already resolves here
+	}
+	return s, fileScopedAliasKey(name, idx), true
+}
 
 func (p *Parser) scopedName(name string) string {
 	return strings.TrimPrefix(p.scope+"/"+name, "/")

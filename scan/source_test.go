@@ -60,6 +60,33 @@ func TestSourcesResolveMulti(t *testing.T) {
 	}
 }
 
+func TestSourcesSourceIndex(t *testing.T) {
+	var ss Sources
+	ss.Add("first", "abc\ndef")  // index 0, base=0, len=7
+	ss.Add("second", "ghi\njkl") // index 1, base=8, len=7
+
+	tests := []struct {
+		pos  int
+		want int
+	}{
+		{0, 0},   // start of first
+		{7, 0},   // one past first's end
+		{8, 1},   // start of second
+		{15, 1},  // one past second's end
+		{-1, -1}, // out of range
+	}
+	for _, tt := range tests {
+		if got := ss.SourceIndex(tt.pos); got != tt.want {
+			t.Errorf("SourceIndex(%d) = %d, want %d", tt.pos, got, tt.want)
+		}
+	}
+
+	var empty Sources
+	if got := empty.SourceIndex(0); got != -1 {
+		t.Errorf("empty SourceIndex(0) = %d, want -1", got)
+	}
+}
+
 func TestSourcesResolveOutOfRange(t *testing.T) {
 	var ss Sources
 	ss.Add("first", "abc")  // base=0, len=3

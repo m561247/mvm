@@ -880,7 +880,11 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		// Package-qualified value `pkg.Name` (not a call): type it so a bare
 		// reference like sha256.New can be unified in generic inference.
 		if l >= 1 && in[l-1].Tok == lang.Ident {
-			if ps := p.Symbols[in[l-1].Str]; ps != nil && ps.Kind == symbol.Pkg {
+			ps := p.Symbols[in[l-1].Str]
+			if as, _, ok := p.pkgAlias(in[l-1].Str, in[l-1].Pos); ok {
+				ps = as
+			}
+			if ps != nil && ps.Kind == symbol.Pkg {
 				member := t.Str[1:] // strip leading "."
 				if mt := p.pkgMemberType(ps.PkgPath, member); mt != nil {
 					return mt, 2
@@ -1018,7 +1022,11 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 			}
 			member := fnTok.Str[1:] // strip leading "."
 			if pre := rest[len(rest)-2]; pre.Tok == lang.Ident {
-				if ps := p.Symbols[pre.Str]; ps != nil && ps.Kind == symbol.Pkg {
+				ps := p.Symbols[pre.Str]
+				if as, _, ok := p.pkgAlias(pre.Str, pre.Pos); ok {
+					ps = as
+				}
+				if ps != nil && ps.Kind == symbol.Pkg {
 					totalLen++ // the package ident token
 					// Generic members stay unresolved: typing a nested generic
 					// result mis-succeeds inference -> bad codegen / hang.

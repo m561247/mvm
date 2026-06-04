@@ -150,6 +150,13 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 
 		case lang.Ident:
 			s, sc, ok := p.Symbols.Get(t.Str, p.scope)
+			if sc == "" {
+				// Package alias: rewrite to the file-scoped key so the right import
+				// wins when sibling files alias the same name to different paths.
+				if as, akey, aok := p.pkgAlias(t.Str, t.Pos); aok {
+					s, ok, t.Str = as, true, akey
+				}
+			}
 			if ok && sc != "" {
 				t.Str = sc + "/" + t.Str
 			} else {

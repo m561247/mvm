@@ -216,7 +216,11 @@ func (p *Parser) callFuncType(in Tokens) *vm.Type {
 		if len(rest) < 2 || rest[len(rest)-2].Tok != lang.Ident {
 			return nil
 		}
-		ps := p.Symbols[rest[len(rest)-2].Str]
+		pre := rest[len(rest)-2]
+		ps := p.Symbols[pre.Str]
+		if as, _, ok := p.pkgAlias(pre.Str, pre.Pos); ok {
+			ps = as
+		}
 		if ps == nil || ps.Kind != symbol.Pkg {
 			return nil
 		}

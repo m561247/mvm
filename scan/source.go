@@ -74,6 +74,22 @@ func (ss Sources) find(pos int) (*Source, int) {
 	return s, local
 }
 
+// SourceIndex returns the index of the source containing pos, or -1 if out of
+// range. The index is the per-file tag used to scope import aliases.
+func (ss Sources) SourceIndex(pos int) int {
+	if len(ss) == 0 || pos < 0 {
+		return -1
+	}
+	i := len(ss) - 1
+	for i > 0 && ss[i].Base > pos {
+		i--
+	}
+	if local := pos - ss[i].Base; local < 0 || local > ss[i].Len {
+		return -1
+	}
+	return i
+}
+
 // Resolve converts a global byte offset to (source name, line, col).
 // Returns ("", 0, 0) if pos is out of range.
 func (ss Sources) Resolve(pos int) (name string, line, col int) {

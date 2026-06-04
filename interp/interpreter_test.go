@@ -1,12 +1,14 @@
 package interp_test
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mvm-sh/mvm/goparser"
 	"github.com/mvm-sh/mvm/interp"
 	"github.com/mvm-sh/mvm/lang/golang"
 	"github.com/mvm-sh/mvm/stdlib"
@@ -4145,4 +4147,30 @@ func TestRepl(t *testing.T) {
 			t.Errorf("got %v, want 3.25", got)
 		}
 	})
+}
+
+// Two files of one main package alias the same name to different packages:
+// "strings" is the real strings in a.go and an alias for strconv in b.go.
+// Imports must be file-scoped, else the shared bare key collides (last file
+// wins) and one file resolves the wrong package.
+func TestFileScopedImports(t *testing.T) {
+	files := []goparser.PackageSource{
+		{Name: "a.go", Content: `package main
+import "strings"
+func useA() string { return strings.ToUpper("hi") }`},
+		{Name: "b.go", Content: `package main
+import strings "strconv"
+func useB() string { return strings.Itoa(42) }
+func main() { print(useA(), " ", useB()) }`},
+	}
+	intp := interp.NewInterpreter(golang.GoSpec)
+	intp.ImportPackageValues(stdlib.Values)
+	var out bytes.Buffer
+	intp.SetIO(nil, &out, &out)
+	if _, err := intp.EvalFiles(files); err != nil {
+		t.Fatalf("EvalFiles: %v", err)
+	}
+	if got, want := out.String(), "HI 42"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
 }
