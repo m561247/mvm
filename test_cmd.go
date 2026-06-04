@@ -384,6 +384,19 @@ func filterTopLevelTests(names, args []string) []string {
 	return out
 }
 
+// excludeTestMain drops TestMain(m *testing.M): the driver runs the suite
+// itself, so running TestMain as an ordinary test would panic in its m.Run().
+func excludeTestMain(names []string) []string {
+	out := names[:0]
+	for _, n := range names {
+		if n == "TestMain" {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // compileTestFilters extracts -test.run / -test.skip patterns from args and
 // compiles their first path segment to a *regexp.Regexp. A nil result means
 // "no filter for that side". Compile errors yield nil (we mirror testing's
@@ -427,7 +440,7 @@ func compileTestFilters(args []string) (run, skip *regexp.Regexp) {
 // name. Benchmarks run only when -bench is given; testing filters them by that
 // flag, so the full Benchmark* list is passed unfiltered. See ADR-019.
 func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
-	testNames := filterTopLevelTests(i.FuncNames("Test"), os.Args[1:])
+	testNames := excludeTestMain(filterTopLevelTests(i.FuncNames("Test"), os.Args[1:]))
 	benchNames := i.FuncNames("Benchmark")
 	examples := collectExamples(i)
 	if len(testNames)+len(benchNames)+len(examples) == 0 {

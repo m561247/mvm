@@ -119,7 +119,7 @@ func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]Pac
 				if !strings.HasSuffix(s.Name, "_test.go") || names[i] != mainPkg+"_test" {
 					continue
 				}
-				if bad := p.firstUnresolvableImport(extractImports(s.Content)); bad != "" {
+				if bad := p.firstUnresolvableImport(p.extractImports(s.Content)); bad != "" {
 					p.noteUnresolvableSkip(importPath, s.Name, bad)
 					continue
 				}
@@ -199,7 +199,7 @@ func (p *Parser) loadBridgedTestSources(importPath string) ([]PackageSource, err
 		if extractPackageName(src) != wantPkg {
 			continue
 		}
-		if bad := p.firstUnresolvableImport(extractImports(src)); bad != "" {
+		if bad := p.firstUnresolvableImport(p.extractImports(src)); bad != "" {
 			p.noteUnresolvableSkip(importPath, e.Name(), bad)
 			continue
 		}
@@ -243,65 +243,37 @@ func (p *Parser) firstUnresolvableImport(imports []string) string {
 	return ""
 }
 
-// extractImports textually scans src for the import paths referenced by
-// its `import "X"` and `import (...)` declarations. Sufficient for the
-// pre-resolution filter in loadBridgedTestSources; not a full Go parser
-// (does not handle imports inside cgo preambles or other oddities not
-// found in stdlib test files).
-func extractImports(src string) []string {
+func (p *Parser) extractImports(src string) []string {
+	toks, err := p.Scan(src, false)
+	if err != nil {
+		return nil
+	}
 	var out []string
-	for src != "" {
-		var line string
-		if i := strings.IndexByte(src, '\n'); i >= 0 {
-			line, src = src[:i], src[i+1:]
-		} else {
-			line, src = src, ""
-		}
-		line = strings.TrimSpace(line)
-		rest, ok := strings.CutPrefix(line, "import")
-		if !ok {
+	for i := 0; i < len(toks); i++ {
+		if toks[i].Tok != lang.Import {
 			continue
 		}
-		rest = strings.TrimSpace(rest)
-		if strings.HasPrefix(rest, "(") {
-			// Grouped import: scan until the matching ')'.
-			for src != "" {
-				if i := strings.IndexByte(src, '\n'); i >= 0 {
-					line, src = src[:i], src[i+1:]
-				} else {
-					line, src = src, ""
-				}
-				trim := strings.TrimSpace(line)
-				if trim == ")" {
-					break
-				}
-				if p := importPathFromLine(trim); p != "" {
-					out = append(out, p)
+		// Grouped `import (...)`: re-scan the ParenBlock body; each String is a path.
+		if i+1 < len(toks) && toks[i+1].Tok == lang.ParenBlock {
+			if inner, ierr := p.Scan(toks[i+1].Block(), false); ierr == nil {
+				for j := range inner {
+					if inner[j].Tok == lang.String {
+						out = append(out, inner[j].Block())
+					}
 				}
 			}
+			i++
 			continue
 		}
-		if p := importPathFromLine(rest); p != "" {
-			out = append(out, p)
+		// Single spec: the path is the next String before ';'.
+		for j := i + 1; j < len(toks) && toks[j].Tok != lang.Semicolon; j++ {
+			if toks[j].Tok == lang.String {
+				out = append(out, toks[j].Block())
+				break
+			}
 		}
 	}
 	return out
-}
-
-// importPathFromLine pulls the import path string from a single import
-// spec ("path", `name "path"`, `. "path"`, `_ "path"`). Returns "" when
-// no quoted path is found.
-func importPathFromLine(line string) string {
-	q := strings.IndexByte(line, '"')
-	if q < 0 {
-		return ""
-	}
-	rest := line[q+1:]
-	e := strings.IndexByte(rest, '"')
-	if e < 0 {
-		return ""
-	}
-	return rest[:e]
 }
 
 func extractPackageName(src string) string {
