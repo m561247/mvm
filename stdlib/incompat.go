@@ -13,35 +13,22 @@ package stdlib
 // Drop the entry the moment the underlying limitation is fixed.
 var Incompat = map[string]map[string]string{
 	"crypto": {
-		// Signer.Sign's signature matches no synth method shape, so an
-		// interpreted signer stays methodless and fails reflect.Call.
 		"TestSignMessage": "interpreted type can't satisfy native crypto.Signer via reflect.Call (synth attaches only fixed method shapes)",
 	},
 	"io": {
-		// TestPipeAllocations asserts Pipe() stays within 4 allocations via
-		// testing.AllocsPerRun; the interpreter's call/marshal overhead allocates
-		// more (same alloc-count gap as fmt's AllocsPerRun tests).
 		"TestPipeAllocations": "testing.AllocsPerRun: interpreter call/marshal allocates more than native Pipe()'s 4",
 	},
+	"reflect": {
+		"TestFields": "reflect.StructOf cannot build a struct embedding an unexported-named type (anonymous+PkgPath is rejected); VisibleFields misses its promoted fields",
+	},
 	"io/fs": {
-		// struct{ FS }{fsys} is an anonymous struct embedding the method-bearing
-		// FS interface; mvm builds that struct type at runtime via reflect.StructOf,
-		// which (unlike the Go compiler) cannot synthesize the promoted-interface
-		// wrapper methods. Independent of method-attach.
 		"TestReadDirPath":  "reflect.StructOf cannot build struct{FS} (promoted methods of embedded interfaces); mvm types the anon struct at runtime",
 		"TestReadFilePath": "reflect.StructOf cannot build struct{FS} (promoted methods of embedded interfaces); mvm types the anon struct at runtime",
 	},
 	"flag": {
-		// flag.isZeroValue builds reflect.New(BridgeFlagValue).String() to
-		// compare against DefValue; the freshly-zeroed bridge has nil func
-		// fields and no path back to the underlying interpreted type, so it
-		// panics where native Go would call the source-type zero String().
 		"TestPrintDefaults":        "BridgeFlagValue zero loses underlying type; reflect.New().String() panics where the source type would not",
 		"TestUserDefinedBoolUsage": "BridgeFlagValueBool zero loses underlying type; reflect.New().String() panics where boolFlagVar zero would not",
-
-		// runtime.Caller through reflect.Call's adapter reports the adapter
-		// frame (reflect/value.go) instead of the user's flag.Var call site.
-		"TestDefineAfterSet": "runtime.Caller through reflect.Call adapter masks the user call site",
+		"TestDefineAfterSet":       "runtime.Caller through reflect.Call adapter masks the user call site",
 	},
 
 	// testing.AllocsPerRun counts heap allocations of the closure body.
@@ -70,25 +57,15 @@ var Incompat = map[string]map[string]string{
 		"TestAllocsPerRun": "self-test of AllocsPerRun; mvm interpreter allocates more than the native expectation of 1",
 	},
 	"time": {
-		// //go:linkname funcs (timeAbs etc.) stay nil; calling one panics.
-		"TestLinkname": "uses //go:linkname to reach private time funcs; mvm does not parse linkname directives",
-
-		// Need Local=America/Los_Angeles, forced by time's internal init() which
-		// can't run against the bridge; pass under TZ=America/Los_Angeles.
+		"TestLinkname":       "uses //go:linkname to reach private time funcs; mvm does not parse linkname directives",
 		"ExampleDate":        "expects local zone America/Los_Angeles; time's internal ForceUSPacificForTesting init cannot run against the bridge",
 		"ExampleTime_Format": "expects local zone America/Los_Angeles; time's internal ForceUSPacificForTesting init cannot run against the bridge",
 		"ExampleParse":       "expects local zone America/Los_Angeles; time's internal ForceUSPacificForTesting init cannot run against the bridge",
 	},
 	"runtime": {
-		// //go:linkname runtime.heapObjectsCanMove; body-less func stays nil and
-		// calling it nil-derefs (mvm does not parse linkname directives).
 		"TestHeapObjectsCanMove": "uses //go:linkname to reach private runtime.heapObjectsCanMove; mvm does not parse linkname directives",
-		// Reads runtime/metrics + GODEBUG=panicnil; the metrics/godebug plumbing
-		// is native-runtime-only, so the bridge hits a zero reflect.Value.
-		"TestPanicNil": "depends on runtime/metrics + GODEBUG panicnil semantics not modeled by the bridge",
-		// float32(uint64) double-rounds via float64 (Go issue 48807); mvm has no
-		// direct uint64->float32 rounding, so the direct/two-step results match.
-		"TestIssue48807": "float32(uint64) double-rounds via float64; mvm lacks direct uint64->float32 rounding (Go issue 48807)",
+		"TestPanicNil":           "depends on runtime/metrics + GODEBUG panicnil semantics not modeled by the bridge",
+		"TestIssue48807":         "float32(uint64) double-rounds via float64; mvm lacks direct uint64->float32 rounding (Go issue 48807)",
 	},
 }
 
