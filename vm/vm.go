@@ -419,6 +419,25 @@ type Machine struct {
 	traceLastFile string     // last source file emitted (slow-path dedup across distinct Pos on same line)
 	traceLastLine int        // last source line emitted
 	traceDI       *DebugInfo // lazy cache for traceStep; invalidated by SetDebugInfo
+
+	iterStack []iterEntry // active range-loop iterators, kept off the value stack so a defer in the body can't displace them
+	iterBase  int         // iterStack floor for the current Run (entries below belong to an outer re-entrant Run)
+}
+
+// iterEntry is one active range-loop iterator. Pull pushes, Next* read the top,
+// Stop pops; fp lets dropIterFrames reclaim it on a return/panic that skips Stop.
+type iterEntry struct {
+	fp         int
+	next, stop Value
+}
+
+// dropIterFrames pops iterators owned by frames at or above fp, never below
+// m.iterBase (a re-entrant Run restarts fp from 0; its callbacks must not
+// reclaim an outer Run's live iterators).
+func (m *Machine) dropIterFrames(fp int) {
+	for len(m.iterStack) > m.iterBase && m.iterStack[len(m.iterStack)-1].fp >= fp {
+		m.iterStack = m.iterStack[:len(m.iterStack)-1]
+	}
 }
 
 // traceFlag* are bits stored in Machine.traceFlags.
@@ -905,6 +924,16 @@ func (m *Machine) Run() (err error) {
 	defer m.recoverPanic(&err)
 	prev := SetActiveMachine(m)
 	defer SetActiveMachine(prev)
+
+	// Isolate this Run's range iterators from an outer (re-entrant) Run's:
+	// raise the floor, then on exit drop any this Run leaked and restore it.
+	savedIterBase := m.iterBase
+	runIterBase := len(m.iterStack)
+	m.iterBase = runIterBase
+	defer func() {
+		m.iterStack = m.iterStack[:runIterBase]
+		m.iterBase = savedIterBase
+	}()
 
 	// Append sentinel instructions so negative-IP handlers become normal opcodes.
 	// Save baseCodeLen too: a re-entrant Run (CallFunc from a native callback)
@@ -1835,26 +1864,26 @@ func (m *Machine) Run() (err error) {
 				mem[sp] = ValueOf(0)
 			}
 		case Next:
-			if k, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, bool))(); ok {
+			if k, ok := m.iterStack[len(m.iterStack)-1].next.ref.Interface().(func() (reflect.Value, bool))(); ok {
 				m.assignSlot(&m.globals[int(c.B)], FromReflect(k))
 			} else {
 				ip += int(c.A)
 				continue
 			}
 		case NextLocal:
-			if k, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, bool))(); ok {
+			if k, ok := m.iterStack[len(m.iterStack)-1].next.ref.Interface().(func() (reflect.Value, bool))(); ok {
 				m.assignSlot(&mem[fp-1+int(c.B)], FromReflect(k))
 			} else {
 				ip += int(c.A)
 				continue
 			}
 		case Next0:
-			if _, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, bool))(); !ok {
+			if _, ok := m.iterStack[len(m.iterStack)-1].next.ref.Interface().(func() (reflect.Value, bool))(); !ok {
 				ip += int(c.A)
 				continue
 			}
 		case Next2:
-			if k, v, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, reflect.Value, bool))(); ok {
+			if k, v, ok := m.iterStack[len(m.iterStack)-1].next.ref.Interface().(func() (reflect.Value, reflect.Value, bool))(); ok {
 				kAddr, vAddr := int(int16(c.B)), int(int16(c.B>>16))
 				m.assignSlot(&m.globals[kAddr], FromReflect(k))
 				m.assignSlot(&m.globals[vAddr], FromReflect(v))
@@ -1863,7 +1892,7 @@ func (m *Machine) Run() (err error) {
 				continue
 			}
 		case Next2Local:
-			if k, v, ok := mem[sp-1].ref.Interface().(func() (reflect.Value, reflect.Value, bool))(); ok {
+			if k, v, ok := m.iterStack[len(m.iterStack)-1].next.ref.Interface().(func() (reflect.Value, reflect.Value, bool))(); ok {
 				kAddr, vAddr := int(int16(c.B)), int(int16(c.B>>16))
 				m.assignSlot(&mem[fp-1+kAddr], FromReflect(k))
 				m.assignSlot(&mem[fp-1+vAddr], FromReflect(v))
@@ -1890,7 +1919,7 @@ func (m *Machine) Run() (err error) {
 			v := mem[sp]
 			seq := emptySeq // invalid (nil slice/map/string) -> empty range, as in Go
 			if v.ref.IsValid() {
-				if c.A != 0 {
+				if c.A&1 != 0 {
 					v = v.CopyArray()
 				}
 				if c.B != 0 {
@@ -1901,17 +1930,13 @@ func (m *Machine) Run() (err error) {
 				seq = v.Seq()
 			}
 			next, stop := iter.Pull(seq)
-			if sp+2 >= len(mem) {
-				mem = growStack(mem, sp, 2)
-			}
-			mem[sp+1] = ValueOf(next)
-			mem[sp+2] = ValueOf(stop)
-			sp += 2
+			m.iterStack = append(m.iterStack, iterEntry{fp: fp, next: ValueOf(next), stop: ValueOf(stop)})
+			sp -= int(c.A>>1) + 1 // drop the n dead loop-var values + the subject
 		case Pull2:
 			v := mem[sp]
 			seq2 := emptySeq2 // invalid (nil slice/map) -> empty range, as in Go
 			if v.ref.IsValid() {
-				if c.A != 0 {
+				if c.A&1 != 0 {
 					v = v.CopyArray()
 				}
 				if c.B != 0 {
@@ -1921,12 +1946,8 @@ func (m *Machine) Run() (err error) {
 				seq2 = v.Seq2()
 			}
 			next, stop := iter.Pull2(seq2)
-			if sp+2 >= len(mem) {
-				mem = growStack(mem, sp, 2)
-			}
-			mem[sp+1] = ValueOf(next)
-			mem[sp+2] = ValueOf(stop)
-			sp += 2
+			m.iterStack = append(m.iterStack, iterEntry{fp: fp, next: ValueOf(next), stop: ValueOf(stop)})
+			sp -= int(c.A>>1) + 1 // drop the n dead loop-var values + the subject
 		case Grow:
 			a := int(c.A)
 			if n := a + int(c.B); sp+n >= len(mem) {
@@ -2283,6 +2304,9 @@ func (m *Machine) Run() (err error) {
 			// No pending defers: normal frame teardown.
 			ip = int(int32(retIPInfo))
 			ofp := fp
+			if len(m.iterStack) != 0 {
+				m.dropIterFrames(ofp) // early return out of a range loop skips Stop
+			}
 			fpVal := mem[fp-1].num
 			if fpVal&heapSavedFlag != 0 {
 				fp = int(fpVal &^ heapSavedFlag)
@@ -2326,8 +2350,9 @@ func (m *Machine) Run() (err error) {
 			mem[sp-3] = Value{ref: derefArray(mem[sp-3].ref).Slice3(low, high, hi)}
 			sp -= 3
 		case Stop:
-			mem[sp].ref.Interface().(func())()
-			sp -= 3 + int(c.A)
+			e := m.iterStack[len(m.iterStack)-1]
+			m.iterStack = m.iterStack[:len(m.iterStack)-1]
+			e.stop.ref.Interface().(func())()
 		// Generic bitwise.
 		case BitAnd:
 			mem[sp-1].num &= mem[sp].num
@@ -3203,6 +3228,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		frameBase := int(retIPInfo >> 48)
 		*ip = int(int32(retIPInfo))
 		ofp := *fp
+		m.dropIterFrames(ofp)
 		*fp = m.restoreFP((*mem)[*fp-1].num)
 		newBase := ofp - frameBase
 		newSP := newBase + nret
@@ -3222,6 +3248,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 	// Still panicking: tear down frame, continue unwinding parent.
 	frameBase := int((*mem)[*fp-2].num >> 48)
 	ofp := *fp
+	m.dropIterFrames(ofp)
 	*fp = m.restoreFP((*mem)[*fp-1].num)
 	if *fp == 0 {
 		// Top of stack: return panic as error.
@@ -3751,6 +3778,7 @@ func (rs *runnerState) releaseRunner(m *Machine) {
 	m.fp = 0
 	m.panicking = false
 	m.panicVal = Value{}
+	m.iterStack = m.iterStack[:0]
 	rs.pool.Put(m)
 }
 

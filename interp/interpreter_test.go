@@ -1082,6 +1082,16 @@ func TestStruct(t *testing.T) {
 		{n: "panic_nil_iface", src: `func f() (s string) { defer func() { s = recover().(error).Error() }(); var e error; panic(e); return }; f()`, res: "panic called with nil argument"},
 		{n: "panic_typed_nil_kept", src: `func f() (out bool) { defer func() { _, out = recover().(*int) }(); panic((*int)(nil)); return }; f()`, res: "true"},
 
+		// defer in a range body used to crash (sp-resident iterator displaced by
+		// the defer entry); now off-stack. See [[project_defer_in_range_loop_bug]].
+		{n: "defer_in_range_lifo", src: `func f() string { s := ""; func() { for _, k := range []string{"a", "b"} { defer func(k string) { s += k }(k) } }(); return s }; f()`, res: "ba"},
+		{n: "defer_in_range_break", src: `func f() string { s := ""; func() { for _, k := range []string{"a", "b", "c"} { defer func(k string) { s += k }(k); if k == "b" { return } } }(); return s }; f()`, res: "ba"},
+		{n: "defer_in_range_panic_recover", src: `func f() string { s := ""; func() { defer func() { recover() }(); for _, k := range []int{1, 2, 3} { defer func(k int) { s += string(rune('0' + k)) }(k); if k == 2 { panic("x") } } }(); return s }; f()`, res: "21"},
+		{n: "defer_in_nested_range", src: `func f() int { n := 0; for _, a := range []int{1, 2} { for _, b := range []int{1, 2} { defer func() { n++ }(); _ = a; _ = b } }; return n }; f()`, res: "0"},
+		// Native callback re-enters Run with a reset fp; must not reclaim the
+		// outer Run's live iterators (iterBase floor). g(2) = 3+3*3+3*9 iters.
+		{n: "range_iter_reentrant_callback", src: `import "fmt"; type e struct{ s string }; func (x e) String() string { return x.s }; func g(n int) int { c := 0; for _, v := range []int{1, 2, 3} { _ = fmt.Sprint(e{"x"}); c++; _ = v; if n > 0 { c += g(n-1) } }; return c }; g(2)`, res: "39"},
+
 		{n: "errors_is_custom_match", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 		{n: "errors_is_custom_nomatch", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrNotExist)`, res: "false"},
 

@@ -2781,6 +2781,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				rangeKind = vt.Kind()
 				c.emit(t, vm.Deref)
 			}
+			// Pull/Pull2 A operand: bit 0 = copy-array flag, bits 1+ = n; the VM
+			// uses n to drop the n+1 dead slots (loop-var values + subject).
+			pullA := copyArray | (n << 1)
 			initRangeVar := func(s *symbol.Symbol, typ *vm.Type) {
 				s.Type = typ
 				if s.Kind == symbol.LocalVar {
@@ -2798,7 +2801,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if n > 0 {
 					initRangeVar(stack[len(stack)-2], c.Symbols["int"].Type)
 				}
-				c.emit(t, vm.Pull)
+				c.emit(t, vm.Pull, pullA)
 			case reflect.Array, reflect.Slice, reflect.String:
 				var vType *vm.Type
 				if rangeKind == reflect.String {
@@ -2808,29 +2811,29 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				}
 				switch n {
 				case 0:
-					c.emit(t, vm.Pull, copyArray)
+					c.emit(t, vm.Pull, pullA)
 				case 1:
 					initRangeVar(stack[len(stack)-2], c.Symbols["int"].Type)
-					c.emit(t, vm.Pull, copyArray)
+					c.emit(t, vm.Pull, pullA)
 				case 2:
 					k, v := stack[len(stack)-3], stack[len(stack)-2]
 					initRangeVar(k, c.Symbols["int"].Type)
 					initRangeVar(v, vType)
-					c.emit(t, vm.Pull2, copyArray)
+					c.emit(t, vm.Pull2, pullA)
 				}
 			case reflect.Map:
 				keyType := vt.Key()
 				switch n {
 				case 0:
-					c.emit(t, vm.Pull)
+					c.emit(t, vm.Pull, pullA)
 				case 1:
 					initRangeVar(stack[len(stack)-2], keyType)
-					c.emit(t, vm.Pull)
+					c.emit(t, vm.Pull, pullA)
 				case 2:
 					k, v := stack[len(stack)-3], stack[len(stack)-2]
 					initRangeVar(k, keyType)
 					initRangeVar(v, vt.Elem())
-					c.emit(t, vm.Pull2)
+					c.emit(t, vm.Pull2, pullA)
 				}
 			case reflect.Chan:
 				if n > 1 {
@@ -2838,10 +2841,10 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				}
 				switch n {
 				case 0:
-					c.emit(t, vm.Pull)
+					c.emit(t, vm.Pull, pullA)
 				case 1:
 					initRangeVar(stack[len(stack)-2], vt.Elem())
-					c.emit(t, vm.Pull)
+					c.emit(t, vm.Pull, pullA)
 				}
 			case reflect.Func:
 				// Range-over-func: subject must be func(yield func(V) bool)
@@ -2874,7 +2877,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				case 1:
 					initRangeVar(stack[len(stack)-2], yieldType.ParamType(0))
 				}
-				c.emit(t, op, 0, funcTypeIdx)
+				c.emit(t, op, pullA, funcTypeIdx)
 			default:
 				// Unhandled range type. n == 0 degrades to a no-op iteration
 				// (used by some upstream paths that emit a range over a value
