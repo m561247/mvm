@@ -110,6 +110,7 @@ var (
 	reFail    = regexp.MustCompile(`(?m)^\s*--- FAIL: `)
 	rePanic   = regexp.MustCompile(`panic:|vm: panic|PanicError`)
 	reUnsup   = regexp.MustCompile(`unsupported \(generic-only`)
+	reUntest  = regexp.MustCompile(`untestable \(`)
 	reStdlib  = regexp.MustCompile(`(?m)^//go:generate go run \.\./cmd/extract -stdlib (\S+)`)
 	reErrLine = regexp.MustCompile(`(?m)^.*(?:\.go:\d+:\d+:|loading "|panic:).*$`)
 	reReadme  = regexp.MustCompile(`(?s)<!-- compat:start -->.*?<!-- compat:end -->`)
@@ -330,6 +331,9 @@ func classify(exitCode int, timedOut bool, out string) Pkg {
 		r.Tier, r.ErrorClass = "red", "tests-fail"
 	case reUnsup.MatchString(out):
 		// Generic-only stub package: unsupported by design, not a failure.
+		r.Tier = "gray"
+	case reUntest.MatchString(out):
+		// Wholesale-untestable package (stdlib.Untestable): skipped, not failed.
 		r.Tier = "gray"
 	case exitCode == 0 && strings.Contains(out, "no tests to run"):
 		r.Tier = "gray"

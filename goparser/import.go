@@ -120,7 +120,7 @@ func (p *Parser) LoadPackageSources(importPath string, includeTests bool) ([]Pac
 					continue
 				}
 				if bad := p.firstUnresolvableImport(extractImports(s.Content)); bad != "" {
-					fmt.Fprintf(os.Stderr, "mvm test: skipping %s/%s: cannot resolve import %q\n", importPath, s.Name, bad)
+					p.noteUnresolvableSkip(importPath, s.Name, bad)
 					continue
 				}
 				external = append(external, s)
@@ -200,12 +200,25 @@ func (p *Parser) loadBridgedTestSources(importPath string) ([]PackageSource, err
 			continue
 		}
 		if bad := p.firstUnresolvableImport(extractImports(src)); bad != "" {
-			fmt.Fprintf(os.Stderr, "mvm test: skipping %s/%s: cannot resolve import %q\n", importPath, e.Name(), bad)
+			p.noteUnresolvableSkip(importPath, e.Name(), bad)
 			continue
 		}
 		out = append(out, PackageSource{Name: e.Name(), Content: src})
 	}
 	return out, nil
+}
+
+// noteUnresolvableSkip reports a dropped test file once, recording it in
+// testSkipFiles so mvm test's reload-per-retry does not re-report it.
+func (p *Parser) noteUnresolvableSkip(importPath, file, badImport string) {
+	if p.testSkipFiles == nil {
+		p.testSkipFiles = map[string]bool{}
+	}
+	if p.testSkipFiles[file] {
+		return
+	}
+	p.testSkipFiles[file] = true
+	fmt.Fprintf(os.Stderr, "mvm test: skipping %s/%s: cannot resolve import %q\n", importPath, file, badImport)
 }
 
 func (p *Parser) firstUnresolvableImport(imports []string) string {

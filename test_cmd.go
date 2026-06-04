@@ -124,6 +124,11 @@ func testCmd(arg []string) error {
 		}
 	}
 
+	if reason := stdlib.UntestableReason(target); reason != "" {
+		fmt.Fprintf(os.Stderr, "mvm test: %s: untestable (%s)\n", target, reason)
+		return nil
+	}
+
 	// Import-path target (bridged stdlib, mirror-interpreted stdlib, or remote
 	// module). Retry on a test-file compile error: drop the offending _test.go
 	// and reload so the rest of the package still runs -- mirroring how a real

@@ -82,6 +82,17 @@ var GenericOnly = map[string]bool{
 // IsGenericOnly reports whether pkgPath is a generic-only stub package.
 func IsGenericOnly(pkgPath string) bool { return GenericOnly[pkgPath] }
 
+// Untestable lists packages whose whole test suite has no viable run under the
+// interpreter, so `mvm test` skips them wholesale (exit 0, gray in the matrix).
+// Coarser than Incompat, which skips individual tests.
+var Untestable = map[string]string{
+	"runtime": "native-only: most external tests reference export_test.go symbols absent on the bridge, re-exec subprocesses, or use //go:linkname; the suite cannot complete under the interpreter",
+}
+
+// UntestableReason returns the wholesale-skip reason for pkgPath, or "" when
+// its tests should run normally.
+func UntestableReason(pkgPath string) string { return Untestable[pkgPath] }
+
 // SkipReason returns the recorded reason for skipping testName when running
 // `mvm test pkgPath`, or "" if the test should run normally.
 func SkipReason(pkgPath, testName string) string {
