@@ -43,24 +43,25 @@ type Parser struct {
 	labelCount     map[string]int
 	breakLabel     string
 	continueLabel  string
-	pendingLabel   string               // user label preceding the current for/switch statement
-	labeledJump    map[string][2]string // maps user label to [continueLabel, breakLabel]
-	ctrlStack      []ctrlFrame          // active for/switch/select frames (for labeled break/continue range unwind)
-	clonum         int                  // closure instance number, package-global counter
-	funcN          int                  // anonymous-function counter within the current outer function
-	initNum        int                  // init function instance counter
-	InitFuncs      []string             // ordered list of init function internal names
-	blankSeq       int                  // counter for unique blank identifier names
-	namedOut       []string             // scoped names of named return vars for current function
-	symTracker     []string             // accumulates newly-added symbol keys during a checkpoint window; nil = not tracking
-	batchFuncDecls map[string]bool      // canonical keys of top-level funcs/methods registered in the current resolveDecls batch; a second hit is a redeclaration (saved/restored across nested imports)
-	instanceDecls  []DeferredDecl       // generic instance bodies tagged with their template's package; comp.finishCompile compiles each under that package
-	typeOnly       bool                 // when true, addSymVar is a no-op (Phase 1 signature-only parse)
-	inForInit      bool                 // true while parsing for-init or range clause (marks LoopVar)
-	funcDepth      int                  // nesting depth of function bodies (>0 means inside a function)
-	loopDepth      int                  // nesting depth of for loops (>0 means inside a loop)
-	instDepth      int                  // nesting depth of generic instantiations; guards unbounded-growth recursion (instantiation cycle)
-	buildCtx       *buildContext        // build constraint context for file filtering
+	pendingLabel   string                // user label preceding the current for/switch statement
+	labeledJump    map[string][2]string  // maps user label to [continueLabel, breakLabel]
+	ctrlStack      []ctrlFrame           // active for/switch/select frames (for labeled break/continue range unwind)
+	clonum         int                   // closure instance number, package-global counter
+	funcN          int                   // anonymous-function counter within the current outer function
+	initNum        int                   // init function instance counter
+	InitFuncs      []string              // ordered list of init function internal names
+	blankSeq       int                   // counter for unique blank identifier names
+	namedOut       []string              // scoped names of named return vars for current function
+	symTracker     []string              // accumulates newly-added symbol keys during a checkpoint window; nil = not tracking
+	batchFuncDecls map[string]bool       // canonical keys of top-level funcs/methods registered in the current resolveDecls batch; a second hit is a redeclaration (saved/restored across nested imports)
+	instanceDecls  []DeferredDecl        // generic instance bodies tagged with their template's package; comp.finishCompile compiles each under that package
+	funcInstArgs   map[string][]*vm.Type // generic-func instance name -> bound type args, to disambiguate distinct same-named types (e.g. func-local types) that mangle alike
+	typeOnly       bool                  // when true, addSymVar is a no-op (Phase 1 signature-only parse)
+	inForInit      bool                  // true while parsing for-init or range clause (marks LoopVar)
+	funcDepth      int                   // nesting depth of function bodies (>0 means inside a function)
+	loopDepth      int                   // nesting depth of for loops (>0 means inside a loop)
+	instDepth      int                   // nesting depth of generic instantiations; guards unbounded-growth recursion (instantiation cycle)
+	buildCtx       *buildContext         // build constraint context for file filtering
 }
 
 // SymSet inserts sym at key in the symbol table, recording the key for potential rollback.

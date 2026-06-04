@@ -3,6 +3,7 @@ package goparser
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/mvm-sh/mvm/lang"
@@ -510,9 +511,9 @@ func (p *Parser) instantiate(tmpl *genericTemplate, typeArgs []*vm.Type, pos Tok
 		return nil, "", p.wrapAt(pos, ErrSyntax, "generic %s expects %d type argument(s), got %d", tmpl.name, len(tmpl.typeParams), len(typeArgs))
 	}
 
-	mname := mangledName(tmpl.name, typeArgs)
-	if s, _, ok := p.Symbols.Get(mname, ""); ok && s.Type != nil {
-		return nil, mname, nil // Already instantiated.
+	mname, reuse := p.instanceName(tmpl, typeArgs)
+	if reuse {
+		return nil, mname, nil // Already instantiated for this exact type set.
 	}
 
 	if p.instDepth >= maxInstDepth {
@@ -548,6 +549,87 @@ func (p *Parser) instantiate(tmpl *genericTemplate, typeArgs []*vm.Type, pos Tok
 	}
 
 	return out, mname, nil
+}
+
+// instanceName gives tmpl<typeArgs> its monomorphization's symbol name and
+// whether an existing one can be reused. Distinct types can share a PkgPath.Name
+// (e.g. a type named the same in two functions) and so mangle alike; a func
+// instance bound to one must not be reused for another, so colliding names get a
+// $N suffix.
+func (p *Parser) instanceName(tmpl *genericTemplate, typeArgs []*vm.Type) (name string, reuse bool) {
+	base := mangledName(tmpl.name, typeArgs)
+	if !tmpl.isFunc {
+		// Generic types keep the plain name; instantiateMethod recomputes it
+		// without a suffix, so a suffix here would orphan attached methods.
+		if s, _, ok := p.Symbols.Get(base, ""); ok && s.Type != nil {
+			return base, true
+		}
+		return base, false
+	}
+	name = base
+	for suffix := 0; ; suffix++ {
+		if suffix > 0 {
+			name = base + "$" + strconv.Itoa(suffix)
+		}
+		// Symbol existence (not the args map) gates reuse, so a rolled-back
+		// instance is re-emitted despite its stale args entry.
+		s, _, ok := p.Symbols.Get(name, "")
+		if !ok || s.Type == nil {
+			break
+		}
+		if prev, recorded := p.funcInstArgs[name]; recorded && !identicalTypeArgs(prev, typeArgs) {
+			continue // same name, different type set
+		}
+		return name, true
+	}
+	if p.funcInstArgs == nil {
+		p.funcInstArgs = map[string][]*vm.Type{}
+	}
+	p.funcInstArgs[name] = typeArgs
+	return name, false
+}
+
+func identicalTypeArgs(a, b []*vm.Type) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !sameInstanceType(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameInstanceType reports whether type args a and b denote the same
+// monomorphization. Unlike Type.Identical it does not fall back to PkgPath.Name:
+// with no Rtype to compare, distinct named *Types are distinct declarations
+// (e.g. a type named the same in two functions), not one shared type.
+func sameInstanceType(a, b *vm.Type) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Rtype != nil && b.Rtype != nil {
+		return a.Rtype == b.Rtype
+	}
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	if a.Name != "" || b.Name != "" {
+		return false
+	}
+	switch a.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Chan:
+		return sameInstanceType(a.ElemType, b.ElemType)
+	case reflect.Array:
+		return a.Len() == b.Len() && sameInstanceType(a.ElemType, b.ElemType)
+	case reflect.Map:
+		return sameInstanceType(a.KeyType, b.KeyType) && sameInstanceType(a.ElemType, b.ElemType)
+	}
+	return true // structurally identical unnamed basic kinds
 }
 
 // emitInstantiatedMethod instantiates methTmpl for typeArgs and queues its body
