@@ -1875,6 +1875,7 @@ func TestMap(t *testing.T) {
 		{n: "array_key_elided", src: `m := map[[3]byte]int{{'a', 'b', 'c'}: 1, {'d', 'e', 'f'}: 2}; len(m)*10 + m[[3]byte{'a', 'b', 'c'}]`, res: "21"},
 		{n: "array_key_var_neg", src: `var m = map[[2]int]int{{1, 2}: -7, {3, 4}: 5}; m[[2]int{1, 2}]`, res: "-7"},
 		{n: "array_key_string_val", src: `m := map[[2]int]string{{1, 2}: "x", {3, 4}: "y"}; m[[2]int{3, 4}]`, res: "y"},
+		{n: "native_iface_key", src: `import "errors"; m := map[error]int{}; var e error = errors.New("x"); m[e] = 7; v := m[e]; delete(m, e); v*10 + len(m)`, res: "70"},
 	})
 }
 

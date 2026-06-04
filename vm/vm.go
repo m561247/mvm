@@ -2645,7 +2645,7 @@ func (m *Machine) Run() (err error) {
 			sp--
 		case DeleteMap:
 			mapVal := mem[sp-1].ref
-			mapVal.SetMapIndex(numReflect(mapVal.Type().Key(), mem[sp]), reflect.Value{})
+			mapVal.SetMapIndex(mapKeyReflect(mapVal.Type().Key(), mem[sp]), reflect.Value{})
 			sp--
 		case Clear:
 			clearValue(mem[sp].Reflect())
@@ -2684,7 +2684,7 @@ func (m *Machine) Run() (err error) {
 			sp -= 2
 		case MapIndex:
 			mapVal := mem[sp-1].ref
-			rv := mapVal.MapIndex(numReflect(mapVal.Type().Key(), mem[sp]))
+			rv := mapVal.MapIndex(mapKeyReflect(mapVal.Type().Key(), mem[sp]))
 			if !rv.IsValid() {
 				rv = reflect.Zero(mapVal.Type().Elem())
 			}
@@ -2692,7 +2692,7 @@ func (m *Machine) Run() (err error) {
 			sp--
 		case MapIndexOk:
 			mapVal := mem[sp-1].ref
-			rv := mapVal.MapIndex(numReflect(mapVal.Type().Key(), mem[sp]))
+			rv := mapVal.MapIndex(mapKeyReflect(mapVal.Type().Key(), mem[sp]))
 			ok := rv.IsValid()
 			if !ok {
 				rv = reflect.Zero(mapVal.Type().Elem())
@@ -2702,7 +2702,7 @@ func (m *Machine) Run() (err error) {
 		case MapSet:
 			mapVal := mem[sp-2].ref
 			mt := mapVal.Type()
-			mapVal.SetMapIndex(numReflect(mt.Key(), mem[sp-1]), m.wrapForFunc(mem[sp], mt.Elem()))
+			mapVal.SetMapIndex(mapKeyReflect(mt.Key(), mem[sp-1]), m.wrapForFunc(mem[sp], mt.Elem()))
 			sp -= 2
 		case SetS:
 			n := int(c.A)
@@ -4230,7 +4230,7 @@ func (m *Machine) execBuiltinDeferred(op Op, base, narg int, mem []Value) {
 	case ChanClose:
 		mem[base].ref.Close()
 	case DeleteMap:
-		mem[base].ref.SetMapIndex(numReflect(mem[base].ref.Type().Key(), mem[base+1]), reflect.Value{})
+		mem[base].ref.SetMapIndex(mapKeyReflect(mem[base].ref.Type().Key(), mem[base+1]), reflect.Value{})
 	case CopySlice:
 		reflect.Copy(mem[base].ref, mem[base+1].ref)
 	case Clear:
@@ -4536,6 +4536,21 @@ func numReflect(t reflect.Type, src Value) reflect.Value {
 		return r
 	}
 	return src.Reflect()
+}
+
+// mapKeyReflect converts src to a reflect.Value usable as a key in a map whose key type is t.
+func mapKeyReflect(t reflect.Type, src Value) reflect.Value {
+	rv := numReflect(t, src)
+	if rv.IsValid() && rv.Kind() == reflect.Interface && t.Kind() == reflect.Interface &&
+		rv.Type() != t && !rv.Type().AssignableTo(t) {
+		if rv.IsNil() {
+			return reflect.Zero(t)
+		}
+		if dv := rv.Elem(); dv.Type().AssignableTo(t) {
+			return dv
+		}
+	}
+	return rv
 }
 
 // bridgeArgs unwraps any Iface-typed arguments to the underlying concrete
