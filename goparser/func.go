@@ -31,6 +31,11 @@ func (p *Parser) registerFunc(toks Tokens) (bool, error) {
 		if fname == "init" {
 			return false, nil // init functions are handled in Phase 2 only.
 		}
+		if fname == "_" {
+			// Blank funcs are never callable; Go allows many per package
+			// (stringer emits `func _()` per file). Don't register: no collision.
+			return false, nil
+		}
 		// Generic function: func Name[T any](params) rettype { ... }
 		if len(toks) > 2 && toks[2].Tok == lang.BracketBlock {
 			params, err := p.parseTypeParamList(toks[2].Token)
@@ -282,6 +287,9 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 			return nil, nil
 		}
 		fname = in[1].Str
+		if fname == "_" {
+			return nil, nil // Blank funcs are never called: emit no body.
+		}
 		if fname == "init" {
 			fname = "#init" + strconv.Itoa(p.initNum)
 			p.initNum++

@@ -28,6 +28,9 @@ func (p *Parser) parseDefer(in Tokens) (out Tokens, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// Trailing `...` (f(s...)): pass the slice as-is, don't re-pack.
+	bToks, _ := p.scanBlock(callTok.Token, false)
+	spread := len(bToks) > 0 && bToks[len(bToks)-1].Tok == lang.Ellipsis
 
 	// Parse the function expression (tokens before the call paren).
 	if out, err = p.parseExpr(expr[:last], ""); err != nil {
@@ -39,7 +42,11 @@ func (p *Parser) parseDefer(in Tokens) (out Tokens, err error) {
 		return out, err
 	}
 	out = append(out, argToks...)
-	out = append(out, newDefer(callTok.Pos, narg))
+	if spread {
+		out = append(out, newDefer(callTok.Pos, narg, 1))
+	} else {
+		out = append(out, newDefer(callTok.Pos, narg))
+	}
 	return out, nil
 }
 
@@ -57,6 +64,8 @@ func (p *Parser) parseGo(in Tokens) (out Tokens, err error) {
 	if err != nil {
 		return nil, err
 	}
+	bToks, _ := p.scanBlock(callTok.Token, false)
+	spread := len(bToks) > 0 && bToks[len(bToks)-1].Tok == lang.Ellipsis
 
 	if out, err = p.parseExpr(expr[:last], ""); err != nil {
 		return out, err
@@ -66,7 +75,11 @@ func (p *Parser) parseGo(in Tokens) (out Tokens, err error) {
 		return out, err
 	}
 	out = append(out, argToks...)
-	out = append(out, newGo(callTok.Pos, narg))
+	if spread {
+		out = append(out, newGo(callTok.Pos, narg, 1))
+	} else {
+		out = append(out, newGo(callTok.Pos, narg))
+	}
 	return out, nil
 }
 

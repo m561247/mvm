@@ -2901,6 +2901,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				hasDefer[len(hasDefer)-1] = true
 			}
 			narg := t.Arg[0].(int)
+			spread := len(t.Arg) > 1 && t.Arg[1].(int) != 0
 			s := stack[len(stack)-1-narg]
 			isX := 0
 			switch s.Kind {
@@ -2920,26 +2921,37 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				c.emit(t, vm.Push, int(op))
 				isX = 2
 			}
+			callNarg, packed := c.emitVariadicPack(t, s, narg, spread, stack)
 			pop() // function
 			for i := 0; i < narg; i++ {
 				pop()
 			}
-			c.emit(t, vm.DeferPush, narg, isX)
+			deferB := isX
+			if packed {
+				deferB |= vm.DeferSpreadFlag
+			}
+			c.emit(t, vm.DeferPush, callNarg, deferB)
 
 		case lang.Go:
 			narg := t.Arg[0].(int)
+			spread := len(t.Arg) > 1 && t.Arg[1].(int) != 0
 			s := stack[len(stack)-1-narg]
 			if s.Kind == symbol.Type {
 				return c.errAt(t, "cannot use a type conversion as a goroutine")
 			}
+			callNarg, packed := c.emitVariadicPack(t, s, narg, spread, stack)
 			pop() // function
 			for i := 0; i < narg; i++ {
 				pop()
 			}
 			if s.Kind == symbol.Func && len(s.FreeVars) == 0 && c.removeGetGlobal(s.Index) {
-				c.emit(t, vm.GoCallImm, s.Index, narg)
+				c.emit(t, vm.GoCallImm, s.Index, callNarg)
 			} else {
-				c.emit(t, vm.GoCall, narg)
+				goB := 0
+				if packed {
+					goB = 1
+				}
+				c.emit(t, vm.GoCall, callNarg, goB)
 			}
 
 		case lang.ChanSend:
@@ -4272,6 +4284,38 @@ func makeKeyType(container *vm.Type) *vm.Type {
 		return container.KeyType
 	}
 	return &vm.Type{Rtype: vm.MaterializeRtype(container).Key()}
+}
+
+// emitVariadicPack MkSlice-packs a deferred or go-spawned variadic call's
+// trailing args (as the Call path does), returning the new arg count and whether
+// the last arg is now a slice. Only VM funcs are packed; native-direct funcs and
+// builtins keep raw spread args, and a spread call already supplies the slice.
+func (c *Compiler) emitVariadicPack(t goparser.Token, s *symbol.Symbol, narg int, spread bool, stack []*symbol.Symbol) (int, bool) {
+	typ := s.Type
+	if typ == nil || !typ.IsVariadic() {
+		return narg, false
+	}
+	if spread {
+		return narg, true
+	}
+	switch s.Kind {
+	case symbol.Func, symbol.LocalVar, symbol.Var:
+	default:
+		return narg, false
+	}
+	nFixed := typ.NumIn() - 1
+	elemTyp := typ.ParamType(nFixed).Elem()
+	if elemTyp.Kind() == reflect.Interface {
+		for k := nFixed; k < narg; k++ {
+			argSym := stack[len(stack)-narg+k]
+			if argSym.Type == nil || argSym.Type.IsInterface() {
+				continue
+			}
+			c.emitIfaceWrapAt(t, elemTyp, argSym.Type, narg-1-k)
+		}
+	}
+	c.emit(t, vm.MkSlice, narg-nFixed, c.typeSym(elemTyp).Index)
+	return nFixed + 1, true
 }
 
 func (c *Compiler) typeSym(t *vm.Type) *symbol.Symbol {

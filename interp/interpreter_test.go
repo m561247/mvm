@@ -3471,6 +3471,39 @@ func f() {
 }
 f()
 r`, res: "1"},
+		{n: "defer_variadic_vm", src: `
+// A deferred variadic VM func must pack its trailing args into a slice,
+// not bind the variadic param to the last argument.
+s := 0
+func sum(xs ...int) { for _, v := range xs { s += v } }
+func f() { defer sum(1, 2, 3) }
+f()
+s`, res: "6"},
+		{n: "defer_variadic_vm_var", src: `
+// Same, when the func is held in a local variable.
+s := 0
+g := func(xs ...int) { for _, v := range xs { s += v } }
+func f() { defer g(4, 5, 6) }
+f()
+s`, res: "15"},
+		{n: "defer_variadic_fixed_plus_rest", src: `
+s := 0
+func add(base int, xs ...int) { s = base; for _, v := range xs { s += v } }
+func f() { defer add(100, 1, 2, 3) }
+f()
+s`, res: "106"},
+		{n: "defer_variadic_spread", src: `
+// Explicit spread defer must not re-pack the slice.
+s := 0
+func sum(xs ...int) { for _, v := range xs { s += v } }
+func f() { r := []int{7, 8, 9}; defer sum(r...) }
+f()
+s`, res: "24"},
+		{n: "defer_blank_func", src: `
+// Multiple blank funcs are legal and never run.
+func _() { panic("never") }
+func _() { panic("never either") }
+42`, res: "42"},
 	})
 }
 
@@ -3873,6 +3906,8 @@ func TestGoroutine(t *testing.T) {
 		{n: "make_chan_buffered", src: `ch := make(chan int, 3); ch <- 1; ch <- 2; ch <- 3; (<-ch) + (<-ch) + (<-ch)`, res: "6"},
 		// GoCallImm path: named func called via go, parent must still push to stack after goroutine launch.
 		{n: "goroutine_named_func_unbuffered", src: `func send(c chan string) { c <- "ping" }; ch := make(chan string); go send(ch); <-ch`, res: "ping"},
+		// A go-spawned variadic VM func must pack its trailing args into a slice.
+		{n: "goroutine_variadic", src: `func sum(ch chan int, xs ...int) { s := 0; for _, v := range xs { s += v }; ch <- s }; ch := make(chan int); go sum(ch, 1, 2, 3, 4); <-ch`, res: "10"},
 		// Directional channel types: chan<- (send-only) and <-chan (recv-only).
 		{n: "send_only_chan_param", src: `func send(c chan<- string) { c <- "ping" }; ch := make(chan string); go send(ch); <-ch`, res: "ping"},
 		{n: "recv_only_chan_param", src: `func recv(c <-chan string) string { return <-c }; ch := make(chan string, 1); ch <- "ping"; recv(ch)`, res: "ping"},

@@ -903,9 +903,15 @@ func packRetIP(retIP, nret, frameBase int) uint64 {
 // _defer.started) rather than re-run one whose body panicked before deferRet.
 const deferStartedFlag = uint64(1) << 63
 
-func packDefer(narg, isX int) uint64 { return uint64(narg<<2 | isX) }
-func deferNarg(packed uint64) int    { return int((packed &^ deferStartedFlag) >> 2) }
-func deferIsX(packed uint64) int     { return int(packed & 3) }
+// DeferSpreadFlag marks that the call's final argument is a variadic slice, so
+// native defers use reflect.CallSlice. Set in the DeferPush B operand alongside
+// isX. Defer header layout: isX bits 0-1, spread bit 2, narg bits 3-62, started 63.
+const DeferSpreadFlag = 4
+
+func packDefer(narg, isX, spread int) uint64 { return uint64(narg<<3 | spread<<2 | isX) }
+func deferNarg(packed uint64) int            { return int((packed &^ deferStartedFlag) >> 3) }
+func deferIsX(packed uint64) int             { return int(packed & 3) }
+func deferSpread(packed uint64) bool         { return packed&DeferSpreadFlag != 0 }
 
 func growStack(mem []Value, sp, need int) []Value {
 	n := max(len(mem)*2, sp+1+need+256)
@@ -1975,7 +1981,7 @@ func (m *Machine) Run() (err error) {
 			}
 			sp -= narg + 1
 			m.mem = mem[:sp+1]
-			if m.newGoroutine(fval, args) {
+			if m.newGoroutine(fval, args, c.B != 0) {
 				ip = m.stageUnwind(ip, fp, mem)
 				continue
 			}
@@ -1990,7 +1996,8 @@ func (m *Machine) Run() (err error) {
 			}
 			sp -= narg
 			m.mem = mem[:sp+1]
-			if m.newGoroutine(fval, args) {
+			// GoCallImm targets a known VM func: never reflect-spread.
+			if m.newGoroutine(fval, args, false) {
 				ip = m.stageUnwind(ip, fp, mem)
 				continue
 			}
@@ -2266,7 +2273,13 @@ func (m *Machine) Run() (err error) {
 					}
 					coerceInterfaceArgs(rin, rv.Type())
 					m.wrapFuncArgs(rin, mem[dh-narg-2:dh-2], rv.Type())
-					rv.Call(rin)
+					if deferSpread(packed) {
+						// Last arg is a packed variadic slice.
+						rin[len(rin)-1] = unwrapVariadicIface(rin[len(rin)-1])
+						rv.CallSlice(rin)
+					} else {
+						rv.Call(rin)
+					}
 					// Move return values (at dh+1..dh+nret) down over the defer entry.
 					for i := 0; i < nret; i++ {
 						mem[retBase+i] = mem[dh+1+i]
@@ -3119,7 +3132,11 @@ func (m *Machine) resolveIPAndHeap(funcVal Value) int {
 
 func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, int) {
 	narg := int(c.A)
-	isX := int(c.B)
+	isX := int(c.B) & 3
+	spread := 0
+	if c.B&DeferSpreadFlag != 0 {
+		spread = 1
+	}
 	if isX == 2 {
 		// Builtin opcode defer: funcVal (opcode number) is on top of stack,
 		// args are below it. Rotate to standard layout: funcVal at sp-narg,
@@ -3142,7 +3159,7 @@ func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, i
 	if sp+3 >= len(mem) {
 		mem = growStack(mem, sp, 3)
 	}
-	mem[sp+1] = Value{num: packDefer(narg, isX)}
+	mem[sp+1] = Value{num: packDefer(narg, isX, spread)}
 	mem[sp+2] = Value{num: uint64(prevHead)}
 	mem[sp+3] = Value{} // returnIP placeholder, filled by Return
 	sp += 3
@@ -3219,7 +3236,12 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 			}
 			coerceInterfaceArgs(rin, rv.Type())
 			m.wrapFuncArgs(rin, (*mem)[dh-narg-2:dh-2], rv.Type())
-			rv.Call(rin)
+			if deferSpread(packed) {
+				rin[len(rin)-1] = unwrapVariadicIface(rin[len(rin)-1])
+				rv.CallSlice(rin)
+			} else {
+				rv.Call(rin)
+			}
 			return popDefer()
 		}
 		// VM defer: store panicAddr as return address, push frame.
@@ -3830,6 +3852,26 @@ func (rs *runnerState) releaseRunner(m *Machine) {
 	rs.pool.Put(m)
 }
 
+// unwrapVariadicIface unwraps Iface elements in a packed variadic slice so
+// reflect.CallSlice passes the native callee concrete values.
+func unwrapVariadicIface(last reflect.Value) reflect.Value {
+	if last.Kind() == reflect.Interface && !last.IsNil() {
+		last = last.Elem()
+	}
+	if last.Kind() != reflect.Slice {
+		return last
+	}
+	for i := range last.Len() {
+		elem := last.Index(i)
+		if elem.Kind() == reflect.Interface && !elem.IsNil() {
+			if ifc, ok := elem.Interface().(Iface); ok {
+				elem.Set(ifc.Val.Reflect())
+			}
+		}
+	}
+	return last
+}
+
 // invokeNative runs a native func/method call (a hook, CallSlice, or Call),
 // recovering any Go panic. On a recoverable panic it sets the machine's panic
 // state (so the caller jumps to panicAddr and an interpreted recover() can
@@ -3887,19 +3929,7 @@ func (m *Machine) invokeNative(hook NativeMethodHook, hookRecv, rv reflect.Value
 		}
 		// For spread calls (f(s...)), unwrap Iface values inside the variadic
 		// slice and use CallSlice.
-		last := in[len(in)-1]
-		if last.Kind() == reflect.Interface && !last.IsNil() {
-			last = last.Elem()
-		}
-		for i := range last.Len() {
-			elem := last.Index(i)
-			if elem.Kind() == reflect.Interface && !elem.IsNil() {
-				if ifc, ok := elem.Interface().(Iface); ok {
-					elem.Set(ifc.Val.Reflect())
-				}
-			}
-		}
-		in[len(in)-1] = last
+		in[len(in)-1] = unwrapVariadicIface(in[len(in)-1])
 		return rv.CallSlice(in), false
 	default:
 		if err := checkNativeCall(rv, in, false); err != nil {
@@ -4141,7 +4171,7 @@ func (m *Machine) collectReturns(funcType reflect.Type, nret int) []reflect.Valu
 // newGoroutine spawns fval on a new goroutine. It returns panicked=true if the
 // spawn raised a (synchronous) panic in the caller -- a nil func value, matching
 // Go's "go of nil func value" -- in which case the caller must jump to panicAddr.
-func (m *Machine) newGoroutine(fval Value, args []Value) (panicked bool) {
+func (m *Machine) newGoroutine(fval Value, args []Value, spread bool) (panicked bool) {
 	// Inline fast path: resolve addressable struct func fields (mirrors Call opcode).
 	if fval.ref.Kind() == reflect.Func && fval.ref.CanAddr() {
 		fval = m.resolveFuncField(fval)
@@ -4159,7 +4189,12 @@ func (m *Machine) newGoroutine(fval Value, args []Value) (panicked bool) {
 		}
 		coerceInterfaceArgs(in, rv.Type())
 		m.wrapFuncArgs(in, args, rv.Type())
-		go func() { rv.Call(in) }()
+		if spread {
+			in[len(in)-1] = unwrapVariadicIface(in[len(in)-1])
+			go func() { rv.CallSlice(in) }()
+		} else {
+			go func() { rv.Call(in) }()
+		}
 		return false
 	}
 
