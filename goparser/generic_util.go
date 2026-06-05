@@ -145,10 +145,8 @@ func isGenericInstance(t *vm.Type) bool {
 // mangledBase returns the template name of a mangled instance name, i.e. the
 // part before the first '#' ("node#int" -> "node"); unchanged if not mangled.
 func mangledBase(name string) string {
-	if i := strings.IndexByte(name, '#'); i >= 0 {
-		return name[:i]
-	}
-	return name
+	base, _, _ := strings.Cut(name, "#")
+	return base
 }
 
 func hasUnboundTypeParam(t *vm.Type, tpNames map[string]bool, inferred map[string]*vm.Type) bool {
