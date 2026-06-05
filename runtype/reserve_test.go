@@ -170,6 +170,27 @@ func TestFillStructLayoutUpdatesLayoutShadow(t *testing.T) {
 	}
 }
 
+// TestFillStructLayoutEmptyStructName guards one-char name truncation: an
+// empty-struct realLayout carries tflagExtraStar (struct {} shares name bytes
+// with *struct {}), which FillStructLayout must not leak into the reserved name.
+func TestFillStructLayoutEmptyStructName(t *testing.T) {
+	provisional := reflect.StructOf([]reflect.StructField{
+		{Name: "Placeholder", Type: reflect.TypeOf(int(0))},
+	})
+	r, err := ReserveMethods(provisional, "mypkg.Empty", "mypkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved := r.Type()
+	if err := r.Fill([]MethodSpec{sampleMethod("M")}); err != nil {
+		t.Fatal(err)
+	}
+	FillStructLayout(reserved, reflect.StructOf(nil)) // empty struct{} layout
+	if got := reserved.String(); got != "mypkg.Empty" {
+		t.Fatalf("String() = %q, want %q (ExtraStar leaked from struct{} layout)", got, "mypkg.Empty")
+	}
+}
+
 func TestFillRejectsBadCounts(t *testing.T) {
 	r, err := ReserveMethods(reflect.TypeOf(int(0)), "T", "p")
 	if err != nil {

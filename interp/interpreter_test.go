@@ -1197,12 +1197,15 @@ func TestStruct(t *testing.T) {
 
 		{n: "errors_deepequal_array", src: `import "errors"; import "reflect"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; e := errors.New("e3"); reflect.DeepEqual([1]error{M{e}}, [1]error{M{e}})`, res: "true"},
 
-		// fmt TestScanfMulti: a named-type value in a literal []any keeps mvm's Iface wrapper,
-		// so a native reflect walk into the slice reads vm.Iface, not the concrete the
-		// reflect-built side holds.
 		{n: "reflect_deepequal_named_in_any_slice", skip: true, src: `import "reflect"; type Xs string; var x Xs = "ee"; st := reflect.TypeOf(make([]any, 1)); rv := reflect.MakeSlice(st, 1, 1); rv.Index(0).Set(reflect.ValueOf(&x).Elem()); reflect.DeepEqual(rv.Interface(), []any{Xs("ee")})`, res: "true"},
 
 		{n: "fmt_pct_T_interpreted_error", src: `import "fmt"; type S struct{ s string }; func (e S) Error() string { return e.s }; var err error = S{"x"}; fmt.Sprintf("%T", err)`, res: "main.S"},
+
+		{n: "fmt_named_num_in_any_slice", src: `import "fmt"; type I int; func (i I) String() string { return fmt.Sprintf("<%d>", int(i)) }; func run() string { return fmt.Sprintf("%v", []any{I(1), I(2)}) }; run()`, res: "[<1> <2>]"},
+
+		{n: "fmt_nil_func_in_array_gosyntax", src: `import "fmt"; type Fn func() int; func (fn Fn) String() string { return "s" }; var fnValue Fn; func run() string { return fmt.Sprintf("%#v", [1]Fn{fnValue}) }; run()`, res: "[1]main.Fn{(main.Fn)(nil)}"},
+
+		{n: "fmt_empty_struct_method_name", src: `import "fmt"; type E struct{}; func (E) Hi() string { return "h" }; func run() string { return fmt.Sprintf("%T", E{}) }; run()`, res: "main.E"},
 
 		// SKIP (deeper gap): a multierror promoted from an EMBEDDED field panics
 		// "reflect: ... value obtained from unexported field" (the promoted-method

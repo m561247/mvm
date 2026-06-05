@@ -22,7 +22,9 @@ func (i Iface) Format(s fmt.State, verb rune) {
 		_, _ = fmt.Fprint(s, "<nil>")
 		return
 	}
-	_, _ = fmt.Fprintf(s, fmt.FormatString(s, verb), Exportable(i.Val.ref).Interface())
+	// Reflect() rebuilds a non-addressable numeric from i.Val.num; the raw ref is
+	// zero metadata that would render as 0.
+	_, _ = fmt.Fprintf(s, fmt.FormatString(s, verb), Exportable(i.Val.Reflect()).Interface())
 }
 
 // Opaque stands in for an external type which could not be resolved at parse time.

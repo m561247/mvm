@@ -60,6 +60,9 @@ var Incompat = map[string]map[string]string{
 	"strconv": {
 		"TestAllocationsFromBytes": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0",
 	},
+	"fmt": {
+		"TestCountMallocs": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0-4",
+	},
 	"testing": {
 		"TestAllocsPerRun": "self-test of AllocsPerRun; mvm interpreter allocates more than the native expectation of 1",
 	},

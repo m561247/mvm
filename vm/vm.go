@@ -3649,6 +3649,11 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 	if !rv.IsValid() {
 		return reflect.Zero(funcType)
 	}
+	// A nil interface slot is a zero func, not a callback: wrapping it would mint a
+	// non-nil MakeFunc with a bogus address.
+	if rv.Kind() == reflect.Interface && rv.IsNil() {
+		return reflect.Zero(funcType)
+	}
 	if rv.Kind() == reflect.Func {
 		if pf, ok := rv.Interface().(MvmFunc); ok {
 			return pf.GF

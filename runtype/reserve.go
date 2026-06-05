@@ -201,7 +201,10 @@ func FillStructLayout(reserved, realLayout reflect.Type) {
 	for i := uintptr(48); i < abiStructTypeSize; i++ {
 		*(*byte)(unsafe.Add(dp, i)) = *(*byte)(unsafe.Add(sp, i))
 	}
-	d.TFlag |= keep
+	// Clear ExtraStar: an empty-struct realLayout carries it (struct {} shares name
+	// bytes with *struct {}), which would make String() drop the reserved name's
+	// first char.
+	d.TFlag = (d.TFlag &^ tflagExtraStar) | keep
 	// Re-register the real layout: reserveStruct shadowed d with the placeholder,
 	// and layoutFor(reserved) sizes MapOf/ArrayOf buckets/strides.
 	registerLayout(d, rtypePtr(realLayout))
