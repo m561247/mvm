@@ -60,6 +60,7 @@ type genericTemplate struct {
 
 type genericInstance struct {
 	typeArgs []*vm.Type
+	mname    string // mangled symbol name used for instance type registration
 }
 
 func (p *Parser) parseTypeParamList(bt scan.Token) ([]typeParam, error) {
@@ -632,12 +633,8 @@ func sameInstanceType(a, b *vm.Type) bool {
 	return true // structurally identical unnamed basic kinds
 }
 
-// emitInstantiatedMethod instantiates methTmpl for typeArgs and queues its body
-// on p.instanceDecls (tagged with the template's package). Returns true if a new
-// method was emitted. The caller must have cleared p.scope and set p.CompilingPkg
-// to the template's package.
-func (p *Parser) emitInstantiatedMethod(tmpl, methTmpl *genericTemplate, typeArgs []*vm.Type) (bool, error) {
-	methToks, err := p.instantiateMethod(tmpl, methTmpl, typeArgs)
+func (p *Parser) emitInstantiatedMethod(tmpl, methTmpl *genericTemplate, typeArgs []*vm.Type, mTypeName string) (bool, error) {
+	methToks, err := p.instantiateMethod(tmpl, methTmpl, mTypeName)
 	if err != nil || methToks == nil {
 		return false, err
 	}
@@ -685,9 +682,9 @@ func (p *Parser) ensureTypeInstantiated(tmpl *genericTemplate, bt scan.Token) (s
 			p.scope = savedScope
 			return "", err
 		}
-		tmpl.instances = append(tmpl.instances, genericInstance{typeArgs: typeArgs})
+		tmpl.instances = append(tmpl.instances, genericInstance{typeArgs: typeArgs, mname: mname})
 		for _, methTmpl := range tmpl.methods {
-			if _, err := p.emitInstantiatedMethod(tmpl, methTmpl, typeArgs); err != nil {
+			if _, err := p.emitInstantiatedMethod(tmpl, methTmpl, typeArgs, mname); err != nil {
 				p.scope = savedScope
 				return "", err
 			}
@@ -697,10 +694,6 @@ func (p *Parser) ensureTypeInstantiated(tmpl *genericTemplate, bt scan.Token) (s
 	return mname, nil
 }
 
-// instantiatePendingMethods walks the generic type templates once and
-// emits any (instance x method) pair that has not been instantiated yet.
-// Returns progress=true if at least one new method was emitted. The
-// symbol guard in instantiateMethod makes it safe to call repeatedly.
 func (p *Parser) instantiatePendingMethods() (progress bool, err error) {
 	savedScope := p.scope
 	p.scope = ""
@@ -715,7 +708,7 @@ func (p *Parser) instantiatePendingMethods() (progress bool, err error) {
 		}
 		for _, inst := range tmpl.instances {
 			for _, methTmpl := range tmpl.methods {
-				emitted, err := p.emitInstantiatedMethod(tmpl, methTmpl, inst.typeArgs)
+				emitted, err := p.emitInstantiatedMethod(tmpl, methTmpl, inst.typeArgs, inst.mname)
 				if err != nil {
 					return progress, err
 				}
@@ -728,12 +721,7 @@ func (p *Parser) instantiatePendingMethods() (progress bool, err error) {
 	return progress, nil
 }
 
-// instantiateMethod creates a concrete version of a generic method template
-// by substituting type parameter names with concrete types in the token stream.
-// The receiver block is rewritten from e.g. (b Box[T]) to (b Box#int).
-// Returns nil if the method is already instantiated.
-func (p *Parser) instantiateMethod(typeTmpl, methTmpl *genericTemplate, typeArgs []*vm.Type) (Tokens, error) {
-	mTypeName := mangledName(typeTmpl.name, typeArgs)
+func (p *Parser) instantiateMethod(typeTmpl, methTmpl *genericTemplate, mTypeName string) (Tokens, error) {
 	methFullName := mTypeName + "." + methTmpl.name
 	// Pointer-receiver methods are stored by registerFunc under "*T.method";
 	// align the guard key so the instance is not re-emitted forever.
@@ -746,9 +734,6 @@ func (p *Parser) instantiateMethod(typeTmpl, methTmpl *genericTemplate, typeArgs
 		return nil, nil
 	}
 
-	// Keep the type-param names in the body; they resolve via bindTypeParams
-	// during the re-parse. Copy so the receiver rewrite below does not mutate
-	// the template's tokens.
 	out := append(Tokens(nil), methTmpl.rawTokens...)
 
 	// Collapse TypeName[Args] into the mangled name in the receiver ParenBlock
@@ -760,11 +745,6 @@ func (p *Parser) instantiateMethod(typeTmpl, methTmpl *genericTemplate, typeArgs
 	return out, nil
 }
 
-// stripRecvTypeParams rewrites a receiver block string by replacing
-// TypeName[...] with the mangled name. For example:
-//
-//	"(b Box[int])"   -> "(b Box#int)"
-//	"(b *Box[int])"  -> "(b *Box#int)"
 func (p *Parser) stripRecvTypeParams(blockStr, origName, mangledName string) string {
 	// Scan the full block string - expect a single ParenBlock.
 	outerToks, err := p.Scan(blockStr, false)
@@ -800,11 +780,6 @@ func (p *Parser) stripRecvTypeParams(blockStr, origName, mangledName string) str
 	return blockStr[:paren.Beg] + sb.String() + blockStr[len(blockStr)-paren.End:]
 }
 
-// inferTypeArgs infers concrete type arguments for a generic function call
-// by examining the call argument expressions and matching them against the
-// template's type parameters through the function signature (stored in genSym.Type).
-// prefix supplies explicit leading type args (partial type-argument lists, e.g.
-// Grow[S](nil, n)); the remaining params are inferred from the call args.
 func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, callArgs scan.Token, prefix []*vm.Type) ([]*vm.Type, error) {
 	argToks, err := p.scanBlock(callArgs, false)
 	if err != nil {
@@ -812,37 +787,23 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 	}
 	args := argToks.Split(lang.Comma)
 
-	// Build set of type parameter names.
 	tpNames := make(map[string]bool, len(tmpl.typeParams))
 	for _, tp := range tmpl.typeParams {
 		tpNames[tp.name] = true
 	}
 
-	// errAt-style wrapper so inference failures carry the call site's source
-	// position; `mvm test`'s drop-on-compile-error retry needs it to attribute
-	// the error to a file and skip it.
 	posErr := func(format string, a ...any) error {
 		return p.errAt(Token{Token: callArgs}, format, a...)
 	}
 
-	// Generic templates whose signature failed to parse cleanly leave Type nil;
-	// surface an inference error rather than nil-deref.
 	if genSym.Type == nil {
 		return nil, posErr("cannot infer type parameters for %s: signature unresolved", tmpl.name)
 	}
 
-	// Match each argument to the corresponding parameter type from the parsed signature.
-	// If the parameter type name is a type parameter, infer it from the argument.
 	params := genSym.Type.Params
 	isVariadic := genSym.Type.IsVariadic() && len(params) > 0
-	// A spread call `f(s...)` passes the whole slice in the variadic slot, so it
-	// matches the variadic param `[]T` directly; per-element calls `f(a, b)` do
-	// not. Go forbids mixing spread with extra variadic elements, so a spread
-	// call has exactly one slice argument in that slot.
 	spread := len(argToks) > 0 && argToks[len(argToks)-1].Tok == lang.Ellipsis
 	inferred := make(map[string]*vm.Type, len(tmpl.typeParams))
-	// Seed explicit leading type args so pass 1 skips already-bound params and
-	// pass 2 can unpack their constraints (e.g. ~map[K]V) for the rest.
 	for i, t := range prefix {
 		if i < len(tmpl.typeParams) {
 			inferred[tmpl.typeParams[i].name] = t
@@ -858,30 +819,17 @@ func (p *Parser) inferTypeArgs(tmpl *genericTemplate, genSym *symbol.Symbol, cal
 			pType = params[i]
 		case isVariadic:
 			pType = params[len(params)-1]
-			// Without spread, the argument is a single element - descend into
-			// ElemType so unification sees `T`, not `[]T`. With spread the
-			// argument IS the whole slice, matching the variadic param `[]T`.
 			if !spread && pType.ElemType != nil {
 				pType = pType.ElemType
 			}
 		default:
 			continue
 		}
-		// Skip when every type param in pType is already bound: avoids a
-		// redundant inferExprType (which can fail legitimately on later
-		// args - e.g. slices.Equal's second []E with a shape inferExprType
-		// can't currently type).
 		if !hasUnboundTypeParam(pType, tpNames, inferred) {
 			continue
 		}
 		var argTyp *vm.Type
 		if argExpr[0].Tok == lang.Func && argExpr[len(argExpr)-1].Tok == lang.BraceBlock {
-			// Plain func-literal argument: type it from its signature alone.
-			// inferExprType would parseFunc the whole closure, instantiating any
-			// generic call in its body into a throwaway buffer - the emitted body
-			// is then lost, leaving an empty func slot that nil-derefs at runtime
-			// (e.g. slices.SortFunc(s, func(a,b T) int { return cmp.Compare(a,b) })).
-			// The closure's type is fixed by its signature, so the body is moot here.
 			argTyp, _, _, _ = p.parseFuncSig(argExpr[:len(argExpr)-1])
 		} else {
 			argTyp = p.inferExprType(argExpr)
@@ -990,7 +938,6 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 				return ft, 1 + ln
 			}
 		}
-		// Method: look up in symbol table.
 		if ms, _ := p.Symbols.MethodByName(&symbol.Symbol{Kind: symbol.Type, Name: leftTyp.Name, Type: leftTyp}, fieldName); ms != nil {
 			return ms.Type, 1 + ln
 		}

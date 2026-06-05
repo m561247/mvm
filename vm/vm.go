@@ -3711,9 +3711,6 @@ func newFuncWrapTable() *funcWrapTable {
 	return &funcWrapTable{m: make(map[funcWrapKey]reflect.Value)}
 }
 
-// getOrBuild returns the cached wrapper for k, or builds it under the write lock.
-// Double-checked so racing first-bridges share one wrapper. build must not touch
-// t.mu.
 func (t *funcWrapTable) getOrBuild(k funcWrapKey, build func() reflect.Value) reflect.Value {
 	t.mu.RLock()
 	v, ok := t.m[k]
@@ -3731,10 +3728,6 @@ func (t *funcWrapTable) getOrBuild(k funcWrapKey, build func() reflect.Value) re
 	return v
 }
 
-// staticFuncCode returns the code address of a heap-less mvm func (top-level or
-// non-capturing closure) and true; a capturing closure has per-instance identity,
-// so it is not cacheable. Reads the same forms as resolveIPAndHeap, no m.heap side
-// effect.
 func staticFuncCode(val Value) (int, bool) {
 	if !val.ref.IsValid() {
 		return 0, false
@@ -4013,7 +4006,6 @@ func (m *Machine) invokeNative(hook NativeMethodHook, hookRecv, rv reflect.Value
 	}
 }
 
-// checkNativeCall turns the mismatches reflect.Call panics on into a clear mvm error.
 func checkNativeCall(rv reflect.Value, in []reflect.Value, slice bool) error {
 	if rv.Kind() != reflect.Func {
 		return fmt.Errorf("call of non-function value of kind %s", rv.Kind())
@@ -4049,8 +4041,6 @@ func describeNativePanic(rv reflect.Value, in []reflect.Value, r any) any {
 	return fmt.Sprintf("%s (calling %v with args [%s])", s, rv.Type(), strings.Join(args, ", "))
 }
 
-// makeCallFunc wraps a mvm func in a reflect.MakeFunc adapter, caching the
-// wrapper for a heap-less func so repeated bridges keep reflect.Value identity.
 func (m *Machine) makeCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 	if code, ok := staticFuncCode(fval); ok {
 		m.ensureSharedTables()
@@ -4060,10 +4050,6 @@ func (m *Machine) makeCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 	return m.buildCallFunc(fval, fnType)
 }
 
-// buildCallFunc mints a fresh adapter (no caching) that runs fval on a pooled
-// runner Machine. The pool amortizes per-callback Machine/backing-array allocation
-// across high-fanout native callbacks (sort/fmt/iterator). Captures rs, not m, to
-// avoid goroutine data races.
 func (m *Machine) buildCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 	rs := m.captureRunnerState()
 	return reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {

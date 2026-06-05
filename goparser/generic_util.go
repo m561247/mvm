@@ -135,26 +135,66 @@ func recvGenericBaseName(recvr Tokens) (string, bool) {
 	return "", false
 }
 
+// isGenericInstance reports whether t is a monomorphized generic instantiation,
+// identified by the '#' the name mangler inserts before each type argument (see
+// mangledName). A user type name can never contain '#', so this is unambiguous.
+func isGenericInstance(t *vm.Type) bool {
+	return t != nil && strings.IndexByte(t.Name, '#') >= 0
+}
+
+// mangledBase returns the template name of a mangled instance name, i.e. the
+// part before the first '#' ("node#int" -> "node"); unchanged if not mangled.
+func mangledBase(name string) string {
+	if i := strings.IndexByte(name, '#'); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
 func hasUnboundTypeParam(t *vm.Type, tpNames map[string]bool, inferred map[string]*vm.Type) bool {
+	return hasUnboundTP(t, tpNames, inferred, nil)
+}
+
+func hasUnboundTP(t *vm.Type, tpNames map[string]bool, inferred map[string]*vm.Type, seen map[*vm.Type]bool) bool {
 	if t == nil {
 		return false
 	}
 	switch t.Kind() {
 	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
-		return hasUnboundTypeParam(t.ElemType, tpNames, inferred)
+		return hasUnboundTP(t.ElemType, tpNames, inferred, seen)
 	case reflect.Map:
-		return hasUnboundTypeParam(t.KeyType, tpNames, inferred) || hasUnboundTypeParam(t.ElemType, tpNames, inferred)
+		return hasUnboundTP(t.KeyType, tpNames, inferred, seen) || hasUnboundTP(t.ElemType, tpNames, inferred, seen)
 	case reflect.Func:
 		// Type params can be nested in a func-typed parameter, e.g.
 		// slices.Collect[E](seq iter.Seq[E]) where iter.Seq[E] is
 		// func(func(E) bool).
 		for _, pt := range t.Params {
-			if hasUnboundTypeParam(pt, tpNames, inferred) {
+			if hasUnboundTP(pt, tpNames, inferred, seen) {
 				return true
 			}
 		}
 		for _, rt := range t.Returns {
-			if hasUnboundTypeParam(rt, tpNames, inferred) {
+			if hasUnboundTP(rt, tpNames, inferred, seen) {
+				return true
+			}
+		}
+		return false
+	case reflect.Struct:
+		// A named generic struct instantiation (e.g. node[T]) carries its type
+		// args inside its fields, not in ElemType. Walk them to surface any
+		// unbound param. seen guards self-referential shapes.
+		if !isGenericInstance(t) {
+			break
+		}
+		if seen[t] {
+			return false
+		}
+		if seen == nil {
+			seen = map[*vm.Type]bool{}
+		}
+		seen[t] = true
+		for _, f := range t.Fields {
+			if hasUnboundTP(f, tpNames, inferred, seen) {
 				return true
 			}
 		}
@@ -168,6 +208,10 @@ func hasUnboundTypeParam(t *vm.Type, tpNames map[string]bool, inferred map[strin
 }
 
 func unifyTypeParam(pType, argType *vm.Type, tpNames map[string]bool, inferred map[string]*vm.Type) bool {
+	return unifyTP(pType, argType, tpNames, inferred, nil)
+}
+
+func unifyTP(pType, argType *vm.Type, tpNames map[string]bool, inferred map[string]*vm.Type, seen map[*vm.Type]bool) bool {
 	if pType == nil || argType == nil {
 		return false
 	}
@@ -179,15 +223,15 @@ func unifyTypeParam(pType, argType *vm.Type, tpNames map[string]bool, inferred m
 		if argType.Kind() != pType.Kind() {
 			return false
 		}
-		return unifyTypeParam(pType.ElemType, argType.ElemType, tpNames, inferred)
+		return unifyTP(pType.ElemType, argType.ElemType, tpNames, inferred, seen)
 	case reflect.Map:
 		if argType.Kind() != reflect.Map {
 			return false
 		}
-		if !unifyTypeParam(pType.KeyType, argType.KeyType, tpNames, inferred) {
+		if !unifyTP(pType.KeyType, argType.KeyType, tpNames, inferred, seen) {
 			return false
 		}
-		return unifyTypeParam(pType.ElemType, argType.ElemType, tpNames, inferred)
+		return unifyTP(pType.ElemType, argType.ElemType, tpNames, inferred, seen)
 	case reflect.Func:
 		if argType.Kind() != reflect.Func {
 			return false
@@ -200,16 +244,43 @@ func unifyTypeParam(pType, argType *vm.Type, tpNames map[string]bool, inferred m
 			if at == nil {
 				break
 			}
-			unifyTypeParam(pType.Params[i], at, tpNames, inferred)
+			unifyTP(pType.Params[i], at, tpNames, inferred, seen)
 		}
 		for i := range pType.Returns {
 			at := argType.ReturnType(i)
 			if at == nil {
 				break
 			}
-			unifyTypeParam(pType.Returns[i], at, tpNames, inferred)
+			unifyTP(pType.Returns[i], at, tpNames, inferred, seen)
 		}
 		return true
+	case reflect.Struct:
+		// A named generic struct instantiation (e.g. node[T]) keeps its type args
+		// in its fields, so unify field-by-field against the same-shaped argument
+		// struct. Both sides come from one template, so fields are parallel; the
+		// base-name check rejects an unrelated struct of equal arity, and seen
+		// breaks self-referential shapes (node has children []*node[T]).
+		if !isGenericInstance(pType) {
+			break
+		}
+		if argType.Kind() != reflect.Struct || len(pType.Fields) != len(argType.Fields) ||
+			mangledBase(pType.Name) != mangledBase(argType.Name) {
+			return false
+		}
+		if seen[pType] {
+			return true
+		}
+		if seen == nil {
+			seen = map[*vm.Type]bool{}
+		}
+		seen[pType] = true
+		ok := true
+		for i := range pType.Fields {
+			if !unifyTP(pType.Fields[i], argType.Fields[i], tpNames, inferred, seen) {
+				ok = false
+			}
+		}
+		return ok
 	}
 	// Leaf: bind if this is a type-param ident; otherwise a concrete leaf
 	// with no binding to make.
