@@ -351,6 +351,16 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 			// resolves to it), then patch the placeholder in place.
 			ph := mtype.NewPlaceholderRtype(t.Name)
 			t.Rtype = ph
+			// Stamp the real name before materializing fields so a self-referential
+			// field (S *S, []*S, map[K]*S, ...) bakes the correct name into its
+			// derived rtype: reflect.PointerTo/SliceOf/MapOf snapshot the element's
+			// String() at derivation time, so naming ph afterward would leave the
+			// derived types reading the placeholder name (*struct{...}).
+			// Method-bearing types get their name from attach instead.
+			named := len(t.Methods) == 0
+			if named {
+				runtype.StampName(ph, qualifiedTypeName(t))
+			}
 			for _, f := range t.Fields {
 				MaterializeRtype(f)
 			}
@@ -361,9 +371,9 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 				return nil
 			}
 			mtype.PatchRtype(ph, mtype.StructOf(t.Fields, t.Embedded, t.Tags).Rtype)
-			// PatchRtype keeps ph's placeholder name; stamp the real one.
-			// Method-bearing types get theirs from attach instead.
-			if len(t.Methods) == 0 {
+			// PatchRtype copies the real layout's TFlag (clearing tflagNamed) but
+			// preserves ph's Str; re-stamp to restore the named flag in place.
+			if named {
 				runtype.StampName(ph, qualifiedTypeName(t))
 			}
 			return ph
