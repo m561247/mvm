@@ -2007,6 +2007,13 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				break
 			}
 			if lhs.Kind == symbol.LocalVar {
+				// Type-switch case var has no parse-time type; infer from RHS so typeSym(nil) doesn't panic at New.
+				if lhs.Type == nil && rhs.Type != nil {
+					lhs.Type = rhs.Type
+					if sym := c.Symbols[lhs.Name]; sym != nil && sym.Type == nil {
+						sym.Type = rhs.Type
+					}
+				}
 				// Captured variable write inside closure body: use HeapSet.
 				if idx := freeVarIndex(lhs.Name); idx >= 0 {
 					c.emit(t, vm.HeapSet, idx)
@@ -2014,8 +2021,6 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 					break
 				}
 				// Param slots alias the caller's pushed Value, so SetLocal would write through dst.ref to the caller.
-				// New detaches the slot, but the Used optimization skips it on later compile-emitted assigns;
-				// re-emit per branch since runtime may take a branch the optimizer didn't pick first.
 				if !lhs.Used || lhs.IsParam() {
 					if !lhs.NeedsCell() {
 						typeIdx := c.typeSym(lhs.Type).Index

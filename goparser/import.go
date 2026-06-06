@@ -580,6 +580,18 @@ func (p *Parser) registerStructPlaceholder(key, short string) *vm.Type {
 	return ph
 }
 
+// registerNamedPlaceholder registers or reuses a kind-agnostic placeholder for a
+// self-referential composite named type, filled in place by parseTypeLine.
+func (p *Parser) registerNamedPlaceholder(key, short string) *vm.Type {
+	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
+		s.Type != nil && s.Type.Placeholder {
+		return s.Type
+	}
+	ph := &vm.Type{Name: short, Placeholder: true}
+	p.SymAdd(symbol.UnsetAddr, key, typeTokenValue(ph), symbol.Type, ph)
+	return ph
+}
+
 func (p *Parser) registerInterfacePlaceholder(key, short string) *vm.Type {
 	if s, ok := p.Symbols[key]; ok && s.Kind == symbol.Type &&
 		s.Type != nil && s.Type.Rtype != nil &&

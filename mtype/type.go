@@ -768,11 +768,14 @@ func (t *Type) symFieldLookup(name string) ([]int, *Type) {
 		}
 		if ft := t.resolveFieldByPath(sf.index); ft != nil {
 			if ft.Base != nil && ft.Base.Name != "" {
+				// The clone's own Name/PkgPath are the field's, not the type's;
+				// recover the field TYPE's identity from Base.
 				ft.Name = ft.Base.Name
+				ft.PkgPath = ft.Base.PkgPath
 			} else {
 				ft.Name = ""
+				ft.PkgPath = sf.typ.PkgPath
 			}
-			ft.PkgPath = sf.typ.PkgPath
 			return sf.index, ft
 		}
 		return sf.index, &Type{Name: sf.typ.Name, PkgPath: sf.typ.PkgPath, Rtype: sf.typ.Rtype, kind: sf.typ.Kind()}
@@ -821,21 +824,20 @@ func (t *Type) FieldLookup(name string) ([]int, *Type) {
 		if f.Name != name {
 			continue
 		}
-		// Walk t.Fields/Embedded by f.Index (multi-segment for promoted fields) to
-		// recover mvm-level info at the deepest field.
+		// Walk t.Fields/Embedded by f.Index to recover mvm-level info at the deepest field.
 		if ft := t.resolveFieldByPath(f.Index); ft != nil {
-			// Use the type name, not the StructOf field name, so method lookup
-			// works. Prefer Base's name: for a defined basic type (type Frame
-			// uintptr) reflect reports the underlying name and loses "Frame".
+			// Use the type's name+pkgpath, so method lookup works.
 			if ft.Base != nil && ft.Base.Name != "" {
 				ft.Name = ft.Base.Name
+				ft.PkgPath = ft.Base.PkgPath
 			} else {
 				ft.Name = f.Type.Name()
+				ft.PkgPath = f.Type.PkgPath()
 			}
-			ft.PkgPath = f.PkgPath
 			return f.Index, ft
 		}
-		return f.Index, &Type{Name: f.Type.Name(), PkgPath: f.PkgPath, Rtype: f.Type, kind: f.Type.Kind()}
+		// No mvm info: identify by the field's TYPE (name+package), like above.
+		return f.Index, &Type{Name: f.Type.Name(), PkgPath: f.Type.PkgPath(), Rtype: f.Type, kind: f.Type.Kind()}
 	}
 	return t.embeddedFieldLookup(name)
 }
@@ -883,7 +885,8 @@ func (t *Type) embeddedFieldLookup(name string) ([]int, *Type) {
 					return idx, ft
 				}
 			}
-			return idx, &Type{Name: sf.Type.Name(), PkgPath: sf.PkgPath, Rtype: sf.Type, kind: sf.Type.Kind()}
+			// Identify by the field's TYPE (name+package), like FieldLookup.
+			return idx, &Type{Name: sf.Type.Name(), PkgPath: sf.Type.PkgPath(), Rtype: sf.Type, kind: sf.Type.Kind()}
 		}
 	}
 	return nil, nil
@@ -901,8 +904,7 @@ func (t *Type) IsSlice() bool { return t != nil && t.Kind() == reflect.Slice }
 // IsFunc returns true if type t is of func kind.
 func (t *Type) IsFunc() bool { return t != nil && t.Kind() == reflect.Func }
 
-// Len returns an array type's length, from the symbolic graph when no rtype is
-// materialized yet.
+// Len returns an array type's length, from the symbolic graph when no rtype is materialized yet.
 func (t *Type) Len() int {
 	if t.Rtype != nil {
 		return t.Rtype.Len()

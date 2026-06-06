@@ -12,8 +12,8 @@ import (
 // synthReservation holds a named type's reserved value (method-set T) and
 // pointer (method-set *T) rtypes, awaiting Fill at attach.
 type synthReservation struct {
-	value *runtype.Reservation
-	ptr   *runtype.Reservation
+	value *runtype.Reservation // method-set T
+	ptr   *runtype.Reservation // method-set *T
 }
 
 var reservations = map[*mtype.Type]*synthReservation{} // guarded by derivedMu
@@ -29,10 +29,6 @@ type sharedStructKey struct {
 
 var sharedStructs = map[sharedStructKey]*synthReservation{} // guarded by derivedMu
 
-// hasReservableMethods reports whether t carries any method worth reserving an
-// identity for. The method pre-pass (comp.preregisterMethods) populates a slot's
-// Sig before the body compiles, so a slot counts when it is either resolved (a
-// compiled code address / embedded dispatch) or carries a symbolic Sig.
 func hasReservableMethods(t *mtype.Type) bool {
 	for i := range t.Methods {
 		if t.Methods[i].IsResolved() || t.Methods[i].Sig != nil {
@@ -42,9 +38,6 @@ func hasReservableMethods(t *mtype.Type) bool {
 	return false
 }
 
-// hasSynthTableMethods reports whether any method has a supported detectShape, so
-// attach installs a Machine-bound native stub (then the rtype can't be shared).
-// method.Rtype is often nil pre-attach; materialize Sig to read the shape.
 func hasSynthTableMethods(t *mtype.Type) bool {
 	for _, method := range t.Methods {
 		sig := method.Rtype
@@ -67,10 +60,6 @@ func lookupReservation(t *mtype.Type) *synthReservation {
 	return reservations[t]
 }
 
-// isFieldClone reports whether t is a struct-field copy of a named type that must
-// resolve to Base's identity: it carries the field name in t.Name with a cleared
-// PkgPath. A canonical defined type's Base is unnamed; defined-over-named is
-// intercepted by definedOverBase before reaching here.
 func isFieldClone(t *mtype.Type) bool {
 	if t.Defined {
 		return false // a top-level `type X T` definition owns its identity
@@ -78,15 +67,11 @@ func isFieldClone(t *mtype.Type) bool {
 	if t.Base == nil || t.Base.Name == "" || t.Base.Kind() != t.Kind() {
 		return false
 	}
-	// Method-bearing base: the clone shares Base's identity + methods. Methodless
-	// named-struct base: still a clone -- route to Base for the canonical qualified
-	// identity, else the container's field stamps a bare name and gets patched.
+	// Method-bearing base: the clone shares Base's identity + methods.
+	// Methodless named-struct base: still a clone.
 	return len(t.Base.Methods) > 0 || (t.Kind() == reflect.Struct && t.Base.PkgPath != "")
 }
 
-// maybeReserve gives a named non-struct method-bearing type a reserved synth
-// identity over layoutRT so attach fills methods in place. Returns layoutRT
-// unchanged when t is not reservable.
 func maybeReserve(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
 	if layoutRT == nil || t.Name == "" ||
 		layoutRT.Kind() == reflect.Struct || !runtype.SupportedKind(layoutRT.Kind()) {
@@ -104,12 +89,6 @@ func maybeReserve(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
 	return reserveValueAndPtr(t, layoutRT)
 }
 
-// reserveValueAndPtr reserves t's value identity over layoutRT and, when
-// possible, its *T identity, recording both and wiring *T via AttachPtrDerived.
-// The value rtype is reserved unconditionally: it gives T a writable, named
-// identity for ReservePtrMethods to wire *T into (PtrToThis on a shared/native
-// layout faults). Fill leaves it methodless when method-set(T) is empty. Returns
-// layoutRT unchanged if the value reservation itself fails.
 func reserveValueAndPtr(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
 	name := qualifiedTypeName(t)
 	vr, err := runtype.ReserveMethods(layoutRT, name, t.PkgPath)
@@ -225,9 +204,9 @@ type derivedTypes struct {
 }
 
 var (
-	// derivedMu serializes the derived/synthIface side tables. Contended only
-	// when parallel tests share a std *Type; uncontended within one
-	// single-threaded Compiler.
+	// derivedMu serializes the derived/synthIface side tables.
+	// Contended only when parallel tests share a std *Type.
+	// Uncontended within one single-threaded Compiler.
 	derivedMu       sync.Mutex
 	derivedCache    = map[*mtype.Type]*derivedTypes{}
 	synthIfaceCache = map[*mtype.Type]reflect.Type{}
@@ -251,12 +230,15 @@ func definedOverBase(t *mtype.Type) bool {
 	case reflect.Slice, reflect.Array, reflect.Chan, reflect.Map, reflect.Struct:
 		return true
 	case reflect.Invalid:
-		// Defined over an imported basic whose kind never resolved (`type
-		// durationValue time.Duration`): recover the layout from Base.
+		// Defined over an imported basic whose kind never resolved: recover the layout from Base.
 		return true
 	}
 	return false
 }
+
+// selfRefFuncPlaceholder stands in for the self-referencing positions of a
+// self-referential func type; a func value is word-sized, so it's layout-correct.
+var selfRefFuncPlaceholder = reflect.FuncOf(nil, nil, false)
 
 // MaterializeRtype builds and caches t.Rtype from t's symbolic graph (Kind +
 // ElemType/KeyType/Fields/Params/Returns + ArrayLen/ChanDir/Variadic/Tags) when
@@ -318,15 +300,24 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 		}
 		rt = runtype.DeriveMapOf(key, elem)
 	case reflect.Func:
+		if t.Name != "" {
+			// A named func type may be self-referential (type parseFn func() parseFn),
+			// which reflect.FuncOf can't build. Pre-set a placeholder a self-reference
+			// in Params/Returns resolves to; when t isn't self-referential nothing
+			// reads it and the real signature below overwrites it unobserved.
+			t.Rtype = selfRefFuncPlaceholder
+		}
 		in := make([]reflect.Type, len(t.Params))
 		for i, p := range t.Params {
 			if in[i] = MaterializeRtype(p); in[i] == nil {
+				t.Rtype = nil
 				return nil
 			}
 		}
 		out := make([]reflect.Type, len(t.Returns))
 		for i, r := range t.Returns {
 			if out[i] = MaterializeRtype(r); out[i] == nil {
+				t.Rtype = nil
 				return nil
 			}
 		}

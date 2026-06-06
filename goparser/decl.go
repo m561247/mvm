@@ -50,17 +50,13 @@ func (p *Parser) parseConst(in Tokens) (out Tokens, err error) {
 		iotaIdx++
 	}
 
-	// Retry until no undefined const remains, or no progress is made, so a const
-	// may reference a sibling declared later in the same block.
+	// Retry until no undefined const remains, or no progress is made.
 	return parseDeferring(pending, func(cl constLine) (Tokens, error) {
 		p.Symbols["iota"].Cval = constant.Make(cl.iota)
 		return p.parseConstLine(cl.toks)
 	})
 }
 
-// parseDeferring runs parse over each item, deferring any that fail with
-// ErrUndefined and retrying until none remain or no progress is made, so a
-// declaration may reference a sibling declared later.
 func parseDeferring[T any](items []T, parse func(T) (Tokens, error)) (out Tokens, err error) {
 	pending := items
 	for len(pending) > 0 {
@@ -108,6 +104,10 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 		} else {
 			return out, err
 		}
+	} else {
+		// parseParamTypes scope-qualifies the names; pkgKey re-scopes below, so
+		// strip the prefix to avoid double-scoping a local typed const.
+		vars = baseNames(vars)
 	}
 	values := assign.Split(lang.Comma)
 	if len(values) == 1 && len(values[0]) == 0 {
@@ -125,16 +125,12 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 			if errors.As(err, &eu) {
 				return out, err
 			}
-			// Constant overflow (e.g. `const y = int8(200)`) is a hard error:
-			// propagate it rather than registering a stub, so the precise
-			// message reaches the user instead of a later "undefined".
+			// Constant overflow is a hard error: propagate it rather than registering a stub.
 			var oe ErrConstOverflow
 			if errors.As(err, &oe) {
 				return out, err
 			}
-			// For other failures (e.g. referencing a symbol in a stub
-			// binary package), register the const name so it is
-			// discoverable by tools like extract.
+			// For other failures, register the const name so it is discoverable.
 			if i < len(vars) {
 				name := p.pkgKey(vars[i])
 				var typ *vm.Type
@@ -1144,15 +1140,26 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 
 	// For struct and interface types, use a forward-declared placeholder to
 	// enable self-references and mutual references between types.
-	// The key is the canonical pkgKey: "<pkgPath>.<name>" (no cross-pkg collisions).
 	name := p.pkgKey(in[0].Str)
 	var placeholder *vm.Type
+	var compositePh *vm.Type
 	if !isAlias && len(toks) > 0 {
 		switch toks[0].Tok {
 		case lang.Struct:
 			placeholder = p.registerStructPlaceholder(name, in[0].Str)
 		case lang.Interface:
 			placeholder = p.registerInterfacePlaceholder(name, in[0].Str)
+		case lang.Func:
+			// Self-referential func type (type parseFn func() parseFn): a
+			// placeholder lets the self-reference resolve during the body parse,
+			// filled in place after to keep the *Type identity.
+			//
+			// Don't add BracketBlock/Map/Mul/Chan here without a matching cycle
+			// break in vm.MaterializeRtype (Func case + reachesSelf): reflect can't
+			// build a self-referential slice/ptr/map/chan rtype either, so a
+			// placeholder alone turns the clean "undefined: T" error into an
+			// infinite-recursion stack overflow.
+			compositePh = p.registerNamedPlaceholder(name, in[0].Str)
 		}
 	}
 
@@ -1162,6 +1169,9 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 	// duplicate instance.
 	if placeholder != nil && placeholder.PkgPath == "" {
 		placeholder.PkgPath = p.pkgName
+	}
+	if compositePh != nil && compositePh.PkgPath == "" {
+		compositePh.PkgPath = p.pkgName
 	}
 
 	typ, _, err := p.parseTypeExpr(toks)
@@ -1179,10 +1189,7 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		} else {
 			placeholder.SetFields(typ)
 		}
-		// Func-local types miss backfillPlaceholderPkgPath (it runs at the
-		// package decl, before any local type exists); set PkgPath here so %T
-		// renders <pkg>.<Name>. Guard on empty preserves backfilled top-level
-		// types and a reused placeholder.
+		// Func-local types miss backfillPlaceholderPkgPath; set PkgPath here so %T renders <pkg>.<Name>.
 		if placeholder.PkgPath == "" {
 			placeholder.PkgPath = p.pkgName
 		}
@@ -1194,8 +1201,19 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		p.SymAdd(symbol.UnsetAddr, name, typeTokenValue(typ), symbol.Type, typ)
 	default:
 		// `type X T` defines a new named type.
-		// Clone so we don't mutate the source type's Name/Methods.
-		nt := *typ
+		// Fill the pre-registered placeholder in place (keeps self-references bound).
+		// Otherwise clone so we don't mutate typ's Name/Methods.
+		nt := compositePh
+		base := typ.Base
+		if base == nil {
+			base = typ
+		}
+		if nt != nil {
+			*nt = *typ
+		} else {
+			c := *typ
+			nt = &c
+		}
 		nt.Name = in[0].Str
 		nt.Methods = nil
 		nt.Placeholder = false
@@ -1207,21 +1225,17 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 		if nt.PkgPath == "" {
 			nt.PkgPath = p.pkgName
 		}
-		if typ.Base != nil {
-			nt.Base = typ.Base
-		} else {
-			nt.Base = typ
-		}
+		nt.Base = base
 		// A struct defined over a NAMED base (type Y X) must stay symbolic too, so
 		// comp reserves Y its own method-bearing identity rather than keeping the
 		// eager rtype (which attach could not fill in place). A fresh struct literal
 		// (Base.Name == "") keeps its eager rtype.
 		definedOverNamedStruct := nt.Kind() == reflect.Struct && nt.Base.Name != ""
-		if definedOverNativeComposite(&nt) || definedSymbolicComposite(&nt) || definedOverNamedStruct {
+		if definedOverNativeComposite(nt) || definedSymbolicComposite(nt) || definedOverNamedStruct {
 			nt.CaptureKind() // Kind() must survive the Rtype nil
 			nt.Rtype = nil   // defer; comp materializes from the symbolic graph
 		}
-		p.SymAdd(symbol.UnsetAddr, name, typeTokenValue(&nt), symbol.Type, &nt)
+		p.SymAdd(symbol.UnsetAddr, name, typeTokenValue(nt), symbol.Type, nt)
 	}
 	return out, err
 }

@@ -445,11 +445,14 @@ func (p *Parser) parseTypeSwitchClause(in Tokens, index, maximum int, tsName, va
 	caseScopeName := "c" + strconv.Itoa(index)
 	p.pushScope(caseScopeName)
 
-	// Declare v in this case scope.
 	var vScoped string
 	if varName != "" {
-		vScoped = p.scope + "/" + varName
-		p.SymAdd(symbol.UnsetAddr, vScoped, vm.Value{}, symbol.Var, nil)
+		if p.funcScope != "" {
+			vScoped = p.addLocalVar(varName)
+		} else {
+			vScoped = p.scope + "/" + varName
+			p.SymAdd(symbol.UnsetAddr, vScoped, vm.Value{}, symbol.Var, nil)
+		}
 	}
 	body, err := p.parseStmts(tl[1])
 	p.popScope() // back to switchScope
