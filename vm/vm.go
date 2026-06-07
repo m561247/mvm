@@ -4626,6 +4626,8 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		// Avoid creating a typed nil inside an interface{} slot.
 		s = reflect.Zero(dst.ref.Type())
 	}
+	// A value read from an unexported field carries reflect's read-only flag, strip it.
+	s = Exportable(s)
 	dst.ref.Set(s)
 }
 
