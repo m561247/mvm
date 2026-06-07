@@ -46,11 +46,51 @@ func splitTestArgs(arg []string) (mvmFlags []string, target string, testFlags []
 	}
 	mvmFlags = arg[:n]
 	rest := arg[n:]
-	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		target = rest[0]
-		rest = rest[1:]
+	// The target may sit anywhere among the test flags (`go test -run X ./pkg`).
+	// The first bare token that isn't a flag's separate-form value is the target.
+	targetSet := false
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		if strings.HasPrefix(a, "-") && a != "-" {
+			testFlags = append(testFlags, a)
+			if name, hasValue := splitFlag(a); !hasValue && testFlagTakesValue(name) && i+1 < len(rest) {
+				i++
+				testFlags = append(testFlags, rest[i])
+			}
+			continue
+		}
+		if !targetSet {
+			target = a
+			targetSet = true
+			continue
+		}
+		testFlags = append(testFlags, a)
 	}
-	return mvmFlags, target, rest
+	return mvmFlags, target, testFlags
+}
+
+// splitFlag returns a flag token's name (sans dashes) and whether it has an attached =value.
+func splitFlag(a string) (name string, hasValue bool) {
+	name = strings.TrimLeft(a, "-")
+	if eq := strings.IndexByte(name, '='); eq >= 0 {
+		return name[:eq], true
+	}
+	return name, false
+}
+
+// testFlagTakesValue reports whether a `go test` flag consumes the next arg
+// (-flag value); booleans like -v/-short do not. Extend for new Go test flags.
+func testFlagTakesValue(name string) bool {
+	name = strings.TrimPrefix(name, "test.")
+	switch name {
+	case "bench", "benchtime", "blockprofile", "blockprofilerate",
+		"count", "coverprofile", "covermode", "coverpkg", "cpu", "cpuprofile",
+		"fuzz", "fuzztime", "fuzzminimizetime", "gocoverdir", "list",
+		"memprofile", "memprofilerate", "mutexprofile", "mutexprofilefraction",
+		"outputdir", "parallel", "run", "shuffle", "skip", "timeout", "trace":
+		return true
+	}
+	return false
 }
 
 // hasShortFlag reports whether -short was set in any form (incl. -short=false).

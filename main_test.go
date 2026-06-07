@@ -45,9 +45,15 @@ func TestSplitTestArgs(t *testing.T) {
 		{[]string{"./pkg", "-v", "-run", "X"}, []string{}, "./pkg", []string{"-v", "-run", "X"}},
 		{[]string{"-x", "./pkg", "-v"}, []string{"-x"}, "./pkg", []string{"-v"}},
 		{[]string{"-x=line", "-run", "X"}, []string{"-x=line"}, ".", []string{"-run", "X"}},
-		{[]string{"github.com/google/uuid"}, []string{}, "github.com/google/uuid", []string{}},
+		{[]string{"github.com/google/uuid"}, []string{}, "github.com/google/uuid", nil},
 		{[]string{"-stat", "-v"}, []string{"-stat"}, ".", []string{"-v"}},
 		{[]string{"-x", "-stat", "./pkg", "-run", "X"}, []string{"-x", "-stat"}, "./pkg", []string{"-run", "X"}},
+		// Target after a separate-form value flag (the `go test -run X ./pkg` form).
+		{[]string{"-run", "X", "github.com/google/uuid"}, []string{}, "github.com/google/uuid", []string{"-run", "X"}},
+		{[]string{"-v", "github.com/google/uuid"}, []string{}, "github.com/google/uuid", []string{"-v"}},
+		{[]string{"-count", "3", "./pkg"}, []string{}, "./pkg", []string{"-count", "3"}},
+		{[]string{"-run=X", "./pkg"}, []string{}, "./pkg", []string{"-run=X"}},
+		{[]string{"-run", "X", "-v", "./pkg"}, []string{}, "./pkg", []string{"-run", "X", "-v"}},
 	}
 	for _, c := range cases {
 		mvm, target, testArgs := splitTestArgs(c.in)

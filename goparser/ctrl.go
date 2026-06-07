@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/mvm-sh/mvm/lang"
-	"github.com/mvm-sh/mvm/symbol"
 	"github.com/mvm-sh/mvm/vm"
 )
 
@@ -404,8 +403,9 @@ func (p *Parser) parseTypeSwitch(in, init, cond Tokens, periodIdx int) (out Toke
 		}
 		out = init
 	}
-	tsName := p.scope + "/_ts"
-	p.SymAdd(symbol.UnsetAddr, tsName, vm.Value{}, symbol.Var, nil)
+	// Frame-local, not a shared global slot: else concurrent goroutines clobber
+	// each other's switch subject.
+	tsName := p.addTempVar("_ts")
 	guardParsed, err := p.parseExpr(guardToks, "")
 	if err != nil {
 		return nil, err
@@ -447,12 +447,7 @@ func (p *Parser) parseTypeSwitchClause(in Tokens, index, maximum int, tsName, va
 
 	var vScoped string
 	if varName != "" {
-		if p.funcScope != "" {
-			vScoped = p.addLocalVar(varName)
-		} else {
-			vScoped = p.scope + "/" + varName
-			p.SymAdd(symbol.UnsetAddr, vScoped, vm.Value{}, symbol.Var, nil)
-		}
+		vScoped = p.addTempVar(varName)
 	}
 	body, err := p.parseStmts(tl[1])
 	p.popScope() // back to switchScope
