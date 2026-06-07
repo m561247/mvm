@@ -356,7 +356,7 @@ walk:
 func (p *Parser) stmtEnd(toks Tokens) (int, error) {
 	end := toks.Index(lang.Semicolon)
 	if end == -1 {
-		return -1, scan.ErrBlock
+		return -1, p.wrapAt(toks[0], scan.ErrBlock, "no statement terminator after %s", toks[0].Describe())
 	}
 	firstTok := toks[0].Tok
 	// A label "Ident :" followed by a HasInit statement is treated as one statement.
@@ -371,7 +371,7 @@ func (p *Parser) stmtEnd(toks Tokens) (int, error) {
 		for toks[end-1].Tok != lang.BraceBlock || p.compositeBraceAt(toks, end-1) {
 			e2 := toks[end+1:].Index(lang.Semicolon)
 			if e2 == -1 {
-				return -1, scan.ErrBlock
+				return -1, p.wrapAt(toks[0], scan.ErrBlock, "missing body terminator for %s statement", firstTok)
 			}
 			end += 1 + e2
 		}
