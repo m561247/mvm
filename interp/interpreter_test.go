@@ -134,6 +134,8 @@ func TestExpr(t *testing.T) {
 		{n: "#16", src: "!false", res: "true"},
 		{n: "#17", src: `a := "hello"`, res: "hello"},
 		{n: "non_ascii_ident", src: `ж := 42; ж`, res: "42"},
+		// Map index keyed by a slice expr: inner newSlice must not drop the outer index.
+		{n: "map_index_slice_key", src: `m := map[string]int{"ab": 7}; s := "xabz"; m[s[1:3]]`, res: "7"},
 	})
 }
 

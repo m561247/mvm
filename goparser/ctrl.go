@@ -37,7 +37,7 @@ func (p *Parser) parseDefer(in Tokens) (out Tokens, err error) {
 		return out, err
 	}
 	// Parse the argument list (reversed into LIFO push order, as in parseBlock).
-	argToks, err := p.parseBlock(callTok, "")
+	argToks, _, err := p.parseBlock(callTok, "")
 	if err != nil {
 		return out, err
 	}
@@ -70,7 +70,7 @@ func (p *Parser) parseGo(in Tokens) (out Tokens, err error) {
 	if out, err = p.parseExpr(expr[:last], ""); err != nil {
 		return out, err
 	}
-	argToks, err := p.parseBlock(callTok, "")
+	argToks, _, err := p.parseBlock(callTok, "")
 	if err != nil {
 		return out, err
 	}

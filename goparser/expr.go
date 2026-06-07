@@ -270,7 +270,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				}
 			}
 
-			toks, err := p.parseBlock(t, typeStr)
+			toks, _, err := p.parseBlock(t, typeStr)
 			if err != nil {
 				return out, err
 			}
@@ -433,7 +433,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 					}
 				}
 			}
-			toks, err := p.parseBlock(t, typeStr)
+			toks, isSlice, err := p.parseBlock(t, typeStr)
 			if err != nil {
 				return out, err
 			}
@@ -442,7 +442,7 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 			}
 			flushops(p.precedence(newIndex(t.Pos))) // left-associative: flush prior Index before next
 			out = append(out, toks...)
-			if toks[len(toks)-1].Tok != lang.Slice {
+			if !isSlice {
 				ops = append(ops, newIndex(t.Pos))
 			}
 
@@ -629,16 +629,13 @@ func (p *Parser) emitGenericFunc(tmpl *genericTemplate, instToks Tokens, mname s
 	}
 	fid := fout[1]
 	fid.Tok = lang.Ident
-	// Queue the body for comp.finishCompile to compile under the template's
-	// package; inline it would bind its refs to the instantiation site's package
-	// (and inferExprType discards its parseExpr output, losing the body). The
-	// reference (fid) still goes inline.
+	// Queue the body for comp.finishCompile to compile under the template's package;
+	// inline it would bind its refs to the instantiation site's package.
 	p.instanceDecls = append(p.instanceDecls, DeferredDecl{PkgPath: tmplPkgPath(tmpl), Toks: fout})
 	*out = append(*out, fid)
 	return nil
 }
 
-// tmplPkgPath returns tmpl's package, or "" for a nil template.
 func tmplPkgPath(tmpl *genericTemplate) string {
 	if tmpl == nil {
 		return ""
@@ -646,10 +643,10 @@ func tmplPkgPath(tmpl *genericTemplate) string {
 	return tmpl.pkgPath
 }
 
-func (p *Parser) parseBlock(t Token, typ string) (result Tokens, err error) {
+func (p *Parser) parseBlock(t Token, typ string) (result Tokens, isSlice bool, err error) {
 	tokens, err := p.scanBlock(t.Token, false)
 	if err != nil {
-		return tokens, err
+		return tokens, false, err
 	}
 
 	if tokens.Index(lang.Colon) >= 0 {
@@ -657,35 +654,35 @@ func (p *Parser) parseBlock(t Token, typ string) (result Tokens, err error) {
 		parts := tokens.Split(lang.Colon)
 		for i, sub := range parts {
 			if i > 2 {
-				return nil, errors.New("expected ']', found ':'")
+				return nil, false, errors.New("expected ']', found ':'")
 			}
 			if len(sub) == 0 {
 				if i == 0 {
 					result = append(result, newInt(0, tokens[0].Pos))
 					continue
 				} else if i == 2 {
-					return nil, errors.New("final index required in 3-index slice")
+					return nil, false, errors.New("final index required in 3-index slice")
 				}
 				result = append(result, newLen(1, tokens[0].Pos))
 				continue
 			}
 			toks, err := p.parseExpr(sub, typ)
 			if err != nil {
-				return result, err
+				return result, false, err
 			}
 			result = append(result, toks...)
 		}
 		result = append(result, newSlice(t.Pos, len(parts) == 3))
-		return result, err
+		return result, true, err
 	}
 
 	for _, sub := range tokens.Split(lang.Comma) {
 		toks, err := p.parseExpr(sub, typ)
 		if err != nil {
-			return result, err
+			return result, false, err
 		}
 		result = append(result, toks...)
 	}
 
-	return result, err
+	return result, false, err
 }

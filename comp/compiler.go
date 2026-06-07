@@ -947,6 +947,16 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 	// push records the current code position as the entry's load start. Callers
 	// that emit a load do so right after push, so len(c.Code) is the load's start.
 	push := func(s *symbol.Symbol) { pushAt(s, len(c.Code)) }
+	// reserveDepth raises the function's max expression depth by `extra` slots
+	// beyond what push() modelled, for transient operand runs that Grow must still cover.
+	reserveDepth := func(extra int) {
+		if extra <= 0 || len(maxExprDepth) == 0 {
+			return
+		}
+		if d := len(stack) - flen[len(flen)-1] + extra; d > maxExprDepth[len(maxExprDepth)-1] {
+			maxExprDepth[len(maxExprDepth)-1] = d
+		}
+	}
 	top := func() *symbol.Symbol { return stack[len(stack)-1] }
 	pop := func() *symbol.Symbol {
 		l := len(stack) - 1
@@ -2205,6 +2215,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			}
 			// Closure creation: emit code address + captured cell pointers + MkClosure.
 			if s.Kind == symbol.Func && len(s.FreeVars) > 0 {
+				reserveDepth(len(s.FreeVars))
 				c.emit(t, vm.GetGlobal, s.Index)
 				// Determine the current function's FreeVars for transitive capture.
 				var outerCloSym *symbol.Symbol
