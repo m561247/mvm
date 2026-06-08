@@ -169,6 +169,11 @@ var ShortByDefault = map[string]bool{
 	// ~55s otherwise (a stress loop honoring testing.Short); -short keeps 126
 	// tests and runs sub-second, so the compat run no longer flakes to timeout.
 	"github.com/gofrs/uuid": true,
+	// Inline/block tests re-run Run() on every substring of every input
+	// (O(n^2) conversions per case); minutes and multi-GB under the
+	// interpreter, but the loop honors testing.Short.
+	// -short keeps all 65 tests and runs in seconds at ~35MB.
+	"github.com/russross/blackfriday/v2": true,
 }
 
 // ForceShort reports whether pkgPath's tests should default to -short.

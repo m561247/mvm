@@ -433,11 +433,12 @@ func (p *Parser) parseTypeSwitch(in, init, cond Tokens, periodIdx int) (out Toke
 
 func (p *Parser) parseTypeSwitchClause(in Tokens, index, maximum int, tsName, varName string) (out Tokens, err error) {
 	in = append(in, newSemicolon(in[len(in)-1].Pos))
-	tl := in.Split(lang.Colon)
-	if len(tl) != 2 {
-		return nil, errors.New("invalid type switch case clause")
+	// Split on the first colon only: later colons belong to the body (e.g. a label).
+	ci := in.Index(lang.Colon)
+	if ci < 0 {
+		return nil, p.errAt(in[0], "invalid type switch case clause")
 	}
-	conds := tl[0][1:] // tokens after 'case' keyword
+	conds := in[1:ci] // tokens after 'case' keyword
 	pos := in[0].Pos
 	switchScope := p.scope // e.g. "main/switch0"
 
@@ -449,7 +450,7 @@ func (p *Parser) parseTypeSwitchClause(in Tokens, index, maximum int, tsName, va
 	if varName != "" {
 		vScoped = p.addTempVar(varName)
 	}
-	body, err := p.parseStmts(tl[1])
+	body, err := p.parseStmts(in[ci+1:])
 	p.popScope() // back to switchScope
 	if err != nil {
 		return nil, err
@@ -530,15 +531,16 @@ func (p *Parser) parseTypeSwitchClause(in Tokens, index, maximum int, tsName, va
 func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prevFallthrough bool) (out Tokens, hasFallthrough bool, err error) {
 	in = append(in, newSemicolon(in[len(in)-1].Pos)) // Force a ';' at the end of body clause.
 	var conds, body Tokens
-	tl := in.Split(lang.Colon)
-	if len(tl) != 2 {
+	// Split on the first colon only: later colons belong to the body (e.g. a label).
+	ci := in.Index(lang.Colon)
+	if ci < 0 {
 		return nil, false, p.errAt(in[0], "invalid case clause")
 	}
-	conds = tl[0][1:]
+	conds = in[1:ci]
 	pos := in[0].Pos
 
 	// Pre-scan raw body for fallthrough before parsing statements.
-	bodyRaw := tl[1]
+	bodyRaw := in[ci+1:]
 	if fi := bodyRaw.Index(lang.Fallthrough); fi >= 0 {
 		if index == maximum {
 			return nil, false, p.errAt(bodyRaw[fi], "cannot fallthrough final case in switch")
@@ -603,12 +605,13 @@ type selectCase struct {
 }
 
 func (p *Parser) parseSelectCase(cl Tokens, index int, pos int, ci *selectCase) error {
-	tl := cl.Split(lang.Colon)
-	if len(tl) != 2 {
+	// Split on the first colon only: later colons belong to the body (e.g. a label).
+	col := cl.Index(lang.Colon)
+	if col < 0 {
 		return p.errAt(cl[0], "invalid select case clause")
 	}
-	header := tl[0][1:]
-	bodyToks := append(Tokens{}, tl[1]...)
+	header := cl[1:col]
+	bodyToks := append(Tokens{}, cl[col+1:]...)
 	bodyToks = append(bodyToks, newSemicolon(pos))
 
 	if len(header) == 0 {
