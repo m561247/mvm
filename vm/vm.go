@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"unsafe" // to allow setting unexported struct fields
+	"weak"
 )
 
 // Op is a VM opcode (bytecode instruction).
@@ -425,19 +426,21 @@ type Machine struct {
 	iterBase  int         // iterStack floor for the current Run (entries below belong to an outer re-entrant Run)
 }
 
-// iterEntry is one active range-loop iterator. Pull pushes, Next* read the top,
-// Stop pops; fp lets dropIterFrames reclaim it on a return/panic that skips Stop.
+// iterEntry is one active range-loop iterator.
 type iterEntry struct {
 	fp         int
 	next, stop Value
 }
 
-// dropIterFrames pops iterators owned by frames at or above fp, never below
-// m.iterBase (a re-entrant Run restarts fp from 0; its callbacks must not
-// reclaim an outer Run's live iterators).
+func (m *Machine) popIterStop() {
+	e := m.iterStack[len(m.iterStack)-1]
+	m.iterStack = m.iterStack[:len(m.iterStack)-1]
+	e.stop.ref.Interface().(func())()
+}
+
 func (m *Machine) dropIterFrames(fp int) {
 	for len(m.iterStack) > m.iterBase && m.iterStack[len(m.iterStack)-1].fp >= fp {
-		m.iterStack = m.iterStack[:len(m.iterStack)-1]
+		m.popIterStop()
 	}
 }
 
@@ -2380,9 +2383,7 @@ func (m *Machine) Run() (err error) {
 			mem[sp-3] = Value{ref: derefArray(mem[sp-3].ref).Slice3(low, high, hi)}
 			sp -= 3
 		case Stop:
-			e := m.iterStack[len(m.iterStack)-1]
-			m.iterStack = m.iterStack[:len(m.iterStack)-1]
-			e.stop.ref.Interface().(func())()
+			m.popIterStop()
 		// Generic bitwise.
 		case BitAnd:
 			mem[sp-1].num &= mem[sp].num
@@ -3566,9 +3567,6 @@ func (m *Machine) reflectForSend(val Value, elemType reflect.Type) reflect.Value
 	if elemType.Kind() == reflect.Func {
 		return m.wrapForFunc(val, elemType)
 	}
-	// Bridge-wrap so the value satisfies the interface. Keep the Iface in
-	// `any` slots: identity rides on Iface.Typ, but mvm placeholder/basic
-	// rtypes can alias across distinct interpreted types (see setFuncField).
 	if elemType.Kind() == reflect.Interface && val.IsIface() {
 		if elemType == AnyRtype {
 			return val.Reflect()
@@ -3579,18 +3577,12 @@ func (m *Machine) reflectForSend(val Value, elemType reflect.Type) reflect.Value
 	if rv.Type() == elemType {
 		return rv
 	}
-	// Interface locals are stored as interface{} regardless of their declared
-	// interface type; reflect.Convert(interface{}, error) panics, so unwrap
-	// through the concrete element.
 	if rv.Kind() == reflect.Interface && elemType.Kind() == reflect.Interface {
 		return interfaceToInterface(rv, elemType)
 	}
 	return rv.Convert(elemType)
 }
 
-// bridgeIface returns the underlying reflect.Value for an mvm Iface when
-// passed across a native-call boundary. Synth-attached methods are visible
-// directly on the value's rtype, so no wrapping is needed.
 func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value {
 	_ = targetType
 	val := ifc.Val.Reflect()
@@ -3608,9 +3600,6 @@ func (m *Machine) bridgeIface(ifc Iface, targetType reflect.Type) reflect.Value 
 	if ifc.Typ == nil {
 		return val
 	}
-	// A numeric value's bits live in ifc.Val.num and its real type in ifc.Typ;
-	// the ref can collapse to a generic int (int8 const via Push, named type
-	// after arithmetic). Rebuild from num so the native side sees the real type.
 	if rt := ifc.Typ.Rtype; rt != nil && isNum(rt.Kind()) && isNum(ifc.Val.ref.Kind()) {
 		return numReflect(rt, ifc.Val)
 	}
@@ -3671,27 +3660,56 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 
 // funcFieldsTable maps the underlying Go func pointer of a wrapped
 // reflect.MakeFunc value back to the mvm func Value it represents.
-// Owned by the parent Machine and pointer-shared with runner Machines and
-// spawned goroutines so a mutation on any one is visible to the others.
+type funcRef struct{ val Value }
+
+type funcFieldEntry struct {
+	strong Value
+	weak   weak.Pointer[funcRef]
+	isWeak bool
+}
+
 type funcFieldsTable struct {
 	mu sync.RWMutex
-	m  map[uintptr]Value
+	m  map[uintptr]funcFieldEntry
 }
 
 func newFuncFieldsTable() *funcFieldsTable {
-	return &funcFieldsTable{m: make(map[uintptr]Value)}
+	return &funcFieldsTable{m: make(map[uintptr]funcFieldEntry)}
 }
 
 func (t *funcFieldsTable) get(p uintptr) (Value, bool) {
 	t.mu.RLock()
-	v, ok := t.m[p]
+	e, ok := t.m[p]
 	t.mu.RUnlock()
-	return v, ok
+	if !ok {
+		return Value{}, false
+	}
+	if e.isWeak {
+		if r := e.weak.Value(); r != nil {
+			return r.val, true
+		}
+		return Value{}, false // receiver graph collected; entry is stale
+	}
+	return e.strong, true
 }
 
-func (t *funcFieldsTable) set(p uintptr, v Value) {
+func (t *funcFieldsTable) setStrong(p uintptr, v Value) {
 	t.mu.Lock()
-	t.m[p] = v
+	t.m[p] = funcFieldEntry{strong: v}
+	t.mu.Unlock()
+}
+
+func (t *funcFieldsTable) setWeak(p uintptr, ref *funcRef) {
+	t.mu.Lock()
+	t.m[p] = funcFieldEntry{weak: weak.Make(ref), isWeak: true}
+	t.mu.Unlock()
+}
+
+func (t *funcFieldsTable) prune(p uintptr) {
+	t.mu.Lock()
+	if e, ok := t.m[p]; ok && e.isWeak && e.weak.Value() == nil {
+		delete(t.m, p)
+	}
 	t.mu.Unlock()
 }
 
@@ -4052,10 +4070,12 @@ func (m *Machine) makeCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 }
 
 func (m *Machine) buildCallFunc(fval Value, fnType reflect.Type) reflect.Value {
-	rs := m.captureRunnerState()
-	return reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
+	rs := m.captureRunnerState() // also ensures m.funcFields is non-nil
+	ref := &funcRef{val: fval}
+	w := reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
 		runner := rs.acquireRunner()
 		defer rs.releaseRunner(runner)
+		defer runtime.KeepAlive(ref)
 		out, err := runner.callPooled(fval, fnType, args)
 		if err != nil {
 			var pe *PanicError
@@ -4066,11 +4086,12 @@ func (m *Machine) buildCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 		}
 		return out
 	})
+	key := funcDataPtr(w)
+	m.funcFields.setWeak(key, ref)
+	runtime.AddCleanup(ref, m.funcFields.prune, key)
+	return w
 }
 
-// makeMethodExprFunc builds the method-expression func value: a native func of
-// type exprType (func(recv, params...) rets) that binds args[0] as the receiver
-// (like makeMethodCell) and runs the method body on a pooled runner.
 func (m *Machine) makeMethodExprFunc(codeAddr int, exprType reflect.Type) reflect.Value {
 	ins := make([]reflect.Type, exprType.NumIn()-1)
 	for i := range ins {
@@ -4458,6 +4479,12 @@ func funcValuePtr(fv reflect.Value) uintptr {
 	return *(*uintptr)(fv.Addr().UnsafePointer())
 }
 
+func funcDataPtr(w reflect.Value) uintptr {
+	h := reflect.New(w.Type()).Elem()
+	h.Set(w)
+	return funcValuePtr(h)
+}
+
 func forceSettable(fv reflect.Value) reflect.Value {
 	if !fv.CanSet() && fv.CanAddr() {
 		fv = reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem()
@@ -4476,12 +4503,17 @@ func (m *Machine) resolveFuncField(v Value) Value {
 
 func (m *Machine) setGoFuncField(fv, gf reflect.Value, val Value) {
 	fv.Set(gf)
-	if ptr := funcValuePtr(fv); ptr != 0 {
-		if m.funcFields == nil {
-			m.funcFields = newFuncFieldsTable()
-		}
-		m.funcFields.set(ptr, val)
+	ptr := funcValuePtr(fv)
+	if ptr == 0 {
+		return
 	}
+	if m.funcFields == nil {
+		m.funcFields = newFuncFieldsTable()
+	}
+	if _, ok := m.funcFields.get(ptr); ok {
+		return
+	}
+	m.funcFields.setStrong(ptr, val)
 }
 
 func (m *Machine) setFuncField(fv reflect.Value, val Value) {
