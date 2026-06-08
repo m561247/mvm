@@ -36,6 +36,9 @@ func (p *Parser) registerFunc(toks Tokens) (bool, error) {
 			// (stringer emits `func _()` per file). Don't register: no collision.
 			return false, nil
 		}
+		if err := p.redeclaredAsImport(fname, toks[1]); err != nil {
+			return false, err
+		}
 		// Generic function: func Name[T any](params) rettype { ... }
 		if len(toks) > 2 && toks[2].Tok == lang.BracketBlock {
 			params, err := p.parseTypeParamList(toks[2].Token)
@@ -43,12 +46,6 @@ func (p *Parser) registerFunc(toks Tokens) (bool, error) {
 				return false, err
 			}
 			// Parse the function signature so type params are resolved.
-			// Register temporary placeholder types for the type parameters,
-			// build sig tokens without the bracket block, and parse. Save any
-			// prior symbol at the type-parameter's bare name and restore it
-			// afterwards, so a generic type param (e.g. T) does not clobber a
-			// package-level type of the same name. Mirrors parseTypeParamList
-			// in generic.go.
 			savedTP := make(map[string]*symbol.Symbol, len(params))
 			for _, tp := range params {
 				savedTP[tp.name] = p.Symbols[tp.name]
@@ -183,23 +180,45 @@ func (p *Parser) registerFunc(toks Tokens) (bool, error) {
 	return false, nil
 }
 
-// ErrRedeclared reports a second top-level declaration of a name within one
-// compilation unit (the gc "X redeclared in this block" error). It is a hard
-// error, not a parser limitation, so resolveDecls propagates it rather than
-// skipping the decl (which would let Phase 2 emit a duplicate function label and
-// hang the VM). ErrPos lets the diagnostic chokepoint render a snippet.
+// ErrRedeclared reports a second top-level declaration of a name within one compilation unit.
 type ErrRedeclared struct {
-	Name string
-	Loc  string
-	Pos  int
+	Name    string
+	Loc     string
+	Pos     int
+	Through string // import path, when the clash is with an import (else "")
 }
 
 func (e ErrRedeclared) Error() string {
 	msg := e.Name + " redeclared in this block"
+	if e.Through != "" {
+		msg = e.Name + " redeclared in this block: already declared through import of package " + strconv.Quote(e.Through)
+	}
 	if e.Loc != "" {
 		return e.Loc + ": " + msg
 	}
 	return msg
+}
+
+func (p *Parser) redeclaredAsImport(name string, tok Token) error {
+	if p.scope != "" {
+		return nil
+	}
+	if s, ok := p.Symbols[p.pkgKey(name)]; ok && s.Kind == symbol.Pkg && !s.AutoImport {
+		return ErrRedeclared{Name: name, Loc: p.Sources.FormatPos(tok.Pos), Pos: tok.Pos, Through: s.PkgPath}
+	}
+	return nil
+}
+
+func (p *Parser) checkDeclNamesVsImport(decl Tokens) error {
+	for _, g := range decl.Split(lang.Comma) {
+		if len(g) == 0 || g[0].Tok != lang.Ident {
+			continue
+		}
+		if err := p.redeclaredAsImport(g[0].Str, g[0]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ErrPos exposes the source offset so the diagnostic chokepoint can render a snippet.
@@ -241,16 +260,6 @@ func (p *Parser) registerParamsFromSym(s *symbol.Symbol) {
 	}
 }
 
-// anonFuncName synthesizes a name for an anonymous closure. Inside a
-// named outer function the form is "#<outer>.func<N>" with N a
-// per-outer counter, matching Go's "<outer>.func<N>" stack-trace
-// convention. Inside an outer that is itself an anonymous closure
-// (p.fname starts with '#') the form drops the "func" prefix to
-// yield "#<outer>.<N>", matching Go's "<outer>.func<N>.<M>" form
-// for nested closures. Outside any function it falls back to
-// "#f<clonum>" with the package-global counter. The leading '#' is
-// the scope marker that distinguishes synthesized symbols from
-// user-named methods of form "TypeName.MethodName".
 func (p *Parser) anonFuncName() string {
 	clo := p.clonum
 	p.clonum++
@@ -332,17 +341,9 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	p.funcScope = p.scope
 	// Local variable indices start at 1; index 0 is the frame header (prevFP).
 	p.framelen[p.funcScope] = 1
-	// Two packages can both declare a top-level func of the same name, so
-	// p.funcScope (bare fname) collides cross-pkg. Without this purge, a
-	// stale LocalVar Symbol from the prior pkg's parse can be picked up by
-	// addOrRebindLocalVar as a valid `:=` rebind target -- aliasing the new
-	// pkg's local onto the wrong frame slot. Safe to drop: parse and compile
-	// run back-to-back per decl (ParseOneStmt then generate), so the prior
-	// decl's bytecode no longer needs its LocalVar entries.
 	p.clearDirectLocals(p.funcScope)
 
-	// For methods, register the receiver directly at the function scope
-	// using cached info from Phase 1.
+	// For methods, register the receiver directly at the function scope using cached info from Phase 1.
 	if s.RecvName != "" {
 		recvScoped := p.scope + "/" + s.RecvName
 		s.FreeVars = []string{recvScoped}
@@ -401,10 +402,6 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	l := max(p.framelen[p.funcScope]-1, 0)
 	// Promote captured named returns to heap cells at the prologue so a
 	// capturing (deferred) closure shares the slot rather than a snapshot.
-	// The body is already parsed, so Captured/NeedsCell is known. CellSlot is
-	// set here (shared with the compiler) so body refs use CellGet/CellSet and
-	// the closure-capture site shares the cell; the Grow handler emits the
-	// actual HeapAlloc for each collected slot index.
 	var cellRet []int
 	for _, name := range p.namedOut {
 		if rs := p.Symbols[name]; rs != nil && rs.NeedsCell() {
@@ -414,15 +411,6 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	}
 	out = append(out, newGrow(l, in[0].Pos, cellRet))
 	// Zero-initialize named-return slots that need a typed zero reflect.Value.
-	// Without this, Grow leaves the slot as an empty Value{} with an invalid
-	// reflect.Value, breaking:
-	//   - struct/array: `&t` falls into Addr's `!v.ref.IsValid()` branch which
-	//     synthesizes `*interface{}`, breaking later field/index access.
-	//   - slice/map: `append(t, x)` / `t[k] = v` panics in reflect because
-	//     `result.Type()` is called on a zero Value.
-	// Nilable kinds with no implicit ops on the zero (pointer, chan, iface,
-	// func) work with the empty slot, so they don't need pre-init.
-	// p.namedOut is right-to-left, so j=0 -> Returns[n-1].
 	if n := len(p.namedOut); n > 0 {
 		var initVars []string
 		var initTypes []*vm.Type

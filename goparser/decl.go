@@ -92,6 +92,9 @@ func (p *Parser) parseConstLine(in Tokens) (out Tokens, err error) {
 		assign = decl[i+1:]
 		decl = decl[:i]
 	}
+	if err = p.checkDeclNamesVsImport(decl); err != nil {
+		return out, err
+	}
 	var vars []string
 	var types []*vm.Type
 	if types, vars, _, err = p.parseParamTypes(decl, parseTypeType); err != nil {
@@ -1111,6 +1114,9 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 	if in[0].Tok != lang.Ident {
 		return out, p.errAt(in[0], "expected type name, got %s", in[0].Tok)
 	}
+	if err = p.redeclaredAsImport(in[0].Str, in[0]); err != nil {
+		return out, err
+	}
 	isAlias := in[1].Tok == lang.Assign
 	toks := in[1:]
 	if isAlias {
@@ -1324,35 +1330,62 @@ func (p *Parser) zeroInitLocals(vars []string, types []*vm.Type) (out Tokens) {
 	return out
 }
 
+func isPureIdentList(decl Tokens) bool {
+	groups := decl.Split(lang.Comma)
+	if len(groups) == 0 {
+		return false
+	}
+	for _, g := range groups {
+		if len(g) != 1 || g[0].Tok != lang.Ident {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Parser) registerVarNames(decl Tokens) []string {
+	var vars []string
+	for _, lt := range decl.Split(lang.Comma) {
+		rawName := lt[0].Str
+		if rawName == "_" {
+			rawName = p.blankName()
+		}
+		name := p.pkgKey(rawName)
+		vars = append(vars, name)
+		if p.funcScope == "" {
+			if s, _, ok := p.symGet(lt[0].Str); !ok || s.Index == symbol.UnsetAddr {
+				p.SymAdd(symbol.UnsetAddr, name, nilValue, symbol.Var, nil)
+			}
+			continue
+		}
+		p.SymAdd(p.framelen[p.funcScope], name, nilValue, symbol.LocalVar, nil)
+		p.framelen[p.funcScope]++
+	}
+	return vars
+}
+
 func (p *Parser) parseVarLine(in Tokens) (out Tokens, err error) {
 	decl := in
 	var assign Tokens
+	hasInit := false
 	if i := decl.Index(lang.Assign); i >= 0 {
 		assign = decl[i+1:]
 		decl = decl[:i]
+		hasInit = true
+	}
+	if err = p.checkDeclNamesVsImport(decl); err != nil {
+		return out, err
 	}
 	var vars []string
 	var types []*vm.Type
 	var undefinedType bool
-	if types, vars, _, err = p.parseParamTypes(decl, parseTypeVar); err != nil {
+	if hasInit && isPureIdentList(decl) {
+		undefinedType = true
+		vars = p.registerVarNames(decl)
+	} else if types, vars, _, err = p.parseParamTypes(decl, parseTypeVar); err != nil {
 		if errors.Is(err, ErrMissingType) {
 			undefinedType = true
-			for _, lt := range decl.Split(lang.Comma) {
-				rawName := lt[0].Str
-				if rawName == "_" {
-					rawName = p.blankName()
-				}
-				name := p.pkgKey(rawName)
-				vars = append(vars, name)
-				if p.funcScope == "" {
-					if s, _, ok := p.symGet(lt[0].Str); !ok || s.Index == symbol.UnsetAddr {
-						p.SymAdd(symbol.UnsetAddr, name, nilValue, symbol.Var, nil)
-					}
-					continue
-				}
-				p.SymAdd(p.framelen[p.funcScope], name, nilValue, symbol.LocalVar, nil)
-				p.framelen[p.funcScope]++
-			}
+			vars = p.registerVarNames(decl)
 		} else {
 			return out, err
 		}

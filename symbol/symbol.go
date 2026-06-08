@@ -42,6 +42,7 @@ type Symbol struct {
 	Value      vm.Value       //
 	Cval       constant.Value //
 	Used       bool           //
+	AutoImport bool           // Pkg bound by AutoImportPackages (ambient convenience), not an explicit import statement
 	Captured   bool           // true if this variable escapes to a heap cell
 	LoopVar    bool           // true if this is a for-init or range variable (snapshot capture)
 	CellSlot   bool           // true if the local frame slot holds a heap cell pointer (promoted)
