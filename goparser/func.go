@@ -381,7 +381,11 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 	if s.Type != nil {
 		p.registerParamsFromSym(s)
 	} else {
+		// This is a real func signature: parseTypeExpr's func case must register
+		// the params as locals (it suppresses registration for func TYPES).
+		p.regFuncSig = true
 		typ, _, err := p.parseTypeExpr(in[:bi])
+		p.regFuncSig = false
 		if err != nil {
 			return out, err
 		}

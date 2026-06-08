@@ -60,6 +60,7 @@ type Parser struct {
 	funcInstArgs   map[string][]*vm.Type // generic-func instance name -> bound type args, to disambiguate distinct same-named types (e.g. func-local types) that mangle alike
 	instantiating  map[string]bool       // generic-type instances whose body is parsing now; self-refs reuse the mid-build placeholder, a failed-instantiation leftover is rebuilt on retry
 	typeOnly       bool                  // when true, addSymVar is a no-op (Phase 1 signature-only parse)
+	regFuncSig     bool                  // set by parseFunc so the outermost func-type parse registers its params as locals; a func TYPE (composite-elem, var/field type, interface method) leaves it false so param names don't leak into the enclosing scope
 	inForInit      bool                  // true while parsing for-init or range clause (marks LoopVar)
 	funcDepth      int                   // nesting depth of function bodies (>0 means inside a function)
 	loopDepth      int                   // nesting depth of for loops (>0 means inside a loop)

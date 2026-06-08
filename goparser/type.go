@@ -200,16 +200,24 @@ func (p *Parser) parseTypeExpr(in Tokens) (typ *vm.Type, n int, err error) {
 		// Input parameters are always enclosed by parenthesis.
 		// For methods, parse the receiver separately as Heap[0] (not a stack param),
 		// so explicit params get the correct frame indices (-2, -3, ...).
+		regParams := p.regFuncSig
+		p.regFuncSig = false
+		saveTypeOnly := p.typeOnly
+		if !regParams {
+			p.typeOnly = true
+		}
+		var recvErr error
 		if recvr != "" {
-			recvrToks, err := p.scanBlock(in[1].Token, false)
-			if err != nil {
-				return nil, 0, err
-			}
-			if _, _, _, err = p.parseParamTypes(recvrToks, parseTypeRecv); err != nil {
-				return nil, 0, err
+			var recvrToks Tokens
+			if recvrToks, recvErr = p.scanBlock(in[1].Token, false); recvErr == nil {
+				_, _, _, recvErr = p.parseParamTypes(recvrToks, parseTypeRecv)
 			}
 		}
 		typ, _, _, err := p.parseFuncParams(in[indexArgs], out)
+		p.typeOnly = saveTypeOnly
+		if recvErr != nil {
+			return nil, 0, recvErr
+		}
 		if err != nil {
 			return nil, 0, err
 		}
