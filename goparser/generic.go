@@ -1057,7 +1057,7 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		if l >= 1 && in[l-1].Tok == lang.Label && in[l-1].Str == t.Str+"_end" {
 			endName := in[l-1].Str
 			j := l - 1
-			for j >= 0 && !(in[j].Tok == lang.Goto && in[j].Str == endName) {
+			for j >= 0 && (in[j].Tok != lang.Goto || in[j].Str != endName) {
 				j--
 			}
 			if j >= 0 {
