@@ -1047,6 +1047,21 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 		return p.Symbols["int"].Type, 1
 
 	case id == lang.Ident:
+		// Consume the entire block as one operand, else a right-to-left arg walk derails on the body tokens.
+		if l >= 1 && in[l-1].Tok == lang.Label && in[l-1].Str == t.Str+"_end" {
+			endName := in[l-1].Str
+			j := l - 1
+			for j >= 0 && !(in[j].Tok == lang.Goto && in[j].Str == endName) {
+				j--
+			}
+			if j >= 0 {
+				var ct *vm.Type
+				if s, _, ok := p.Symbols.Get(t.Str, p.scope); ok {
+					ct = symbol.Vtype(s)
+				}
+				return ct, l - j + 1
+			}
+		}
 		s, _, ok := p.Symbols.Get(t.Str, p.scope)
 		if !ok {
 			return nil, 1

@@ -1929,6 +1929,10 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				}
 				for i := n - 1; i >= 0; i-- {
 					if lhs[i].NeedsCell() {
+						// Convert to the declared type so the cell is typed *T, not *int.
+						if isNumericConvType(lhs[i].Type) {
+							c.emit(t, vm.Convert, c.typeSym(lhs[i].Type).Index, 0)
+						}
 						c.emit(t, vm.HeapAlloc)
 						lhs[i].CellSlot = true
 					}

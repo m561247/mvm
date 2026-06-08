@@ -2540,19 +2540,14 @@ func (m *Machine) Run() (err error) {
 		case HeapAlloc:
 			cell := new(Value)
 			*cell = mem[sp] // initialise cell with top-of-stack value
-			// Detach addressable refs so a later overwrite of the source slot
-			// (per-iteration loop variable, value-receiver mutation) does not
-			// leak through into closures/cells that captured it.
-			if cell.ref.CanAddr() {
-				if k := cell.ref.Kind(); isNum(k) {
-					rv := reflect.New(cell.ref.Type()).Elem()
-					setNumReflect(rv, cell.num)
-					cell.ref = rv
-				} else {
-					rv := reflect.New(cell.ref.Type()).Elem()
-					rv.Set(cell.ref)
-					cell.ref = rv
-				}
+			if k := cell.ref.Kind(); isNum(k) {
+				rv := reflect.New(cell.ref.Type()).Elem()
+				setNumReflect(rv, cell.num)
+				cell.ref = rv
+			} else if cell.ref.CanAddr() {
+				rv := reflect.New(cell.ref.Type()).Elem()
+				rv.Set(cell.ref)
+				cell.ref = rv
 			}
 			mem[sp] = ValueOf(cell) // replace value with cell pointer
 		case HeapGet:
