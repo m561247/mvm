@@ -844,12 +844,10 @@ func (m *Machine) recoverPanic(err *error) {
 			*err = pe
 			return
 		}
-		// Clean-exit signals (anything implementing error that is not a
-		// runtime.Error) flow through unwrapped, e.g. *interp.ExitError
-		// from the virtualized os.Exit / log.Fatal* bindings. capturePanic
-		// is reserved for genuine runtime crashes (nil deref, divide by
-		// zero, reflect.Convert mismatch).
-		if e, ok := r.(error); ok {
+		// A *reflect.ValueError is genuine crash (the VM read a corrupted Value),
+		// but it is not a runtime.Error, so capture it explicitly.
+		var ve *reflect.ValueError
+		if e, ok := r.(error); ok && !errors.As(e, &ve) {
 			if _, isRuntimeErr := r.(runtime.Error); !isRuntimeErr {
 				*err = e
 				return
@@ -3562,6 +3560,9 @@ func (m *Machine) appendValues(mem []Value, sp, n int) {
 }
 
 func (m *Machine) reflectForSend(val Value, elemType reflect.Type) reflect.Value {
+	if !val.IsValid() {
+		return reflect.Zero(elemType)
+	}
 	if elemType.Kind() == reflect.Func {
 		return m.wrapForFunc(val, elemType)
 	}
@@ -4328,11 +4329,11 @@ func (m *Machine) newGoroutine(fval Value, args []Value, spread bool) (panicked 
 		funcWrappers:    m.funcWrappers,
 		typesByRtype:    m.typesByRtype,
 		fault:           m.fault,
+		debugInfoFn:     m.debugInfoFn,
 	}
 	go func() {
 		// An unrecovered panic in an interpreted goroutine returns from Run as an
-		// error. Go would crash the process; record it so main surfaces it (a
-		// non-zero exit) instead of silently dropping it.
+		// error. Go would crash the process; record it so main surfaces it.
 		if err := child.Run(); err != nil && m.fault != nil {
 			m.fault.record(err)
 		}
@@ -4340,7 +4341,6 @@ func (m *Machine) newGoroutine(fval Value, args []Value, spread bool) (panicked 
 	return false
 }
 
-// clearValue implements the clear builtin.
 func clearValue(rv reflect.Value) {
 	if rv = unwrapIface(rv); rv.IsValid() {
 		rv.Clear()
@@ -4383,12 +4383,6 @@ func snapshotArg(v Value) Value {
 	return v
 }
 
-// detachByValueArgs copies struct/array args into fresh addressable storage so
-// callee field/index writes don't leak to the caller's slot, and so the callee
-// can take the address of its by-value param at all. The latter matters for
-// args that arrive unaddressable -- a native callback's reflect.Call value, or a
-// map-index result -- where field/index assignment would otherwise panic; Go
-// makes every parameter an addressable local.
 func detachByValueArgs(args []Value) {
 	for i := range args {
 		r := args[i].ref
@@ -4415,9 +4409,7 @@ func (m *Machine) Top() (v Value) {
 	if l := len(m.mem); l > 0 {
 		v = m.mem[l-1]
 	} else if l := len(m.globals); l > 0 {
-		// When the stack is empty (e.g. after a pure global assignment), return
-		// the last global. In the pre-split layout globals were in m.mem and
-		// Top() naturally returned the last one; preserve that behaviour.
+		// When the stack is empty, return the last global.
 		v = m.globals[l-1]
 	}
 	return v
@@ -4473,8 +4465,6 @@ func forceSettable(fv reflect.Value) reflect.Value {
 	return fv
 }
 
-// resolveFuncField returns the original mvm Value for a Go func field
-// previously registered via setFuncField/assignSlot.
 func (m *Machine) resolveFuncField(v Value) Value {
 	if v.ref.Kind() == reflect.Func && v.ref.CanAddr() && !v.ref.IsNil() && m.funcFields != nil {
 		if pf, ok := m.funcFields.get(funcValuePtr(v.ref)); ok {
@@ -4511,8 +4501,7 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 		return
 	}
 	if isNum(fv.Kind()) && isNum(val.ref.Kind()) {
-		// Avoid reflect.Set type-mismatch when field and value are different numeric kinds
-		// (e.g. uint field, int value from untyped const).
+		// Avoid reflect.Set type-mismatch when field and value are different numeric kinds.
 		setNumReflect(fv, val.num)
 		return
 	}
@@ -4535,10 +4524,7 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 			fv.Set(numReflect(iv.Typ.Rtype, iv.Val))
 			return
 		}
-		// Native interface target (e.g. `error`): bridge so the mvm-typed
-		// concrete value is assignable. AnyRtype slots accept the raw Iface
-		// struct directly via the fallback below, preserving its identity for
-		// later dispatch.
+		// Native interface target: bridge so the mvm-typed concrete value is assignable.
 		if fv.Type().NumMethod() > 0 {
 			if w := m.bridgeIface(iv, fv.Type()); w.IsValid() {
 				fv.Set(w)
@@ -4547,14 +4533,9 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 		}
 	}
 	src := val.Reflect()
-	// interface{} -> methodful-interface (e.g. `var e error = nil` placed in
-	// a []error slot): reflect.Set rejects interface{} as not assignable to
-	// methodful interfaces. Unwrap the concrete element (or zero for nil).
 	if fv.Kind() == reflect.Interface && src.Kind() == reflect.Interface && src.Type() != fv.Type() {
 		src = interfaceToInterface(src, fv.Type())
 	}
-	// Named field set from its unnamed (untyped-const) value:
-	// reflect.Set wants identical types, so convert when only the name differs.
 	if src.IsValid() && src.Kind() == fv.Kind() && src.Type() != fv.Type() &&
 		!src.Type().AssignableTo(fv.Type()) && src.Type().ConvertibleTo(fv.Type()) {
 		src = src.Convert(fv.Type())
@@ -4562,9 +4543,6 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 	fv.Set(src)
 }
 
-// retypeFuncSlot retypes an interface{}-boxed func local to addressable storage
-// of its func type, so &f is *func(...). Re-storing via assignSlot keeps the
-// closure recoverable (resolveFuncField) for fast in-VM dispatch.
 func (m *Machine) retypeFuncSlot(slot *Value, funcType reflect.Type) {
 	if slot.ref.IsValid() && slot.ref.Type() == funcType && slot.ref.CanAddr() {
 		return
@@ -4582,9 +4560,6 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		*dst = pf
 		return
 	}
-	// Struct func fields can't hold mvm func values (int code addresses or Closures)
-	// via reflect.Set. Wrap into a non-nil Go func via setGoFuncField, which also
-	// records the wrapper's funcptr so resolveFuncField can recover the mvm value.
 	if dst.ref.Kind() == reflect.Func && dst.ref.CanAddr() {
 		dst.num = src.num
 		if gf := m.wrapForFunc(src, dst.ref.Type()); gf.IsValid() {
@@ -4596,11 +4571,6 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		dst.num = src.num
 		switch {
 		case !dst.ref.CanSet():
-			// For a non-addressable numeric dst (typed-zero from `vm.New`),
-			// num is authoritative; keep the typed-zero ref instead of
-			// aliasing src.ref, which may be an addressable backing returned
-			// by Deref. Aliasing would let DerefSet's address-scan corrupt
-			// this slot's num cache on later writes through that backing.
 			if dst.ref.IsValid() && isNum(dst.ref.Kind()) {
 				break
 			}
@@ -4612,9 +4582,6 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		}
 		return
 	}
-	// Bit ops leave src.ref invalid when neither operand carries a typed ref;
-	// dst's kind is authoritative. For non-addressable numeric dst (typed-zero)
-	// num alone carries the value; skip the backing write.
 	if !src.ref.IsValid() && dst.ref.IsValid() && isNum(dst.ref.Kind()) {
 		dst.num = src.num
 		if dst.ref.CanSet() {
@@ -4658,15 +4625,11 @@ func numSet(dst reflect.Value, src Value) {
 	}
 	s := src.Reflect()
 	if !s.IsValid() {
-		// Untyped nil literal: substitute typed zero of dst so reflect.Set
-		// doesn't panic with "Set on zero Value" when assigning to nilable
-		// destinations (slice, map, pointer, chan, func, interface).
 		s = reflect.Zero(dst.Type())
 	}
 	dst.Set(s)
 }
 
-// derefArray dereferences a pointer-to-array so it can be sliced.
 func derefArray(v reflect.Value) reflect.Value {
 	if v.Kind() == reflect.Pointer && v.Elem().Kind() == reflect.Array {
 		return v.Elem()
@@ -4683,7 +4646,6 @@ func numReflect(t reflect.Type, src Value) reflect.Value {
 	return src.Reflect()
 }
 
-// mapKeyReflect converts src to a reflect.Value usable as a key in a map whose key type is t.
 func mapKeyReflect(t reflect.Type, src Value) reflect.Value {
 	rv := numReflect(t, src)
 	if rv.IsValid() && rv.Kind() == reflect.Interface && t.Kind() == reflect.Interface &&
@@ -4698,8 +4660,6 @@ func mapKeyReflect(t reflect.Type, src Value) reflect.Value {
 	return rv
 }
 
-// bridgeArgs unwraps any Iface-typed arguments to the underlying concrete
-// reflect.Value for the native call boundary.
 func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fn reflect.Value) {
 	for i, rv := range in {
 		if !rv.IsValid() || rv.Type() != ifaceRtype {
@@ -4723,8 +4683,6 @@ func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fn refle
 	}
 }
 
-// paramTypeFor returns the expected parameter type for argument i of funcType.
-// For variadic functions past the last fixed param, it returns the slice element type.
 func paramTypeFor(funcType reflect.Type, i int) reflect.Type {
 	numIn := funcType.NumIn()
 	switch {
@@ -4737,12 +4695,8 @@ func paramTypeFor(funcType reflect.Type, i int) reflect.Type {
 	}
 }
 
-// coerceInterfaceArgs unwraps interface-typed arguments whose type does not match
-// the function's expected parameter type.
 func coerceInterfaceArgs(in []reflect.Value, funcType reflect.Type) {
 	for i, rv := range in {
-		// Export a read-only arg (from an unexported field) so reflect.Value.Call
-		// can pack it into a native parameter instead of panicking.
 		if rv.IsValid() && !rv.CanInterface() {
 			rv = Exportable(rv)
 			in[i] = rv
@@ -4759,11 +4713,6 @@ func coerceInterfaceArgs(in []reflect.Value, funcType reflect.Type) {
 			continue
 		}
 		if rv.Kind() == reflect.Interface && rv.IsNil() && paramType.Kind() == reflect.Interface {
-			// Typed-nil interface var (e.g. a nil `error`) to a different interface
-			// param: reflect can't Convert interface->interface, so emit the
-			// param's typed-nil zero (matches the invalid-value case above). Guarded
-			// to interface params so a nil interface to a concrete param is not
-			// silently turned into a zero concrete value.
 			in[i] = reflect.Zero(paramType)
 			continue
 		}
@@ -4776,8 +4725,6 @@ func coerceInterfaceArgs(in []reflect.Value, funcType reflect.Type) {
 	}
 }
 
-// wrapFuncArgs wraps mvm function values (Closures or code addresses) into
-// native Go functions when the expected parameter type is func.
 func (m *Machine) wrapFuncArgs(in []reflect.Value, args []Value, funcType reflect.Type) {
 	for i := range in {
 		paramType := paramTypeFor(funcType, i)
@@ -4810,16 +4757,14 @@ func (m *Machine) makeMethodCell(ifc Iface, method Method) (*Value, Value) {
 	return cell, Value{ref: reflect.ValueOf(Closure{Code: codeAddr, Heap: []*Value{cell}})}
 }
 
-// MakeMethodCallable returns a mvm func Value suitable for
-// Machine.CallFunc. The receiver cell is constructed with method.Path
-// applied.
+// MakeMethodCallable returns a mvm func Value suitable for Machine.CallFunc.
 func (m *Machine) MakeMethodCallable(ifc Iface, method Method) Value {
 	_, fval := m.makeMethodCell(ifc, method)
 	return fval
 }
 
-// MethodByName returns the first resolved method named `name` reachable
-// from t. For pointer types, methods declared on the element type are
+// MethodByName returns the first resolved method named `name` reachable from t.
+// For pointer types, methods declared on the element type are
 // also searched. Returns (Method, true) on hit.
 func (m *Machine) MethodByName(t *Type, name string) (Method, bool) {
 	// ifaceMethodTypes already walks the Base chain.
