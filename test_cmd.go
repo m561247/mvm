@@ -19,7 +19,25 @@ import (
 	"github.com/mvm-sh/mvm/lang/golang"
 	"github.com/mvm-sh/mvm/modfs"
 	"github.com/mvm-sh/mvm/stdlib"
+	"github.com/mvm-sh/mvm/vm"
 )
+
+// withPanicDiag prints an unrecovered test panic's full mvm diagnostic (location
+// + snippet + stack) before Go's testing re-raises it raw, which would otherwise
+// drop the captured location as the panic crosses back into native code.
+func withPanicDiag(f func(*testing.T)) func(*testing.T) {
+	return func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				if diag, ok := vm.FormatPanic(r); ok {
+					fmt.Fprintln(os.Stderr, diag)
+				}
+				panic(r) // let testing record the failure and abort
+			}
+		}()
+		f(t)
+	}
+}
 
 const testUsageText = `Usage: mvm test [-x] [-stat] [target] [test flags]
 Runs Go tests found in *_test.go files of the given target.
@@ -595,6 +613,9 @@ func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
 	i.ImportPackageValues(map[string]map[string]reflect.Value{
 		"mvmtest": {
 			"Run": reflect.ValueOf(func(tests []testing.InternalTest, benches []testing.InternalBenchmark, exs []testing.InternalExample) {
+				for n := range tests {
+					tests[n].F = withPanicDiag(tests[n].F)
+				}
 				exitCode = testing.MainStart(statDeps{}, tests, benches, nil, exs).Run()
 			}),
 			// SkipFn builds a *native* t.Skip(reason) closure, so the skip path

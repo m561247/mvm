@@ -221,6 +221,16 @@ func asPanicError(r any) (*PanicError, bool) {
 	return nil, false
 }
 
+// FormatPanic renders a recovered panic as the verbose diagnostic (location +
+// snippet + mvm stack) if it carries a PanicError, else returns ("", false).
+// Lets a native caller surface the source location before the panic crashes raw.
+func FormatPanic(r any) (string, bool) {
+	if pe, ok := asPanicError(r); ok {
+		return pe.Error(), true
+	}
+	return "", false
+}
+
 // Error renders the verbose layout (header + snippet + mvm stack) using the
 // DebugInfo captured at panic time. Falls back to "panic: <raw>" if no
 // DebugInfo was captured.

@@ -1972,7 +1972,7 @@ func (m *Machine) Run() (err error) {
 			}
 			sp += a
 		case DeferPush:
-			mem, sp = m.deferPush(c, mem, fp, sp)
+			mem, sp = m.deferPush(c, ip, mem, fp, sp)
 
 		case GoCall:
 			narg := int(c.A)
@@ -2244,6 +2244,8 @@ func (m *Machine) Run() (err error) {
 				prevHead := int(mem[dh-1].num)
 				funcVal := mem[dh-narg-3]
 				retBase := dh - narg - 3
+				// Defer site, seeded by deferPush; read before the VM branch overwrites it.
+				deferIP := int(int32(mem[dh].num))
 				if isX == 2 {
 					if Op(funcVal.num) == Panic {
 						// defer panic(arg): begin panicking, drop the pending return
@@ -2269,18 +2271,27 @@ func (m *Machine) Run() (err error) {
 				if isX == 1 {
 					// Native function: call via reflect, discard results.
 					rv := Exportable(unwrapIface(funcVal.ref))
+					if rv.Kind() != reflect.Func || rv.IsNil() {
+						// Nil deferred call panics; flag started so panicUnwind pops it.
+						mem[dh-2].num |= deferStartedFlag
+						m.raiseNilDeref()
+						ip = m.stageUnwindAt(deferIP, fp, mem)
+						continue
+					}
 					rin := make([]reflect.Value, narg)
 					for i := range rin {
 						rin[i] = mem[dh-narg-2+i].Reflect()
 					}
 					coerceInterfaceArgs(rin, rv.Type())
 					m.wrapFuncArgs(rin, mem[dh-narg-2:dh-2], rv.Type())
-					if deferSpread(packed) {
-						// Last arg is a packed variadic slice.
-						rin[len(rin)-1] = unwrapVariadicIface(rin[len(rin)-1])
-						rv.CallSlice(rin)
-					} else {
-						rv.Call(rin)
+					// Flag started so a panic inside isn't re-run by panicUnwind.
+					// invokeNative makes the panic catchable by an enclosing
+					// recover() (Go semantics) instead of escaping the VM raw.
+					mem[dh-2].num |= deferStartedFlag
+					m.mem, m.fp, m.ip = mem, fp, deferIP+1
+					if _, panicked := m.invokeNative(nil, reflect.Value{}, rv, rin, deferSpread(packed)); panicked {
+						ip = m.stageUnwindAt(deferIP, fp, mem)
+						continue
 					}
 					// Move return values (at dh+1..dh+nret) down over the defer entry.
 					for i := range nret {
@@ -2300,7 +2311,7 @@ func (m *Machine) Run() (err error) {
 					// Nil deferred call panics; the entry stays on the chain (flagged
 					// started above) for panicUnwind's started guard to pop.
 					m.raiseNilDeref()
-					ip = m.stageUnwind(ip, fp, mem)
+					ip = m.stageUnwindAt(deferIP, fp, mem)
 					continue
 				}
 				// Push func+args copy and 3-slot call frame (retIP, prevFP, deferHead=0).
@@ -2561,7 +2572,7 @@ func (m *Machine) Run() (err error) {
 			}
 			mem[sp] = v
 		case HeapSet:
-			*m.heap[int(c.A)] = mem[sp]
+			setCell(m.heap[int(c.A)], mem[sp])
 			sp--
 		case CellGet:
 			sp++
@@ -2571,7 +2582,7 @@ func (m *Machine) Run() (err error) {
 			}
 			mem[sp] = v
 		case CellSet:
-			*mem[int(c.A)+fp-1].ref.Interface().(*Value) = mem[sp]
+			setCell(mem[int(c.A)+fp-1].ref.Interface().(*Value), mem[sp])
 			sp--
 		case HeapPtr:
 			if sp+1 >= len(mem) {
@@ -3132,7 +3143,7 @@ func (m *Machine) resolveIPAndHeap(funcVal Value) int {
 	return int(funcVal.num)
 }
 
-func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, int) {
+func (m *Machine) deferPush(c *Instruction, ip int, mem []Value, fp, sp int) ([]Value, int) {
 	narg := int(c.A)
 	isX := int(c.B) & 3
 	spread := 0
@@ -3152,6 +3163,10 @@ func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, i
 		// via reflect.Call instead of jumping to a bogus code address.
 		isX = 1
 	}
+	// Capture the func value at the defer statement (args below via snapshotArg).
+	if isX != 2 {
+		mem[sp-narg] = snapshotFuncVal(mem[sp-narg])
+	}
 	for i := sp - narg + 1; i <= sp; i++ {
 		mem[i] = snapshotArg(mem[i])
 	}
@@ -3163,7 +3178,9 @@ func (m *Machine) deferPush(c *Instruction, mem []Value, fp, sp int) ([]Value, i
 	}
 	mem[sp+1] = Value{num: packDefer(narg, isX, spread)}
 	mem[sp+2] = Value{num: uint64(prevHead)}
-	mem[sp+3] = Value{} // returnIP placeholder, filled by Return
+	// returnIP placeholder, seeded with the defer-site IP so a panic dispatching
+	// the call reports the defer site; Return overwrites it for VM defers.
+	mem[sp+3] = Value{num: uint64(uint32(ip))}
 	sp += 3
 	mem[fp-3].num = uint64(sp) // dh = index of returnIP slot
 	return mem, sp
@@ -3203,6 +3220,7 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		prevHead := int((*mem)[dh-1].num)
 		funcVal := (*mem)[dh-narg-3]
 		retBase := dh - narg - 3
+		deferIP := int(int32((*mem)[dh].num)) // defer site, seeded by deferPush
 		popDefer := func() (bool, error) {
 			clear((*mem)[retBase:])
 			*mem = (*mem)[:retBase]
@@ -3232,17 +3250,26 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		if isX == 1 {
 			// Native defer: call via reflect, discard results.
 			rv := Exportable(unwrapIface(funcVal.ref))
+			if rv.Kind() != reflect.Func || rv.IsNil() {
+				// Nil deferred call supersedes the in-flight panic (see VM case below).
+				m.raiseNilDeref()
+				m.panicInfo = m.capturePanicAt(deferIP, *fp, *mem, m.panicVal.Interface())
+				return popDefer()
+			}
 			rin := make([]reflect.Value, narg)
 			for i := range rin {
 				rin[i] = (*mem)[dh-narg-2+i].Reflect()
 			}
 			coerceInterfaceArgs(rin, rv.Type())
 			m.wrapFuncArgs(rin, (*mem)[dh-narg-2:dh-2], rv.Type())
-			if deferSpread(packed) {
-				rin[len(rin)-1] = unwrapVariadicIface(rin[len(rin)-1])
-				rv.CallSlice(rin)
-			} else {
-				rv.Call(rin)
+			// A panic here supersedes the in-flight one (Go); invokeNative
+			// captures it as an mvm panic rather than letting it escape raw.
+			m.mem, m.fp, m.ip = *mem, *fp, deferIP+1
+			if _, panicked := m.invokeNative(nil, reflect.Value{}, rv, rin, deferSpread(packed)); panicked {
+				if !m.panicReraised {
+					m.panicInfo = m.capturePanicAt(deferIP, *fp, *mem, m.panicVal.Interface())
+				}
+				m.panicReraised = false
 			}
 			return popDefer()
 		}
@@ -3254,13 +3281,10 @@ func (m *Machine) panicUnwind(mem *[]Value, fp, sp, ip *int, panicAddr int) (boo
 		prevHeap := m.heap
 		nip := m.resolveIPAndHeap(funcVal)
 		if nip == nilFuncAddr {
-			// Nil deferred call during unwind: pop it and supersede the panic
-			// with nil-deref (Go: the nil call panics), continuing the unwind.
-			// Drop the snapshot describing the now-superseded panic; this
-			// nil-deref has no clean interpreted instruction to point at, so
-			// escapeErr falls back to the bare message.
-			m.panicInfo = nil
+			// Nil deferred call supersedes the in-flight panic with a nil-deref
+			// pointing at the defer site, then unwinding continues.
 			m.raiseNilDeref()
+			m.panicInfo = m.capturePanicAt(deferIP, *fp, *mem, m.panicVal.Interface())
 			return popDefer()
 		}
 		base := len(*mem)
@@ -3424,13 +3448,19 @@ var panicNilErr = Value{ref: reflect.ValueOf(&runtime.PanicNilError{})}
 func (m *Machine) panicAddr() int { return m.baseCodeLen + 1 }
 
 func (m *Machine) stageUnwind(ip, fp int, mem []Value) int {
+	return m.stageUnwindAt(ip, fp, mem)
+}
+
+// stageUnwindAt captures the panic snapshot at panicIP rather than the current
+// ip, so a panic dispatching a deferred call points at the defer site, not Return.
+func (m *Machine) stageUnwindAt(panicIP, fp int, mem []Value) int {
 	if m.panicReraised {
 		// invokeNative already adopted the inner run's snapshot (which has the
 		// real panic site); the boundary frame here would only point at the
 		// native call. Consume the flag and keep the inner snapshot.
 		m.panicReraised = false
 	} else {
-		m.panicInfo = m.capturePanicAt(ip, fp, mem, m.panicVal.Interface())
+		m.panicInfo = m.capturePanicAt(panicIP, fp, mem, m.panicVal.Interface())
 	}
 	return m.panicAddr()
 }
@@ -4409,6 +4439,20 @@ func snapshotArg(v Value) Value {
 	return v
 }
 
+// snapshotFuncVal captures a deferred func value at the defer statement by
+// detaching it from an aliased slot (a func field or func var), so a later write
+// that nils the slot is not seen when the call runs. The copy preserves type
+// (New().Set, not ValueOf(.Interface())) to keep a VM closure's interface{int}
+// encoding intact; Exportable allows copying from an unexported field.
+func snapshotFuncVal(v Value) Value {
+	if k := v.ref.Kind(); (k == reflect.Func || k == reflect.Interface) && v.ref.CanAddr() {
+		nv := reflect.New(v.ref.Type()).Elem()
+		nv.Set(Exportable(v.ref))
+		v.ref = nv
+	}
+	return v
+}
+
 func detachByValueArgs(args []Value) {
 	for i := range args {
 		r := args[i].ref
@@ -4590,6 +4634,16 @@ func (m *Machine) retypeFuncSlot(slot *Value, funcType reflect.Type) {
 	if !nilEqual(orig) {
 		m.assignSlot(slot, orig)
 	}
+}
+
+// setCell writes into a closure heap cell, coercing an untyped nil to the cell's
+// typed zero (as assignSlot does for locals) so a later append/index on the cell
+// does not read a zero Value.
+func setCell(cell *Value, src Value) {
+	if !src.ref.IsValid() && cell.ref.IsValid() {
+		src.ref = reflect.Zero(cell.ref.Type())
+	}
+	*cell = src
 }
 
 func (m *Machine) assignSlot(dst *Value, src Value) {

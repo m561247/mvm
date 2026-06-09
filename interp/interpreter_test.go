@@ -2986,6 +2986,21 @@ func f() string {
 	return out
 }
 f()`, res: "xy"},
+		// A captured slice var reset to nil then re-appended through the
+		// closure: setting the heap cell to a bare nil must preserve the
+		// cell's slice type, else the next append reads a zero reflect.Value
+		// (zerolog TestLevelHook). Without the fix this panics in append.
+		{n: "captured_slice_nil_reassign_append", src: `
+func f() int {
+	var xs []int
+	add := func(v int) { xs = append(xs, v) }
+	add(1)
+	xs = nil
+	add(2)
+	add(3)
+	return len(xs)*100 + xs[0]*10 + xs[1]
+}
+f()`, res: "223"},
 	})
 }
 
@@ -3549,6 +3564,21 @@ r := 0
 func f() { fns := []func(){func() { r = 9 }}; defer fns[0]() }
 f()
 r`, res: "9"},
+		{n: "defer_func_field_captured", src: `
+// defer captures the func value at the statement: nilling the field
+// afterward (as a sync.Pool reset does) must not nil the deferred call.
+type E struct{ done func(string) }
+out := ""
+func run(e *E, s string) { defer e.done(s); e.done = nil }
+run(&E{done: func(s string) { out = s }}, "hi")
+out`, res: "hi"},
+		{n: "defer_func_var_reassigned", src: `
+// Same for a func var reassigned to nil after the defer statement.
+out := ""
+done := func(s string) { out = s }
+func run(s string) { defer done(s); done = nil }
+run("hi")
+out`, res: "hi"},
 	})
 }
 
@@ -3592,6 +3622,19 @@ func TestPanic(t *testing.T) {
 				return "normal"
 			}
 			f()`, res: "late"},
+		{n: "panic_in_deferred_field_call", src: `
+			// A panic inside a deferred func value (dispatched as a native
+			// func through a field) must be catchable by an enclosing deferred
+			// recover, like Go -- not escape the VM as a raw Go panic.
+			type E struct{ done func(string) }
+			func step(e *E, s string) { defer e.done(s) }
+			got := ""
+			func f() {
+				defer func() { if r := recover(); r != nil { got = r.(string) } }()
+				step(&E{done: func(s string) { panic(s) }}, "boom")
+			}
+			f()
+			got`, res: "boom"},
 		{n: "#03", src: `
 			// Unrecovered panic still runs defers, but propagates error.
 			s := ""
