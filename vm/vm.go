@@ -3668,6 +3668,11 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 		if pf, ok := val.ref.Interface().(MvmFunc); ok {
 			return pf.GF
 		}
+		// Unbox an mvm Iface for an interface destination so native code sees
+		// raw Go values (e.g. a map[string]any literal passed to json.Marshal).
+		if w, ok := m.unboxIfaceFor(val, funcType); ok {
+			return w
+		}
 		// Storing into an interface slot narrower than interface{} (e.g.
 		// image.Image): bridge an mvm Iface to the concrete it wraps, or unwrap
 		// an interface{}-boxed value through its element -- both to satisfy
@@ -4600,31 +4605,10 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 		setNumReflect(fv, val.num)
 		return
 	}
-	if fv.Kind() == reflect.Interface && val.IsIface() {
-		iv := val.IfaceVal()
-		// Unwrap Iface for native types so reflect-based code sees raw Go values.
-		keepInterpreted := iv.Typ.Name != "" && iv.Typ.Name != iv.Typ.Rtype.Name()
-		// Also keep a pointer to an interpreted interface.
-		if !keepInterpreted && iv.Typ.Rtype.Kind() == reflect.Pointer &&
-			iv.Typ.ElemType != nil && iv.Typ.ElemType.Rtype.Kind() == reflect.Interface &&
-			len(iv.Typ.ElemType.IfaceMethods) > 0 {
-			keepInterpreted = true
-		}
-		if len(iv.Typ.Methods) == 0 && !keepInterpreted {
-			if iv.Typ.Rtype.Kind() == reflect.Func {
-				// Wrap interpreted func so native method lookup works.
-				fv.Set(m.wrapForFunc(iv.Val, iv.Typ.Rtype))
-				return
-			}
-			fv.Set(numReflect(iv.Typ.Rtype, iv.Val))
+	if fv.Kind() == reflect.Interface {
+		if w, ok := m.unboxIfaceFor(val, fv.Type()); ok {
+			fv.Set(w)
 			return
-		}
-		// Native interface target: bridge so the mvm-typed concrete value is assignable.
-		if fv.Type().NumMethod() > 0 {
-			if w := m.bridgeIface(iv, fv.Type()); w.IsValid() {
-				fv.Set(w)
-				return
-			}
 		}
 	}
 	src := val.Reflect()
@@ -4636,6 +4620,41 @@ func (m *Machine) setFuncField(fv reflect.Value, val Value) {
 		src = src.Convert(fv.Type())
 	}
 	fv.Set(src)
+}
+
+// unboxIfaceFor converts a boxed mvm Iface to a reflect value assignable to
+// the interface type dst.
+// Native concretes unwrap to raw Go values; interpreted concretes bridge for
+// non-empty targets.
+// ok is false when val is not a boxed Iface for an interface dst, or when the
+// value must stay Iface-boxed to keep its interpreted type info.
+func (m *Machine) unboxIfaceFor(val Value, dst reflect.Type) (reflect.Value, bool) {
+	if dst.Kind() != reflect.Interface || !val.IsIface() {
+		return reflect.Value{}, false
+	}
+	iv := val.IfaceVal()
+	// Unwrap Iface for native types so reflect-based code sees raw Go values.
+	keepInterpreted := iv.Typ.Name != "" && iv.Typ.Name != iv.Typ.Rtype.Name()
+	// Also keep a pointer to an interpreted interface.
+	if !keepInterpreted && iv.Typ.Rtype.Kind() == reflect.Pointer &&
+		iv.Typ.ElemType != nil && iv.Typ.ElemType.Rtype.Kind() == reflect.Interface &&
+		len(iv.Typ.ElemType.IfaceMethods) > 0 {
+		keepInterpreted = true
+	}
+	if len(iv.Typ.Methods) == 0 && !keepInterpreted {
+		if iv.Typ.Rtype.Kind() == reflect.Func {
+			// Wrap interpreted func so native method lookup works.
+			return m.wrapForFunc(iv.Val, iv.Typ.Rtype), true
+		}
+		return numReflect(iv.Typ.Rtype, iv.Val), true
+	}
+	// Native interface target: bridge so the mvm-typed concrete value is assignable.
+	if dst.NumMethod() > 0 {
+		if w := m.bridgeIface(iv, dst); w.IsValid() {
+			return w, true
+		}
+	}
+	return reflect.Value{}, false
 }
 
 func (m *Machine) retypeFuncSlot(slot *Value, funcType reflect.Type) {

@@ -382,7 +382,13 @@ func (t *Type) symbolicString() string {
 				b.WriteString(f.Name)
 				b.WriteByte(' ')
 			}
-			b.WriteString(f.String())
+			// A field clone carries the field name in Name; render its source
+			// type (Base) so distinct anon structs don't share a string key.
+			if !f.Defined && f.Base != nil {
+				b.WriteString(f.Base.String())
+			} else {
+				b.WriteString(f.String())
+			}
 		}
 		b.WriteString(" }")
 		return b.String()
