@@ -4429,6 +4429,9 @@ func (c *Compiler) MaterializeAll() {
 	for _, sym := range c.Symbols {
 		visit(sym.Type)
 	}
+	// Patch structs whose layout was deferred because a by-value field was an
+	// in-flight placeholder mid-cycle (mutual struct cycle broken by a pointer).
+	vm.FinalizeDeferred()
 }
 
 // intrinsicInfo describes a VM intrinsic that replaces a native function call.

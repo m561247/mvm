@@ -612,6 +612,58 @@ func StructOf(fields []*Type, embedded []EmbeddedField, tags []string) *Type {
 	if t, ok := structTypes[key]; ok {
 		return t
 	}
+	t := &Type{Rtype: buildStructRtype(fields, embedded, tags), kind: reflect.Struct, Embedded: embedded, Fields: fields, Tags: tags}
+	structTypes[key] = t
+	return t
+}
+
+// ReserveStruct returns the memoized Type for an anonymous struct shape, or, if
+// absent, installs a placeholder-rtype Type under the key (fresh=true) and
+// returns it. Installing the placeholder before the caller materializes fields
+// lets a pointer cycle re-entering the same shape resolve to it (PointerTo of the
+// placeholder is word-sized, so a *T break needs no real layout). The caller must
+// then materialize the fields and call FinalizeStruct.
+func ReserveStruct(fields []*Type, embedded []EmbeddedField, tags []string) (t *Type, fresh bool) {
+	key := structTypeKey(fields, embedded, tags)
+	structTypesMu.Lock()
+	defer structTypesMu.Unlock()
+	if t, ok := structTypes[key]; ok {
+		return t, false
+	}
+	t = &Type{Rtype: NewPlaceholderRtype(""), kind: reflect.Struct, Embedded: embedded, Fields: fields, Tags: tags}
+	structTypes[key] = t
+	return t, true
+}
+
+// FinalizeStruct patches a reserved struct's placeholder rtype in place with the
+// real layout built from its current field rtypes, preserving identity so the *T
+// pointers captured during the cycle stay valid. The build is non-memoized, so
+// calling it again after an in-flight embedded field is patched picks up the new
+// size. Returns the built rtype so the caller can restore the placeholder's String.
+func FinalizeStruct(t *Type) reflect.Type {
+	layout := buildStructRtype(t.Fields, t.Embedded, t.Tags)
+	patchRtype(t.Rtype, layout)
+	return layout
+}
+
+// BuildStructRtype builds (without memoizing) the reflect struct rtype for the
+// given fields. Use it where only the layout bytes are needed -- e.g. to patch a
+// cycle placeholder -- so a rebuild after an embedded field's size changes is not
+// served a stale memoized layout.
+func BuildStructRtype(fields []*Type, embedded []EmbeddedField, tags []string) reflect.Type {
+	return buildStructRtype(fields, embedded, tags)
+}
+
+// UnreserveStruct drops a reservation whose fields could not be materialized, so a
+// later pass rebuilds it from scratch instead of adopting a stale placeholder.
+func UnreserveStruct(fields []*Type, embedded []EmbeddedField, tags []string) {
+	key := structTypeKey(fields, embedded, tags)
+	structTypesMu.Lock()
+	delete(structTypes, key)
+	structTypesMu.Unlock()
+}
+
+func buildStructRtype(fields []*Type, embedded []EmbeddedField, tags []string) reflect.Type {
 	rf := make([]reflect.StructField, len(fields))
 	embSet := make(map[int]bool, len(embedded))
 	for _, e := range embedded {
@@ -659,9 +711,7 @@ func StructOf(fields []*Type, embedded []EmbeddedField, tags []string) *Type {
 			rf[i].Anonymous = embSet[i]
 		}
 	}
-	t := &Type{Rtype: reflect.StructOf(rf), kind: reflect.Struct, Embedded: embedded, Fields: fields, Tags: tags}
-	structTypes[key] = t
-	return t
+	return reflect.StructOf(rf)
 }
 
 func structTypeKey(fields []*Type, embedded []EmbeddedField, tags []string) string {
