@@ -148,12 +148,12 @@ func finishStructOrDefer(t *mtype.Type, ph reflect.Type) reflect.Type {
 	return ph
 }
 
-// FinalizeDeferred patches every struct whose layout was deferred during
-// materialization (a by-value field was an in-flight placeholder). It loops until
-// no progress is made: each pass re-runs MaterializeRtype on the pending set, and
-// a struct finalizes once its dependencies are filled. Call after MaterializeAll's
-// main pass, when the cycle has settled.
+// FinalizeDeferred patches every struct whose layout was deferred during materialization.
+// It loops until no progress is made.
+// Holds materializeMu for the whole pass so it never races a concurrent materialization on a shared rtype.
 func FinalizeDeferred() {
+	materializeMu.Lock()
+	defer materializeMu.Unlock()
 	for {
 		derivedMu.Lock()
 		pending := make([]*mtype.Type, 0, len(pendingFinalize))
@@ -166,7 +166,7 @@ func FinalizeDeferred() {
 		}
 		progress := false
 		for _, t := range pending {
-			MaterializeRtype(t)
+			materialize(t)
 			if !isPending(t) {
 				progress = true
 			}
@@ -197,7 +197,7 @@ func hasSynthTableMethods(t *mtype.Type) bool {
 	for _, method := range t.Methods {
 		sig := method.Rtype
 		if sig == nil && method.Sig != nil {
-			sig = MaterializeRtype(method.Sig)
+			sig = materialize(method.Sig)
 		}
 		if sig == nil {
 			return true // unknown sig: assume table method, don't share
@@ -236,7 +236,7 @@ func maybeReserve(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
 		return t.Rtype
 	}
 	if isFieldClone(t) {
-		return MaterializeRtype(t.Base)
+		return materialize(t.Base)
 	}
 	if !hasReservableMethods(t) {
 		return layoutRT
@@ -291,7 +291,7 @@ func maybeReserveStruct(t *mtype.Type) (rt reflect.Type, handled bool) {
 	// composite literal's main.Point value is not assignable to it. Mirrors the
 	// isFieldClone branch in maybeReserve.
 	if isFieldClone(t) {
-		rt := MaterializeRtype(t.Base)
+		rt := materialize(t.Base)
 		t.Rtype = rt
 		return rt, true
 	}
@@ -318,7 +318,7 @@ func maybeReserveStruct(t *mtype.Type) (rt reflect.Type, handled bool) {
 	t.Rtype = reserved // stable identity for field cycles during this pass
 	markMaterializing(reserved)
 	for _, f := range t.Fields {
-		MaterializeRtype(f)
+		materialize(f)
 	}
 	if !fieldsMaterialized(t.Fields) {
 		clearMaterializing(reserved)
@@ -385,6 +385,8 @@ var (
 	synthIfaceCache = map[*mtype.Type]reflect.Type{}
 )
 
+var materializeMu sync.Mutex // serializes the whole materialization pass
+
 func ensureDerived(t *mtype.Type) *derivedTypes {
 	d := derivedCache[t]
 	if d == nil {
@@ -413,14 +415,26 @@ func definedOverBase(t *mtype.Type) bool {
 // self-referential func type; a func value is word-sized, so it's layout-correct.
 var selfRefFuncPlaceholder = reflect.FuncOf(nil, nil, false)
 
-// MaterializeRtype builds and caches t.Rtype from t's symbolic graph (Kind +
+// MaterializeRtype is the public entry to materialization. It serializes the
+// pass under materializeMu (see that var) so concurrent compilations don't race
+// on shared reserved rtypes, then delegates to the recursive core. The core and
+// every helper it reaches call materialize directly, never this wrapper, so the
+// non-reentrant lock is taken exactly once per top-level request.
+func MaterializeRtype(t *mtype.Type) reflect.Type {
+	materializeMu.Lock()
+	defer materializeMu.Unlock()
+	return materialize(t)
+}
+
+// materialize builds and caches t.Rtype from t's symbolic graph (Kind +
 // ElemType/KeyType/Fields/Params/Returns + ArrayLen/ChanDir/Variadic/Tags) when
 // it is not already set, recursing into children first.
 // This is the comp-side materialization that lets goparser build a *Type without an rtype.
+// Callers must hold materializeMu (via MaterializeRtype or FinalizeDeferred).
 //
 // A named leaf (a primitive or struct that carries methods) must already hold
 // its rtype so an un-materialized leaf here yields nil.
-func MaterializeRtype(t *mtype.Type) reflect.Type {
+func materialize(t *mtype.Type) reflect.Type {
 	if t == nil {
 		return nil
 	}
@@ -434,7 +448,7 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 	// defined-over-basic type (e.g. `type Confidence int` with methods) reserves
 	// its identity over the base layout so attach fills methods in place.
 	if definedOverBase(t) {
-		if base := MaterializeRtype(t.Base); base != nil {
+		if base := materialize(t.Base); base != nil {
 			rt := reserveDefinedOverBase(t, base)
 			t.Rtype = rt
 			return rt
@@ -443,31 +457,31 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 	var rt reflect.Type
 	switch t.Kind() {
 	case reflect.Pointer:
-		elem := MaterializeRtype(t.ElemType)
+		elem := materialize(t.ElemType)
 		if elem == nil {
 			return nil
 		}
 		rt = runtype.DerivePointerTo(elem)
 	case reflect.Slice:
-		elem := MaterializeRtype(t.ElemType)
+		elem := materialize(t.ElemType)
 		if elem == nil {
 			return nil
 		}
 		rt = runtype.DeriveSliceOf(elem)
 	case reflect.Array:
-		elem := MaterializeRtype(t.ElemType)
+		elem := materialize(t.ElemType)
 		if elem == nil {
 			return nil
 		}
 		rt = runtype.DeriveArrayOf(t.ArrayLen, elem)
 	case reflect.Chan:
-		elem := MaterializeRtype(t.ElemType)
+		elem := materialize(t.ElemType)
 		if elem == nil {
 			return nil
 		}
 		rt = runtype.DeriveChanOf(t.ChanDir, elem)
 	case reflect.Map:
-		key, elem := MaterializeRtype(t.KeyType), MaterializeRtype(t.ElemType)
+		key, elem := materialize(t.KeyType), materialize(t.ElemType)
 		if key == nil || elem == nil {
 			return nil
 		}
@@ -482,14 +496,14 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 		}
 		in := make([]reflect.Type, len(t.Params))
 		for i, p := range t.Params {
-			if in[i] = MaterializeRtype(p); in[i] == nil {
+			if in[i] = materialize(p); in[i] == nil {
 				t.Rtype = nil
 				return nil
 			}
 		}
 		out := make([]reflect.Type, len(t.Returns))
 		for i, r := range t.Returns {
-			if out[i] = MaterializeRtype(r); out[i] == nil {
+			if out[i] = materialize(r); out[i] == nil {
 				t.Rtype = nil
 				return nil
 			}
@@ -499,7 +513,7 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 		if len(t.Fields) == 0 && t.Base != nil && t.Base != t && t.Base.Kind() == reflect.Struct {
 			// Defined type (type T1 T) whose Fields were cloned empty before the
 			// underlying was finalized: materialize from the underlying's layout.
-			rt = MaterializeRtype(t.Base)
+			rt = materialize(t.Base)
 			if rt == nil {
 				return nil
 			}
@@ -531,7 +545,7 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 				runtype.StampName(ph, qualifiedTypeName(t))
 			}
 			for _, f := range t.Fields {
-				MaterializeRtype(f)
+				materialize(f)
 			}
 			if !fieldsMaterialized(t.Fields) {
 				// A field references a not-yet-finalized placeholder (e.g. *T sibling):
@@ -563,7 +577,7 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 		// (FinalizeDeferred) skips the reserve/field steps and falls through to patch.
 		if !hasByValueStructField(t) {
 			for _, f := range t.Fields {
-				MaterializeRtype(f)
+				materialize(f)
 			}
 			if !fieldsMaterialized(t.Fields) {
 				return nil
@@ -579,7 +593,7 @@ func MaterializeRtype(t *mtype.Type) reflect.Type {
 			}
 			markMaterializing(resv.Rtype)
 			for _, f := range t.Fields {
-				MaterializeRtype(f)
+				materialize(f)
 			}
 			if !fieldsMaterialized(t.Fields) {
 				clearMaterializing(resv.Rtype)

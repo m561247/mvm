@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Data race in rtype materialization when two compilations run concurrently.
+  The materialization pass now runs under a single lock.
+  No measurable effect on the interpreter hot path.
+
 ## [0.4.1] - 2026-06-09
 
 ### Added
