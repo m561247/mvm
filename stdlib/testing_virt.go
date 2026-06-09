@@ -3,6 +3,7 @@ package stdlib
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -10,20 +11,39 @@ import (
 	"github.com/mvm-sh/mvm/vm"
 )
 
-// init registers NativeMethodHooks for the common testing.TB diagnostic
-// methods (Log/Logf/Error/Errorf/Fatal/Fatalf/Skip/Skipf) on *testing.T,
-// *testing.B, and *testing.F. Without these hooks, native testing's
-// (*common).log resolves the call site via runtime.Callers walked
-// against the host Go stack -- which lands on reflect.Value.call
-// (reflect/value.go:586) because the interpreted caller invokes the
-// native method through reflect.Value.Call in vm.Call. The hook formats
-// the message with the interpreter's own source position and writes it
-// through t.Output() (which bypasses callSite) before invoking the
-// matching Fail/FailNow/SkipNow.
 func init() {
 	registerTestingHooks((*testing.T)(nil))
 	registerTestingHooks((*testing.B)(nil))
 	registerTestingHooks((*testing.F)(nil))
+	registerRunHook((*testing.T)(nil))
+	registerRunHook((*testing.B)(nil))
+}
+
+func registerRunHook(recv any) {
+	t := reflect.TypeOf(recv)
+	runIdx := methodIndex(t, "Run")
+	if runIdx < 0 {
+		return
+	}
+	vm.RegisterNativeMethodHook(recv, "Run", func(_ *vm.Machine, recvVal reflect.Value, args []reflect.Value) []reflect.Value {
+		if len(args) == 2 && args[1].IsValid() && args[1].Kind() == reflect.Func {
+			f := args[1]
+			args = []reflect.Value{args[0], reflect.MakeFunc(f.Type(), func(in []reflect.Value) []reflect.Value {
+				defer printPanicDiag()
+				return f.Call(in)
+			})}
+		}
+		return recvVal.Method(runIdx).Call(args)
+	})
+}
+
+func printPanicDiag() {
+	if r := recover(); r != nil {
+		if diag, ok := vm.FormatPanic(r); ok {
+			fmt.Fprintln(os.Stderr, diag)
+		}
+		panic(r)
+	}
 }
 
 func registerTestingHooks(recv any) {
@@ -56,10 +76,6 @@ func registerTestingHooks(recv any) {
 	vm.RegisterNativeMethodHook(recv, "Skipf", mh.hook(logf, mh.skipNow))
 }
 
-// tbMethods caches reflect method indices for one testing receiver type
-// (*T, *B, or *F). Storing the indices at init time lets the per-call
-// hook use recv.Method(idx) instead of recv.MethodByName(name), avoiding
-// a method-set string walk per t.Errorf invocation.
 type tbMethods struct {
 	output, fail, failNow, skipNow int
 }
@@ -76,10 +92,6 @@ func (mh tbMethods) hook(format msgFormatter, afterIdx int) vm.NativeMethodHook 
 	}
 }
 
-// writeLine writes msg through recv.Output(), which is the same sink as
-// (*common).log but without the callSite prefix. The prefix is computed
-// from the interpreter's own call site so it points at the *.go line
-// where the user actually called t.Errorf etc.
 func (mh tbMethods) writeLine(m *vm.Machine, recv reflect.Value, msg string) {
 	if mh.output < 0 {
 		return

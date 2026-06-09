@@ -1892,10 +1892,7 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			maxExprDepth = append(maxExprDepth, 0)
 			hasDefer = append(hasDefer, false)
 			c.emit(t, vm.Grow, t.Arg[0].(int))
-			// Allocate a heap cell for each captured named return so a
-			// capturing (deferred) closure shares the slot. Runs after Grow
-			// zeroes the slots and before zero-init/body; CellSlot was already
-			// set on the symbols in goparser so body refs use the cell.
+			// Allocate a heap cell for each captured named return so a capturing closure shares the slot.
 			cellRet, _ := t.Arg[1].([]int)
 			retCellSlots = append(retCellSlots, cellRet)
 			if len(cellRet) > 0 {
@@ -1904,6 +1901,16 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				// fixed slots (deref cells) after defers.
 				c.emit(t, vm.MarkNamedRet)
 				for _, idx := range cellRet {
+					c.emit(t, vm.GetLocal, idx)
+					c.emit(t, vm.HeapAlloc)
+					c.emit(t, vm.SetLocal, idx, 0)
+				}
+			}
+			// Box captured params into cells unconditionally (no MarkNamedRet:
+			// params are not named returns), so a conditional/absent reassign
+			// can't leave the slot a plain value the closure capture misreads.
+			if cellParams, _ := t.Arg[2].([]int); len(cellParams) > 0 {
+				for _, idx := range cellParams {
 					c.emit(t, vm.GetLocal, idx)
 					c.emit(t, vm.HeapAlloc)
 					c.emit(t, vm.SetLocal, idx, 0)

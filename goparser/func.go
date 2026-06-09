@@ -403,7 +403,20 @@ func (p *Parser) parseFunc(in Tokens) (out Tokens, err error) {
 			cellRet = append(cellRet, rs.Index)
 		}
 	}
-	out = append(out, newGrow(l, in[0].Pos, cellRet))
+	// Promote captured params to heap cells at the prologue too.
+	var cellParams []int
+	if s.Type != nil {
+		for _, name := range s.InNames {
+			if name == "" {
+				continue
+			}
+			if ps := p.Symbols[p.scopedName(name)]; ps != nil && ps.NeedsCell() && !ps.CellSlot {
+				ps.CellSlot = true
+				cellParams = append(cellParams, ps.Index)
+			}
+		}
+	}
+	out = append(out, newGrow(l, in[0].Pos, cellRet, cellParams))
 	// Zero-initialize named-return slots that need a typed zero reflect.Value.
 	if n := len(p.namedOut); n > 0 {
 		var initVars []string

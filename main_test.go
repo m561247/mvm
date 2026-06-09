@@ -335,11 +335,37 @@ func TestPkgPath(t *testing.T) {
 	}
 }
 
-// TestRunEvalEcho guards that `mvm run -e` echoes the result of the last
-// statement to stdout (bare, no prefix) only when it left exactly one value on
-// the data stack: a value-producing expression or single-return call. Void and
-// multi-return calls, and statements whose value lives in a global (assignment,
-// define, declaration), leave 0 (or 2+) values and produce no echo.
+func TestSubtestPanicDiag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short")
+	}
+	bin := buildMvm(t)
+	const src = `package x
+
+import "testing"
+
+func deref(p *int) int { return *p }
+
+func TestBoom(t *testing.T) {
+	t.Run("sub", func(t *testing.T) {
+		var p *int
+		t.Log(deref(p))
+	})
+}
+`
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x_test.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exit, out := runMvmTest(t, bin, dir)
+	if exit == 0 {
+		t.Fatalf("expected non-zero exit, got 0:\n%s", out)
+	}
+	if !strings.Contains(out, "x_test.go:") {
+		t.Errorf("subtest panic diagnostic missing source location:\n%s", out)
+	}
+}
+
 func TestRunEvalEcho(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short")
