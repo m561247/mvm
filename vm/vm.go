@@ -724,8 +724,14 @@ func (m *Machine) execConvert(c *Instruction, mem []Value, sp int) {
 		mem[idx] = Value{ref: reflect.ValueOf(string(rune(int64(v.num))))}
 
 	case srcKind == reflect.String && dstKind == reflect.Slice && dstType.Elem().Kind() == reflect.Uint8:
-		// string -> []byte.
-		mem[idx] = Value{ref: reflect.ValueOf([]byte(v.ref.String()))}
+		// string -> []byte, or a named type over []byte (e.g. json.RawMessage):
+		// keep the destination's named rtype so a later box into interface{}
+		// dispatches its methods / matches its own type-switch case.
+		b := reflect.ValueOf([]byte(v.ref.String()))
+		if b.Type() != dstType {
+			b = b.Convert(dstType)
+		}
+		mem[idx] = Value{ref: b}
 
 	case srcKind == reflect.Slice && v.ref.Type().Elem().Kind() == reflect.Uint8 && dstKind == reflect.String:
 		// []byte -> string.
@@ -1777,8 +1783,16 @@ func (m *Machine) Run() (err error) {
 							matched = dtyp.NativeImplements(concrete.Type())
 						}
 					default:
-						dtypRT := MaterializeRtype(dtyp)
-						matched = dtypRT != nil && concrete.Type().AssignableTo(dtypRT)
+						// A type-switch case matches the exact dynamic type, not an
+						// assignable one: net.IP (underlying []byte) must not match a
+						// `case []byte`. Use identity-aware SameAs, falling back to rtype
+						// equality for pure-native concretes.
+						if ct := m.typeByRtype(concrete.Type()); ct != nil {
+							matched = ct.SameAs(dtyp)
+						} else {
+							dtypRT := MaterializeRtype(dtyp)
+							matched = dtypRT != nil && concrete.Type() == dtypRT
+						}
 					}
 				}
 			} else {
