@@ -119,6 +119,17 @@ const (
 	ShapeS30 Shape = 29
 	// ShapeS31 is func(string) ([]byte, error). Covers fs.ReadFileFS.ReadFile.
 	ShapeS31 Shape = 30
+
+	// ShapeS32 is func(context.Context, slog.Level) bool. Covers slog.Handler.Enabled.
+	ShapeS32 Shape = 31
+	// ShapeS33 is func(context.Context, slog.Record) error. Covers slog.Handler.Handle.
+	ShapeS33 Shape = 32
+	// ShapeS34 is func([]slog.Attr) slog.Handler. Covers slog.Handler.WithAttrs.
+	ShapeS34 Shape = 33
+	// ShapeS35 is func(string) slog.Handler. Covers slog.Handler.WithGroup.
+	ShapeS35 Shape = 34
+	// ShapeS36 is func() slog.Value. Covers slog.LogValuer.LogValue.
+	ShapeS36 Shape = 35
 )
 
 // Method describes one method to install on a synthesized type.
@@ -330,6 +341,36 @@ func acquireSlot(m Method) (pc uintptr, release func(), err error) {
 			return 0, nil, errInvalidHandlerType
 		}
 		return acquireSlotS31(h)
+	case ShapeS32:
+		h, ok := m.Handler.(HandlerS32)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS32(h)
+	case ShapeS33:
+		h, ok := m.Handler.(HandlerS33)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS33(h)
+	case ShapeS34:
+		h, ok := m.Handler.(HandlerS34)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS34(h)
+	case ShapeS35:
+		h, ok := m.Handler.(HandlerS35)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS35(h)
+	case ShapeS36:
+		h, ok := m.Handler.(HandlerS36)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS36(h)
 	}
 	return 0, nil, fmt.Errorf("stubs: unknown shape %d", m.Shape)
 }

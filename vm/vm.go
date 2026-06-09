@@ -4672,9 +4672,18 @@ func (m *Machine) retypeFuncSlot(slot *Value, funcType reflect.Type) {
 // setCell writes into a closure heap cell, coercing an untyped nil to the cell's
 // typed zero (as assignSlot does for locals) so a later append/index on the cell
 // does not read a zero Value.
+// An addressable src aliases storage owned elsewhere (e.g. a struct field
+// returned by a method); detach it into cell-owned storage, as HeapAlloc does,
+// so a later write through the source (a pooled object reset) cannot mutate
+// the cell.
 func setCell(cell *Value, src Value) {
 	if !src.ref.IsValid() && cell.ref.IsValid() {
 		src.ref = reflect.Zero(cell.ref.Type())
+	}
+	if src.ref.IsValid() && src.ref.CanAddr() && !isNum(src.ref.Kind()) {
+		rv := reflect.New(src.ref.Type()).Elem()
+		rv.Set(Exportable(src.ref))
+		src.ref = rv
 	}
 	*cell = src
 }

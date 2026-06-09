@@ -1,10 +1,12 @@
 package vm
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -266,6 +268,16 @@ func toSynthMethods(
 			handler = makeHandlerS30(m, t, s.method, s.name, s.ptrRecv)
 		case stubs.ShapeS31:
 			handler = makeHandlerS31(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS32:
+			handler = makeHandlerS32(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS33:
+			handler = makeHandlerS33(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS34:
+			handler = makeHandlerS34(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS35:
+			handler = makeHandlerS35(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS36:
+			handler = makeHandlerS36(m, t, s.method, s.name, s.ptrRecv)
 		}
 		out[i] = stubs.Method{
 			Name:     s.name,
@@ -519,6 +531,22 @@ func detectShape(sig reflect.Type) (stubs.Shape, bool) {
 		case byteSliceType:
 			return stubs.ShapeS31, true
 		}
+
+	// log/slog cluster (slog.Handler).
+	case nin == 2 && nout == 1 && sig.In(0) == contextIface &&
+		sig.In(1) == slogLevelType && sig.Out(0).Kind() == reflect.Bool:
+		return stubs.ShapeS32, true
+	case nin == 2 && nout == 1 && sig.In(0) == contextIface &&
+		sig.In(1) == slogRecordType && isErrorType(sig.Out(0)):
+		return stubs.ShapeS33, true
+	case nin == 1 && nout == 1 && sig.In(0) == slogAttrSliceType &&
+		sig.Out(0) == slogHandlerIface:
+		return stubs.ShapeS34, true
+	case nin == 1 && nout == 1 && sig.In(0).Kind() == reflect.String &&
+		sig.Out(0) == slogHandlerIface:
+		return stubs.ShapeS35, true
+	case nin == 0 && nout == 1 && sig.Out(0) == slogValueType:
+		return stubs.ShapeS36, true
 	}
 	return 0, false
 }
@@ -548,6 +576,14 @@ var (
 	fsFSIface         = reflect.TypeFor[fs.FS]()
 	stringSliceType   = reflect.TypeFor[[]string]()
 	dirEntrySliceType = reflect.TypeFor[[]fs.DirEntry]()
+
+	// log/slog cluster.
+	contextIface      = reflect.TypeFor[context.Context]()
+	slogLevelType     = reflect.TypeFor[slog.Level]()
+	slogRecordType    = reflect.TypeFor[slog.Record]()
+	slogAttrSliceType = reflect.TypeFor[[]slog.Attr]()
+	slogHandlerIface  = reflect.TypeFor[slog.Handler]()
+	slogValueType     = reflect.TypeFor[slog.Value]()
 )
 
 func isByteSlice(t reflect.Type) bool { return t == byteSliceType }

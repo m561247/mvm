@@ -79,6 +79,12 @@ var shapes = []shape{
 	{ID: "S29", Params: ", pattern string", ArgList: ", pattern", Results: "([]string, error)"},                            // fs.GlobFS.Glob
 	{ID: "S30", Params: ", name string", ArgList: ", name", Results: "([]fs.DirEntry, error)", Imports: []string{"io/fs"}}, // fs.ReadDirFS.ReadDir
 	{ID: "S31", Params: ", name string", ArgList: ", name", Results: "([]byte, error)"},                                    // fs.ReadFileFS.ReadFile
+	// log/slog cluster (slog.Handler).
+	{ID: "S32", Params: ", ctx context.Context, level slog.Level", ArgList: ", ctx, level", Results: "bool", Imports: []string{"context", "log/slog"}},   // slog.Handler.Enabled
+	{ID: "S33", Params: ", ctx context.Context, record slog.Record", ArgList: ", ctx, record", Results: "error", Imports: []string{"context", "log/slog"}}, // slog.Handler.Handle
+	{ID: "S34", Params: ", attrs []slog.Attr", ArgList: ", attrs", Results: "slog.Handler", Imports: []string{"log/slog"}},                               // slog.Handler.WithAttrs
+	{ID: "S35", Params: ", name string", ArgList: ", name", Results: "slog.Handler", Imports: []string{"log/slog"}},                                      // slog.Handler.WithGroup
+	{ID: "S36", Results: "slog.Value", Imports: []string{"log/slog"}},                                                                                   // slog.LogValuer.LogValue
 }
 
 func main() {
