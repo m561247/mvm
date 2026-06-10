@@ -3691,22 +3691,32 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 	if !rv.IsValid() {
 		return reflect.Zero(funcType)
 	}
-	// A nil interface slot is a zero func, not a callback: wrapping it would mint a
-	// non-nil MakeFunc with a bogus address.
+	// A nil interface slot is a zero func, not a callback: do not wrap it.
 	if rv.Kind() == reflect.Interface && rv.IsNil() {
 		return reflect.Zero(funcType)
 	}
 	if rv.Kind() == reflect.Func {
 		if pf, ok := rv.Interface().(MvmFunc); ok {
-			return pf.GF
+			return m.mvmFuncFor(pf, funcType)
+		}
+		// Retype a native func for a named destination; Convert keeps the funcval pointer.
+		if rv.Type() != funcType && rv.Type().ConvertibleTo(funcType) {
+			rv = rv.Convert(funcType)
 		}
 		return rv // already a proper Go func
 	}
-	// Already wrapped by WrapFunc - extract the Go func wrapper.
+	// Already wrapped by WrapFunc: extract the Go func wrapper.
 	if pf, ok := val.ref.Interface().(MvmFunc); ok {
-		return pf.GF
+		return m.mvmFuncFor(pf, funcType)
 	}
 	return m.makeCallFunc(val, funcType)
+}
+
+func (m *Machine) mvmFuncFor(pf MvmFunc, funcType reflect.Type) reflect.Value {
+	if pf.GF.IsValid() && pf.GF.Type() != funcType {
+		return m.makeCallFunc(pf.Val, funcType)
+	}
+	return pf.GF
 }
 
 // funcFieldsTable maps the underlying Go func pointer of a wrapped
@@ -4743,7 +4753,21 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 	}
 	// A value read from an unexported field carries reflect's read-only flag, strip it.
 	s = Exportable(s)
-	dst.ref.Set(s)
+	dst.ref.Set(adoptNamedType(s, dst.ref.Type()))
+}
+
+// adoptNamedType converts v to dt when only the named identity differs:
+// an untyped-const load carries the native layout type, the destination a
+// defined type's carrier rtype (`v = "lit"`, a map[NamedString]V literal key).
+func adoptNamedType(v reflect.Value, dt reflect.Type) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	if vt := v.Type(); vt != dt && v.Kind() == dt.Kind() &&
+		dt.Kind() != reflect.Interface && vt.ConvertibleTo(dt) {
+		return v.Convert(dt)
+	}
+	return v
 }
 
 func setNumReflect(rv reflect.Value, num uint64) {
@@ -4788,7 +4812,7 @@ func numReflect(t reflect.Type, src Value) reflect.Value {
 }
 
 func mapKeyReflect(t reflect.Type, src Value) reflect.Value {
-	rv := numReflect(t, src)
+	rv := adoptNamedType(numReflect(t, src), t)
 	if rv.IsValid() && rv.Kind() == reflect.Interface && t.Kind() == reflect.Interface &&
 		rv.Type() != t && !rv.Type().AssignableTo(t) {
 		if rv.IsNil() {

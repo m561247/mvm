@@ -30,6 +30,10 @@ type sharedStructKey struct {
 
 var sharedStructs = map[sharedStructKey]*synthReservation{} // guarded by derivedMu
 
+// sharedCarriers shares one methodless named non-struct identity per (name,
+// layout) across Evals and field clones; sound for the same reason as sharedStructs.
+var sharedCarriers = map[sharedStructKey]*synthReservation{} // guarded by derivedMu
+
 // materializingRtypes holds struct layout rtypes whose placeholder/reservation is
 // installed but not yet patched to the real layout (in-flight). A struct that
 // embeds one of these by value cannot size itself correctly yet -- the placeholder
@@ -259,9 +263,9 @@ func isFieldClone(t *mtype.Type) bool {
 	if t.Base == nil || t.Base.Name == "" || t.Base.Kind() != t.Kind() {
 		return false
 	}
-	// Method-bearing base: the clone shares Base's identity + methods.
-	// Methodless named-struct base: still a clone.
-	return len(t.Base.Methods) > 0 || (t.Kind() == reflect.Struct && t.Base.PkgPath != "")
+	// Method-bearing or pkg-scoped named base: the clone resolves to Base's
+	// identity rather than minting one under its own (possibly field-derived) name.
+	return len(t.Base.Methods) > 0 || t.Base.PkgPath != ""
 }
 
 func maybeReserve(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
@@ -276,9 +280,36 @@ func maybeReserve(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
 		return materialize(t.Base)
 	}
 	if !hasReservableMethods(t) {
-		return layoutRT
+		// Only a definition (`type X T`) owns a named identity; placeholders
+		// (generic type params) and parser-derived clones keep the native layout.
+		if !t.Defined || t.PkgPath == "" {
+			return layoutRT
+		}
+		return reserveNamedCarrier(t, layoutRT)
 	}
 	return reserveValueAndPtr(t, layoutRT)
+}
+
+// reserveNamedCarrier gives a methodless defined non-struct type its own named
+// rtype, so reflect-visible identity (%T, %#v, DeepEqual) matches gc.
+func reserveNamedCarrier(t *mtype.Type, layoutRT reflect.Type) reflect.Type {
+	name := qualifiedTypeName(t)
+	key := sharedStructKey{name: name, layoutSig: layoutRT.String()}
+	derivedMu.Lock()
+	defer derivedMu.Unlock()
+	res := sharedCarriers[key]
+	if res == nil {
+		vr, err := runtype.ReserveMethods(layoutRT, name, t.PkgPath)
+		if err != nil {
+			return layoutRT
+		}
+		// Carriers never fill methods; see ClearUncommon for the StructOf constraint.
+		runtype.ClearUncommon(vr.Type())
+		res = &synthReservation{value: vr}
+		sharedCarriers[key] = res
+	}
+	reservations[t] = res
+	return res.value.Type()
 }
 
 func reserveValueAndPtr(t *mtype.Type, layoutRT reflect.Type) reflect.Type {

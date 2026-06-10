@@ -107,11 +107,6 @@ var Incompat = map[string]map[string]string{
 		"TestCallerReportingOverhead":           "wall-clock bound: 5000 log calls under 1s is a native-speed assertion; interpreted execution exceeds it",
 	},
 
-	"github.com/google/go-cmp/cmp": {
-		"TestOptionPanic/Comparer#03":     "func(...) myBool accepted as a comparer: a method-less defined basic type shares bool's rtype, so reflect sees the return as bool and no panic fires where native rejects it",
-		"TestOptionPanic/FilterValues#03": "func(...) myBool accepted as a values filter: a method-less defined basic type shares bool's rtype, so reflect sees the return as bool and no panic fires where native rejects it",
-	},
-
 	"github.com/shopspring/decimal": {
 		"TestDecimal_QuoRem2":   "stress test: ~1e6 combinatorial QuoRem cases (createDivTestCases); ~30s under the interpreter (no testing.Short path)",
 		"TestDecimal_DivRound2": "stress test: ~1e6 combinatorial DivRound cases (createDivTestCases); ~44s under the interpreter (no testing.Short path)",

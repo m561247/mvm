@@ -443,6 +443,11 @@ func (v Value) Equal(u Value) bool {
 		}
 		return v.num == u.num
 	}
+	// Strings compare by content, like numerics above: a defined string type
+	// and an untyped-const operand carry distinct rtypes.
+	if v.ref.Kind() == reflect.String && u.ref.Kind() == reflect.String {
+		return v.ref.String() == u.ref.String()
+	}
 	// Untyped nil is stored as an invalid ref.
 	if !u.ref.IsValid() {
 		return nilEqual(v)

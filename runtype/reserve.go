@@ -46,6 +46,27 @@ func (r *Reservation) Fill(methods []MethodSpec) error {
 	return nil
 }
 
+// ClearUncommon strips the uncommon-section flag, making a pure named carrier
+// (no method table, PkgPath() == "") that StructOf accepts as an embedded field.
+// Func kinds keep the flag: their in/out array sits after the uncommon struct,
+// so clearing it would make reflect read uncommon bytes as type pointers.
+func ClearUncommon(t reflect.Type) {
+	if t.Kind() == reflect.Func {
+		return
+	}
+	rtypePtr(t).TFlag &^= tflagUncommon
+}
+
+// EmbedTripsStructOf reports whether t embedded in a multi-field struct would
+// panic reflect.StructOf: a direct-iface type with an uncommon section (even empty).
+func EmbedTripsStructOf(t reflect.Type) bool {
+	rt := rtypePtr(t)
+	if rt == nil {
+		return false
+	}
+	return rt.TFlag&tflagUncommon != 0 && rt.TFlag&tflagDirectIface != 0
+}
+
 // ReserveMethods reserves a method-bearing identity for layout (dispatching by
 // kind) without yet installing any method. Fill the returned Reservation once the
 // method stubs are known.

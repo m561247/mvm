@@ -10,6 +10,8 @@ import (
 	"sync"
 	"unicode"
 	"unsafe"
+
+	"github.com/mvm-sh/mvm/runtype"
 )
 
 // Method records a method's code location and receiver path for interface dispatch.
@@ -711,8 +713,9 @@ func buildStructRtype(fields []*Type, embedded []EmbeddedField, tags []string) r
 			if rf[i].PkgPath == "" {
 				rf[i].PkgPath = pkgPath
 			}
-		case embSet[i] && len(rf) > 1 && embedFieldHasMethods(f, rf[i].Type):
-			// Leave Anonymous unset: StructOf panics on such an embed in a multi-field struct.
+		case embSet[i] && len(rf) > 1 &&
+			(embedFieldHasMethods(f, rf[i].Type) || runtype.EmbedTripsStructOf(rf[i].Type)):
+			// Leave Anonymous unset: StructOf panics on such embeds in a multi-field struct.
 		default:
 			rf[i].Anonymous = embSet[i]
 		}
