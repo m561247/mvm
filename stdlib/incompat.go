@@ -115,6 +115,17 @@ var Incompat = map[string]map[string]string{
 		"TestDecimal_DivRound2": "stress test: ~1e6 combinatorial DivRound cases (createDivTestCases); ~44s under the interpreter (no testing.Short path)",
 	},
 
+	"github.com/tidwall/gjson": {
+		"TestRandomMany":         "stress test: 5e4 iterations of GetManyBytes over random bytes; ~57s under the interpreter (no testing.Short path)",
+		"TestRandomData":         "stress test: 2e6 iterations of GetBytes+Parse over random bytes; ~34s under the interpreter (no testing.Short path)",
+		"TestRandomValidStrings": "stress test: 1e5 random-string Get round-trips; ~14s under the interpreter (no testing.Short path)",
+		"TestValidRandom":        "stress test: wall-clock bound, validpayload over random bytes for two fixed 3s loops; ~6s under the interpreter",
+	},
+
+	"github.com/tidwall/sjson": {
+		"TestRandomData": "stress test: 2e6 iterations of SetRaw over random bytes; ~52s under the interpreter (no testing.Short path)",
+	},
+
 	"golang.org/x/text/unicode/norm": {
 		"TestWriter": "stress test: streams the static normTests corpus through Form.Writer across all 16 bufSizes x4 forms; ~150s under the interpreter and ignores testing.Short (the same corpus runs via TestAppend/TestString)",
 		"TestReader": "stress test: streams the static normTests corpus through Form.Reader across all 16 bufSizes x4 forms; ~14s under the interpreter and ignores testing.Short (the same corpus runs via TestAppend/TestString)",

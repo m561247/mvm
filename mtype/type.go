@@ -38,6 +38,7 @@ type EmbeddedField struct {
 type Type struct {
 	PkgPath      string
 	Name         string
+	Pos          int // source offset of the type declaration (Sources-global); 0 if unknown
 	Rtype        reflect.Type
 	kind         reflect.Kind    // symbolic kind, set at construction; see Kind
 	Placeholder  bool            // true for forward-declared struct/interface placeholders until finalized (SetFields, or IfaceMethods assignment in parseTypeLine)

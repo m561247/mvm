@@ -280,7 +280,11 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				flushops(p.precedence(newCall(0)))
 				// func call: ensure that the func token in on the top of the stack, after args.
 				bToks, _ := p.scanBlock(t.Token, false)
-				spread := len(bToks) > 0 && bToks[len(bToks)-1].Tok == lang.Ellipsis
+				last := len(bToks) - 1
+				if last >= 0 && bToks[last].Tok == lang.Comma {
+					last-- // trailing comma (multi-line call)
+				}
+				spread := last >= 0 && bToks[last].Tok == lang.Ellipsis
 				narg := 0
 				for _, sub := range bToks.Split(lang.Comma) {
 					if len(sub) > 0 {

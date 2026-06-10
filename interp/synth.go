@@ -1,9 +1,22 @@
 package interp
 
 import (
+	"fmt"
+
 	"github.com/mvm-sh/mvm/symbol"
 	"github.com/mvm-sh/mvm/vm"
 )
+
+// attachErr locates a synth-attach failure at the type's declaration.
+// ErrPos lets the diagnostic chokepoint (interp.Eval) render a snippet.
+type attachErr struct {
+	err error
+	pos int
+}
+
+func (e *attachErr) Error() string { return e.err.Error() }
+func (e *attachErr) Unwrap() error { return e.err }
+func (e *attachErr) ErrPos() int   { return e.pos }
 
 // attachSynthMethods walks every compiled type and asks the machine to
 // install a synthesized rtype carrying that type's methods.
@@ -30,7 +43,10 @@ func (i *Interp) attachSynthMethods() error {
 			continue
 		}
 		if err := i.AttachSynthMethods(sym.Type); err != nil {
-			return err
+			if loc := i.Sources.FormatPos(sym.Type.Pos); loc != "" {
+				err = fmt.Errorf("%s: %w", loc, err)
+			}
+			return &attachErr{err: err, pos: sym.Type.Pos}
 		}
 		i.synthAttached[sym.Type] = true
 	}

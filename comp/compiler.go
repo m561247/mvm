@@ -2499,7 +2499,17 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			c.emitJump(t, &fixList, vm.Jump)
 
 		case lang.Drop:
-			pop()
+			// A switch's no-match drop is a control-flow merge the linear model
+			// can't always represent: return-terminated case bodies empty the
+			// model while the runtime miss path still holds the operand. Pop the
+			// model only when it has an in-frame value; always emit the Pop.
+			base := 0
+			if len(flen) > 0 {
+				base = flen[len(flen)-1]
+			}
+			if len(stack) > base {
+				pop()
+			}
 			c.emit(t, vm.Pop, 1)
 
 		case lang.PopExpr:

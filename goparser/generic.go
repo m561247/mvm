@@ -496,9 +496,6 @@ func (p *Parser) bindTypeParams(params []typeParam, typeArgs []*vm.Type) func() 
 			return nil // missing/unresolved type arg: leave the name to resolve (or error) normally
 		}
 		ta := typeArgs[i]
-		if ta.Rtype == nil {
-			vm.MaterializeRtype(ta) // post-flip inferred args are symbolic; materialize so the binding is usable
-		}
 		return &symbol.Symbol{
 			Kind:  symbol.Type,
 			Name:  tp.name,

@@ -314,8 +314,11 @@ func (p *Parser) parseIf(in Tokens) (out Tokens, err error) {
 			out = append(out, newJumpFalse(elseLabel, in[bodyIdx].Pos))
 		}
 
-		// Parse body.
+		// Parse body in its own scope so its declarations stay invisible
+		// to later else-if conditions and sibling bodies.
+		p.pushScope("b" + strconv.Itoa(elseCount-1))
 		body, err := p.parseTokBlock(in[bodyIdx].Token)
+		p.popScope()
 		if err != nil {
 			return nil, err
 		}
@@ -377,18 +380,28 @@ func (p *Parser) parseSwitch(in Tokens) (out Tokens, err error) {
 		return nil, err
 	}
 	sc := p.caseClauses(clauses)
+	// A condSwitch keeps its operand on the stack while the EqualSet chain
+	// runs (consumed on match, by the default's Drop otherwise). Without a
+	// default, the no-match exit must drop it or it leaks a stack slot per
+	// execution (overflowing the frame in a hot loop).
+	needDrop := condSwitch && (len(sc) == 0 || sc[len(sc)-1][0].Tok != lang.Default)
 	// Process each clause.
 	nc := len(sc) - 1
 	prevFallthrough := false
 	for i, cl := range sc {
-		co, hasFallthrough, err := p.parseCaseClause(cl, i, nc, condSwitch, prevFallthrough)
+		co, hasFallthrough, err := p.parseCaseClause(cl, i, nc, condSwitch, needDrop, prevFallthrough)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, co...)
 		prevFallthrough = hasFallthrough
 	}
-	out = append(out, newLabel(p.breakLabel, in[len(in)-1].Pos))
+	endPos := in[len(in)-1].Pos
+	if needDrop {
+		out = append(out, newLabel(p.scope+"d", endPos))
+		out = append(out, newDrop(endPos))
+	}
+	out = append(out, newLabel(p.breakLabel, endPos))
 	return out, err
 }
 
@@ -535,7 +548,7 @@ func (p *Parser) parseTypeSwitchClause(in Tokens, index, maximum int, tsName, va
 	return out, nil
 }
 
-func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prevFallthrough bool) (out Tokens, hasFallthrough bool, err error) {
+func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, needDrop, prevFallthrough bool) (out Tokens, hasFallthrough bool, err error) {
 	in = append(in, newSemicolon(in[len(in)-1].Pos)) // Force a ';' at the end of body clause.
 	var conds, body Tokens
 	// Split on the first colon only: later colons belong to the body (e.g. a label).
@@ -573,6 +586,10 @@ func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prev
 	miss := p.scope + "e"
 	if index < maximum {
 		miss = caseLabel(p.scope, index+1, 0)
+	} else if needDrop {
+		// Last case of a default-less condSwitch: the no-match exit still
+		// holds the operand; route it through the switch's drop label.
+		miss = p.scope + "d"
 	}
 	for i, cond := range lcond {
 		if cond, err = p.parseExpr(cond, ""); err != nil {
@@ -601,7 +618,8 @@ func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prev
 	out = append(out, body...)
 	if hasFallthrough {
 		out = append(out, newGoto(caseBodyLabel(p.scope, index+1), pos))
-	} else if index != maximum {
+	} else if index != maximum || needDrop {
+		// needDrop: the drop section follows the last body; jump over it.
 		out = append(out, newGoto(p.scope+"e", 0))
 	}
 	return out, hasFallthrough, err

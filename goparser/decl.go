@@ -1207,6 +1207,9 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 	if compositePh != nil && compositePh.PkgPath == "" {
 		compositePh.PkgPath = p.pkgName
 	}
+	if placeholder != nil {
+		placeholder.Pos = in[0].Pos
+	}
 
 	typ, _, err := p.parseTypeExpr(toks)
 	if err != nil {
@@ -1249,6 +1252,7 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 			nt = &c
 		}
 		nt.Name = in[0].Str
+		nt.Pos = in[0].Pos
 		nt.Methods = nil
 		nt.Placeholder = false
 		nt.Defined = true // a top-level definition, not a struct-field clone
