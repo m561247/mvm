@@ -170,6 +170,7 @@ func (p *Parser) parseFor(in Tokens) (out Tokens, err error) {
 	// dedicated post label so that continue runs the post statement before
 	// re-checking the condition.
 	condLabel := p.scope + "b"
+	var rangeAssign Tokens
 	switch len(pre) {
 	case 1:
 		if hasRange {
@@ -177,6 +178,8 @@ func (p *Parser) parseFor(in Tokens) (out Tokens, err error) {
 			p.inForInit = true
 			init, err = p.parseStmt(init)
 			p.inForInit = false
+			// Claim the stash now so an error return cannot leak it.
+			rangeAssign, p.rangeAssign = p.rangeAssign, nil
 			if err != nil {
 				return nil, err
 			}
@@ -197,6 +200,7 @@ func (p *Parser) parseFor(in Tokens) (out Tokens, err error) {
 		p.inForInit = true
 		init, err = p.parseStmt(init)
 		p.inForInit = false
+		p.rangeAssign = nil // not a range clause; drop any degenerate-input stash
 		if err != nil {
 			return nil, err
 		}
@@ -222,6 +226,8 @@ func (p *Parser) parseFor(in Tokens) (out Tokens, err error) {
 			out = append(out, newJumpFalse(p.breakLabel, in[0].Pos))
 		}
 	}
+	// Assign-form range: copy the temps Next just set into the original targets.
+	out = append(out, rangeAssign...)
 	p.pushScope("b")
 	p.loopDepth++
 	body, err = p.parseTokBlock(in[len(in)-1].Token)

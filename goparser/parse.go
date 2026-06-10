@@ -62,6 +62,7 @@ type Parser struct {
 	typeOnly       bool                  // when true, addSymVar is a no-op (Phase 1 signature-only parse)
 	regFuncSig     bool                  // set by parseFunc so the outermost func-type parse registers its params as locals; a func TYPE (composite-elem, var/field type, interface method) leaves it false so param names don't leak into the enclosing scope
 	inForInit      bool                  // true while parsing for-init or range clause (marks LoopVar)
+	rangeAssign    Tokens                // assign-form range per-iteration assigns, stashed for parseFor
 	funcDepth      int                   // nesting depth of function bodies (>0 means inside a function)
 	loopDepth      int                   // nesting depth of for loops (>0 means inside a loop)
 	instDepth      int                   // nesting depth of generic instantiations; guards unbounded-growth recursion (instantiation cycle)

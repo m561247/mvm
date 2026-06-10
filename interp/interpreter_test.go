@@ -780,6 +780,16 @@ f()`, res: "start"},
 		// the condition, not to a (never-emitted) post label.
 		{n: "#41", src: `n := 0; for i := 0; i < 5; { if i == 2 { i++; continue }; n++; i++ }; n`, res: "4"},
 		{n: "#42", src: `func f() int { n := 0; for i := 0; i < 5; { if i == 2 { i++; continue }; n++; i++ }; return n }; f()`, res: "4"},
+		// Assign-form range: loop vars are existing assignable targets, not
+		// defines (desugared to a := range over temps + per-iteration assigns).
+		{n: "range_assign_existing_var", src: `n := 0; for _, n = range []int{40, 41} {}; n`, res: "41"},
+		{n: "range_assign_key_only", src: `i := -1; for i = range []string{"a", "b", "c"} {}; i`, res: "2"},
+		{n: "range_assign_captured", src: `func f() int { n := 0; g := func() { for _, n = range []int{40, 41} {} }; g(); return n }; f()`, res: "41"},
+		{n: "range_assign_index_deref", src: `func f() int { a := make([]int, 1); v := 0; pv := &v; for a[0], *pv = range []int{10, 20} {}; return a[0]*100 + v }; f()`, res: "120"},
+		{n: "range_assign_map", src: `k := ""; v := 0; for k, v = range map[string]int{"x": 7} {}; k + string(rune('0'+v))`, res: "x7"},
+		{n: "range_assign_nested", src: `func f() int { t, a, b := 0, 0, 0; for _, a = range []int{1, 2} { for _, b = range []int{10, 20} { t += a + b } }; return t*100 + a*10 + b }; f()`, res: "6640"},
+		// A for loop in a closure in the range subject must not consume the stash.
+		{n: "range_assign_closure_subject", src: `func mk(f func()) []int { f(); return []int{40, 41} }; func g() int { n := 0; for _, n = range mk(func() { for range []int{1} {} }) {}; return n }; g()`, res: "41"},
 		// Go spec violations: clean compile error, not VM panic.
 		{n: "range_int_two_vars", src: `for k, v := range 5 { _ = k; _ = v }`, err: "range over integer permits only one iteration variable"},
 		{n: "range_chan_two_vars", src: `ch := make(chan int); close(ch); for k, v := range ch { _ = k; _ = v }`, err: "range over channel permits only one iteration variable"},
@@ -1118,12 +1128,8 @@ func TestStruct(t *testing.T) {
 		{n: "errors_is_custom_match", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 		{n: "errors_is_custom_nomatch", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; var err error = E{"x"}; errors.Is(err, fs.ErrNotExist)`, res: "false"},
 
-		// SKIP (separate gap): passing the interpreted error through fmt.Errorf
-		// %w bridges it via the `any` (variadic) boundary, which uses only the
-		// single-method DisplayBridges, so the Error+Is composite is never
-		// selected and the custom Is is lost from the wrapped chain. The direct
-		// errors.Is path above works; only the through-`any` chain is affected.
-		{n: "errors_is_through_native_wrap", skip: true, src: `import "errors"; import "fmt"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; w := fmt.Errorf("ctx: %w", E{"x"}); errors.Is(w, fs.ErrPermission)`, res: "true"},
+		// Custom Is survives fmt.Errorf %w (the `any` variadic boundary).
+		{n: "errors_is_through_native_wrap", src: `import "errors"; import "fmt"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) Is(t error) bool { return t == fs.ErrPermission }; w := fmt.Errorf("ctx: %w", E{"x"}); errors.Is(w, fs.ErrPermission)`, res: "true"},
 
 		{n: "errors_as_custom_match", src: `import "errors"; import "io/fs"; type E struct{ s string }; func (e E) Error() string { return e.s }; func (e E) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "custom", Path: "/", Err: errors.New(e.s)}; return true }; var err error = E{"boom"}; var pe *fs.PathError; ok := errors.As(err, &pe); ok && pe.Path == "/"`, res: "true"},
 
@@ -1133,10 +1139,8 @@ func TestStruct(t *testing.T) {
 
 		{n: "errors_as_with_unwrap_method", src: `import "errors"; import "io/fs"; type E struct{ inner error }; func (e E) Error() string { return "e" }; func (e E) As(target any) bool { pe, ok := target.(**fs.PathError); if !ok { return false }; *pe = &fs.PathError{Op: "custom", Path: "/", Err: errors.New("x")}; return true }; func (e E) Unwrap() error { return e.inner }; var err error = E{inner: errors.New("y")}; var pe *fs.PathError; errors.As(err, &pe) && pe.Path == "/"`, res: "true"},
 
-		// SKIP (documented gap): %T on an interpreted type shows the synthetic
-		// reflect.StructOf / bridge name, not the source type name. fmt computes
-		// %T from reflect.TypeOf before any Formatter, so it cannot be intercepted.
-		{n: "errors_pct_T_identity", skip: true, src: `import "fmt"; type E struct{ s string }; func (e E) Error() string { return e.s }; var err error = E{"x"}; fmt.Sprintf("%T", err)`, res: "main.E"},
+		// %T shows the source type name, not a bridge StructOf name.
+		{n: "errors_pct_T_identity", src: `import "fmt"; type E struct{ s string }; func (e E) Error() string { return e.s }; var err error = E{"x"}; fmt.Sprintf("%T", err)`, res: "main.E"},
 
 		{n: "errors_multierror_is", src: `import "errors"; import "fmt"; import "io/fs"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x"), fmt.Errorf("w: %w", fs.ErrPermission)}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 
@@ -1191,11 +1195,8 @@ func TestStruct(t *testing.T) {
 		// wrongly "true" before the fix).
 		{n: "errors_as_anon_iface_unwrap_nomatch", src: `import "errors"; type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; tc := struct{ t any }{&t}; errors.As(W{errors.New("x")}, tc.t)`, res: "false"},
 
-		// Reading the iface var directly (not via the same reflect pointer) after
-		// As corrupts: As writes iface bytes (itab+data) into mvm's eface slot.
-		// Pre-existing crash; a real fix needs interpreted interfaces to carry the
-		// synth rtype as storage identity, not just at the boundary.
-		{n: "errors_as_anon_iface_direct_read", skip: true, src: `import "errors"; import "os"; _, errF := os.Open("/nonexistent-x"); type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; errors.As(W{errF}, &t); t != nil`, res: "true"},
+		// Direct read of the iface var after As (synth iface rtype as storage identity).
+		{n: "errors_as_anon_iface_direct_read", src: `import "errors"; import "os"; _, errF := os.Open("/nonexistent-x"); type W struct{ e error }; func (w W) Error() string { return "w" }; func (w W) Unwrap() error { return w.e }; var t interface{ Timeout() bool }; errors.As(W{errF}, &t); t != nil`, res: "true"},
 
 		{n: "errors_multierror_self", src: `import "errors"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; var err error = M{errors.New("x")}; errors.Is(err, err)`, res: "false"},
 
@@ -1209,7 +1210,11 @@ func TestStruct(t *testing.T) {
 
 		{n: "errors_deepequal_array", src: `import "errors"; import "reflect"; type M []error; func (m M) Error() string { return "m" }; func (m M) Unwrap() []error { return []error(m) }; e := errors.New("e3"); reflect.DeepEqual([1]error{M{e}}, [1]error{M{e}})`, res: "true"},
 
-		{n: "reflect_deepequal_named_in_any_slice", skip: true, src: `import "reflect"; type Xs string; var x Xs = "ee"; st := reflect.TypeOf(make([]any, 1)); rv := reflect.MakeSlice(st, 1, 1); rv.Index(0).Set(reflect.ValueOf(&x).Elem()); reflect.DeepEqual(rv.Interface(), []any{Xs("ee")})`, res: "true"},
+		{n: "reflect_deepequal_named_in_any_slice", src: `import "reflect"; type Xs string; var x Xs = "ee"; st := reflect.TypeOf(make([]any, 1)); rv := reflect.MakeSlice(st, 1, 1); rv.Index(0).Set(reflect.ValueOf(&x).Elem()); reflect.DeepEqual(rv.Interface(), []any{Xs("ee")})`, res: "true"},
+
+		{n: "reflect_deepequal_methodful_in_any_slice", src: `import "reflect"; type Xs string; func (x Xs) String() string { return string(x) }; var x Xs = "ee"; st := reflect.TypeOf(make([]any, 1)); rv := reflect.MakeSlice(st, 1, 1); rv.Index(0).Set(reflect.ValueOf(&x).Elem()); reflect.DeepEqual(rv.Interface(), []any{Xs("ee")})`, res: "true"},
+
+		{n: "fmt_methodful_in_ptr_any_slice_field", src: `import "fmt"; type I int; func (i I) String() string { return fmt.Sprintf("<%d>", int(i)) }; type SI struct{ X any }; func run() string { return fmt.Sprintf("%z", SI{&[]any{I(1), I(2)}}) }; run()`, res: "{%!z(*[]interface {}=&[1 2])}"},
 
 		{n: "fmt_pct_T_interpreted_error", src: `import "fmt"; type S struct{ s string }; func (e S) Error() string { return e.s }; var err error = S{"x"}; fmt.Sprintf("%T", err)`, res: "main.S"},
 
@@ -1219,11 +1224,8 @@ func TestStruct(t *testing.T) {
 
 		{n: "fmt_empty_struct_method_name", src: `import "fmt"; type E struct{}; func (E) Hi() string { return "h" }; func run() string { return fmt.Sprintf("%T", E{}) }; run()`, res: "main.E"},
 
-		// SKIP (deeper gap): a multierror promoted from an EMBEDDED field panics
-		// "reflect: ... value obtained from unexported field" (the promoted-method
-		// closure returns a []error derived from the unexported embedded field).
-		// Embedded single-error Unwrap() error works; only the []error-return case fails.
-		{n: "errors_multierror_embedded", skip: true, src: `import "errors"; import "fmt"; import "io/fs"; type base []error; func (b base) Error() string { return "b" }; func (b base) Unwrap() []error { return []error(b) }; type wrap struct{ base }; var err error = wrap{base{fmt.Errorf("w: %w", fs.ErrPermission)}}; errors.Is(err, fs.ErrPermission)`, res: "true"},
+		// Multierror Unwrap() []error promoted from an embedded field.
+		{n: "errors_multierror_embedded", src: `import "errors"; import "fmt"; import "io/fs"; type base []error; func (b base) Error() string { return "b" }; func (b base) Unwrap() []error { return []error(b) }; type wrap struct{ base }; var err error = wrap{base{fmt.Errorf("w: %w", fs.ErrPermission)}}; errors.Is(err, fs.ErrPermission)`, res: "true"},
 
 		// SKIP (fundamental gap): interpreted methods are invisible to NATIVE reflect.
 		// Tier-1 value path: a type assertion on an interpreted value round-tripped
@@ -1377,16 +1379,14 @@ type T int
 func (t T) String() string { return "s" }
 reflect.TypeOf(T(1)).NumMethod()`, res: "1"},
 
-		// Same root, still open: a named-INT const identifier and named-INT const
-		// arithmetic load via the Push immediate (no rtype), bypassing Convert.
-		// Not exercised by _samples/xml_*.
-		{n: "named_int_const_ident_keeps_methods", skip: true, src: `
+		// Named-int const identifier and arithmetic keep the named rtype.
+		{n: "named_int_const_ident_keeps_methods", src: `
 import "reflect"
 type T int
 func (t T) String() string { return "s" }
 const G T = 1
 reflect.TypeOf(G).NumMethod()`, res: "1"},
-		{n: "named_int_const_arith_keeps_methods", skip: true, src: `
+		{n: "named_int_const_arith_keeps_methods", src: `
 import "reflect"
 type T int
 func (t T) String() string { return "s" }
@@ -1431,10 +1431,8 @@ func f() int {
 }
 f()`, res: "11"},
 
-		// Open: the cascade rebuilds t-as-key maps but not t-as-element maps (they
-		// live under the key's derived cache), so a map[K]T slot keeps a methodless
-		// placeholder value. Needs the cascade to rebuild t-as-element maps too.
-		{n: "make_named_map_value_keeps_synth_elem", skip: true, src: `
+		// make(map[K]T) values keep T's method-bearing synth rtype.
+		{n: "make_named_map_value_keeps_synth_elem", src: `
 import "reflect"
 type Tag struct{ id int }
 func (t Tag) String() string { return "s" }
@@ -3009,6 +3007,44 @@ func f() int {
 	return len(xs)*100 + xs[0]*10 + xs[1]
 }
 f()`, res: "223"},
+		// Captured var reset to nil then written through &var: the cell must
+		// keep addressable storage or the write is lost (fmt TestHexBytes).
+		{n: "captured_nil_reassign_addr_write", src: `
+func f() int {
+	var b []byte
+	g := func() { _ = b }
+	_ = g
+	b = nil
+	pb := &b
+	*pb = []byte{1, 2, 3}
+	return len(b)
+}
+f()`, res: "3"},
+		// SKIP (known gap): &var taken BEFORE the reassignment aliases the
+		// cell's old storage; see setCell.
+		{n: "captured_addr_before_nil_reassign", skip: true, src: `
+func f() int {
+	var b []byte
+	g := func() { _ = b }
+	_ = g
+	pb := &b
+	b = nil
+	*pb = []byte{1, 2, 3}
+	return len(b)
+}
+f()`, res: "3"},
+		// Same through a native writer: Sscanf fills b via *[]byte.
+		{n: "captured_nil_reassign_scan", src: `
+import "fmt"
+func f() int {
+	var b []byte
+	g := func() { _ = b }
+	_ = g
+	b = nil
+	fmt.Sscanf("00010203", "%x", &b)
+	return len(b)
+}
+f()`, res: "4"},
 	})
 }
 

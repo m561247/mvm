@@ -6,11 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Assign-form range loops (`for x, y = range e`).
+  Loop variables may now be existing variables, including captured ones,
+  indexed elements (`a[i]`) and pointer derefs (`*p`).
+  Previously only the `:=` form compiled correctly.
+
 ### Fixed
 
 - Data race in rtype materialization when two compilations run concurrently.
   The materialization pass now runs under a single lock.
   No measurable effect on the interpreter hot path.
+- `mvm test fmt` now fully passes.
+  Method-bearing interpreted values nested in a composite (e.g. a `[]any`
+  literal) no longer leak their internal interface box into native reflect
+  walks such as `reflect.DeepEqual` and `fmt` formatting.
+- Writes through `&v` of a captured variable are no longer lost after the
+  variable is reassigned (e.g. `b = nil` then `fmt.Sscanf(..., &b)`).
+  The closure heap cell now always keeps addressable cell-owned storage.
+
+### Changed
+
+- Skiplist pruned: limitations lifted by earlier synth-type work let
+  `flag.TestPrintDefaults`, `flag.TestUserDefinedBoolUsage`,
+  `slog.ExampleHandler_levelHandler` and `slog.ExampleLogValuer_secret`
+  run and pass; 7 long-skipped interpreter regression tests
+  (named-const method identity, `errors` Is/As bridge cases) re-enabled.
 
 ## [0.4.1] - 2026-06-09
 

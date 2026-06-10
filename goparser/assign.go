@@ -18,8 +18,15 @@ func (p *Parser) parseAssign(in Tokens, aindex int) (out Tokens, err error) {
 	// lhs (the Index/Deref opcode runs at parse-emit time and consumes
 	// the container/pointer). Desugar to N temps + N single-value
 	// assigns so each lhs flows through Assign / IndexAssign / DerefAssign.
-	if !define && len(rhs) == 1 && len(lhs) > 1 && lhsNeedsTemps(lhs) {
+	isRangeRHS := len(rhs) == 1 && len(rhs[0]) > 0 && rhs[0][0].Tok == lang.Range
+	if !define && len(rhs) == 1 && len(lhs) > 1 && lhsNeedsTemps(lhs) && !isRangeRHS {
 		return p.parseAssignSingleRHSViaTemps(lhs, rhs[0], in[aindex])
+	}
+	// Assign-form range (`for x, y = range e`): the compiler's Range path can
+	// only DEFINE loop vars, so desugar to a `:=` range over temps plus
+	// per-iteration assigns to the targets (covers captured vars, a[i], *p).
+	if !define && p.inForInit && isRangeRHS && !allBlankIdents(lhs) {
+		return p.parseRangeAssignViaTemps(in, lhs, aindex)
 	}
 	if len(rhs) == 1 {
 		var isRange bool
@@ -69,14 +76,7 @@ func (p *Parser) parseAssign(in Tokens, aindex int) (out Tokens, err error) {
 				// When all LHS variables are blank identifiers ("_ = range x"),
 				// treat as "range x" (n=0) and remove the blank ident tokens.
 				nVars := len(lhs)
-				allBlank := !define
-				for _, l := range lhs {
-					if len(l) != 1 || l[0].Tok != lang.Ident || l[0].Str != "_" {
-						allBlank = false
-						break
-					}
-				}
-				if allBlank {
+				if !define && allBlankIdents(lhs) {
 					for j := nVars - 1; j >= 0; j-- {
 						pos := lhsPositions[j]
 						out = append(out[:pos], out[pos+1:]...)
@@ -161,6 +161,55 @@ func (p *Parser) parseAssignSingleRHSViaTemps(lhs []Tokens, rhsExpr Tokens, opTo
 		out = appendSingleAssign(out, newToken(lang.Ident, tmpNames[i], pos, 0), pos)
 	}
 	return out, nil
+}
+
+// parseRangeAssignViaTemps rewrites an assign-form range clause to a `:=`
+// range over per-position temps (blanks stay blank); the `<lhs> = <temp>`
+// assigns go to p.rangeAssign for parseFor to emit after the Next opcode.
+func (p *Parser) parseRangeAssignViaTemps(in Tokens, lhs []Tokens, aindex int) (out Tokens, err error) {
+	pos := in[aindex].Pos
+	init := make(Tokens, 0, len(in)+2)
+	var assigns Tokens
+	for i, e := range lhs {
+		name := "_"
+		if !isBlankIdent(e) {
+			name = fmt.Sprintf("_range_%d_", i)
+			toks, err := p.parseExpr(e, "")
+			if err != nil {
+				return nil, err
+			}
+			assigns = append(assigns, toks...)
+			// The recursive parseAssign registers the temp under its scoped key.
+			assigns = appendSingleAssign(assigns, newToken(lang.Ident, p.scopedName(name), pos, 0), pos)
+		}
+		if i > 0 {
+			init = append(init, newToken(lang.Comma, ",", pos))
+		}
+		init = append(init, newIdent(name, pos))
+	}
+	init = append(init, newToken(lang.Define, ":=", pos))
+	init = append(init, in[aindex+1:]...)
+	out, err = p.parseAssign(init, 2*len(lhs)-1)
+	if err != nil {
+		return nil, err
+	}
+	// Stash after the recursive parse: a for loop inside a closure in the
+	// range subject must not consume this.
+	p.rangeAssign = assigns
+	return out, nil
+}
+
+func isBlankIdent(e Tokens) bool {
+	return len(e) == 1 && e[0].Tok == lang.Ident && e[0].Str == "_"
+}
+
+func allBlankIdents(lhs []Tokens) bool {
+	for _, e := range lhs {
+		if !isBlankIdent(e) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkSingleRHSArity rejects `a, b := <single-valued expr>`: a multi-LHS,

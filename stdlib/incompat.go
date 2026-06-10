@@ -21,8 +21,6 @@ var Incompat = map[string]map[string]string{
 		"TestSignMessage": "interpreted type can't satisfy native crypto.Signer via reflect.Call (synth attaches only fixed method shapes)",
 	},
 	"log/slog": {
-		"ExampleHandler_levelHandler":   "interpreted type can't satisfy native slog.Handler via reflect.Call (synth attaches only fixed method shapes)",
-		"ExampleLogValuer_secret":       "interpreted type can't satisfy native slog.LogValuer via reflect.Call (synth attaches only fixed method shapes)",
 		"Example_wrapping":              "runtime.Caller through the reflect.Call adapter masks the user source line (reports .:0)",
 		"ExampleSetLogLoggerLevel_slog": "interpreted log and native-bridged slog hold separate default-logger state, so log.Print doesn't route through slog.SetDefault",
 		"ExampleSetLogLoggerLevel_log":  "interpreted log and native-bridged slog hold separate default-logger state, so slog.Info/Debug don't interleave with log.Print",
@@ -38,9 +36,7 @@ var Incompat = map[string]map[string]string{
 		"TestReadFilePath": "reflect.StructOf cannot build struct{FS} (promoted methods of embedded interfaces); mvm types the anon struct at runtime",
 	},
 	"flag": {
-		"TestPrintDefaults":        "BridgeFlagValue zero loses underlying type; reflect.New().String() panics where the source type would not",
-		"TestUserDefinedBoolUsage": "BridgeFlagValueBool zero loses underlying type; reflect.New().String() panics where boolFlagVar zero would not",
-		"TestDefineAfterSet":       "runtime.Caller through reflect.Call adapter masks the user call site",
+		"TestDefineAfterSet": "runtime.Caller through reflect.Call adapter masks the user call site",
 	},
 
 	// testing.AllocsPerRun counts heap allocations of the closure body.

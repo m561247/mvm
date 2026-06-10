@@ -4684,17 +4684,23 @@ func (m *Machine) retypeFuncSlot(slot *Value, funcType reflect.Type) {
 // setCell writes into a closure heap cell, coercing an untyped nil to the cell's
 // typed zero (as assignSlot does for locals) so a later append/index on the cell
 // does not read a zero Value.
-// An addressable src aliases storage owned elsewhere (e.g. a struct field
-// returned by a method); detach it into cell-owned storage, as HeapAlloc does,
-// so a later write through the source (a pooled object reset) cannot mutate
-// the cell.
+// The cell always gets fresh addressable cell-owned storage (as HeapAlloc):
+// it detaches a src owned elsewhere, and a non-addressable ref would make the
+// next &var alias a detached copy and lose writes through it.
+// Fresh (not in-place): Values already read from the cell alias its old
+// storage and must keep snapshot semantics.
+// Known gap: &var taken BEFORE a reassignment misses later writes.
 func setCell(cell *Value, src Value) {
 	if !src.ref.IsValid() && cell.ref.IsValid() {
 		src.ref = reflect.Zero(cell.ref.Type())
 	}
-	if src.ref.IsValid() && src.ref.CanAddr() && !isNum(src.ref.Kind()) {
+	if src.ref.IsValid() {
 		rv := reflect.New(src.ref.Type()).Elem()
-		rv.Set(Exportable(src.ref))
+		if isNum(src.ref.Kind()) {
+			setNumReflect(rv, src.num)
+		} else {
+			rv.Set(Exportable(src.ref))
+		}
 		src.ref = rv
 	}
 	*cell = src
@@ -4847,6 +4853,12 @@ func (m *Machine) bridgeArgs(in []reflect.Value, funcType reflect.Type, fn refle
 			targetType = AnyRtype
 		}
 		in[i] = m.bridgeIface(ifc, targetType)
+	}
+	// Iface boxes nested in a composite arg leak into native reflect walks.
+	for i, rv := range in {
+		if w, ch := m.deepUnboxIface(rv, 0); ch {
+			in[i] = w
+		}
 	}
 }
 
