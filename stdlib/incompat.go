@@ -98,6 +98,10 @@ var Incompat = map[string]map[string]string{
 		"TestCloneConcurrentOperations":  "stress test: 10000-key concurrent-clone workload; minutes under the interpreter (no testing.Short path)",
 	},
 
+	"github.com/yuin/goldmark": {
+		"TestDeepNestedLabelPerformance": "wall-clock bound: 50000-deep nested link labels under 5s is a native-speed assertion; ~40s under the interpreter",
+	},
+
 	"github.com/oklog/ulid/v2": {
 		"TestLexicographicalOrder": "stress test: quick.Check MaxCount 1e6 (~286s); hardcoded count ignores -short/-quickchecks",
 		"TestCompare":              "stress test: quick.CheckEqual MaxCount 1e5 (~42s); hardcoded count ignores -short/-quickchecks",

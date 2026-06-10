@@ -42,14 +42,11 @@ func unsafeSlice(ptr any, n int) any {
 func unsafeSliceData(s any) any {
 	rv := reflect.ValueOf(s)
 	elemType := rv.Type().Elem()
-	ptrType := reflect.PointerTo(elemType)
-	if rv.Len() == 0 && rv.Cap() == 0 {
-		if rv.IsNil() {
-			return reflect.Zero(ptrType).Interface()
-		}
-		return reflect.NewAt(elemType, unsafe.Pointer(rv.Pointer())).Interface()
+	if rv.IsNil() {
+		return reflect.Zero(reflect.PointerTo(elemType)).Interface()
 	}
-	return reflect.NewAt(elemType, unsafe.Pointer(rv.Index(0).UnsafeAddr())).Interface()
+	// rv.Pointer() is the data pointer of any non-nil slice, even len==0.
+	return reflect.NewAt(elemType, unsafe.Pointer(rv.Pointer())).Interface()
 }
 
 func init() {

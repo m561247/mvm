@@ -768,7 +768,7 @@ func (c *Compiler) registerMethods(iface, typ *vm.Type) {
 		if m.Type != nil && m.Type.Kind() == reflect.Func {
 			msig = m.Type // materialize-time source of Rtype; filled by MaterializeAll
 		}
-		typ.Methods[id] = vm.Method{Index: m.Index, Path: mpath, Sig: msig}
+		typ.Methods[id] = vm.Method{Index: m.Index, Path: mpath, PtrRecv: strings.HasPrefix(m.Name, "*"), Sig: msig}
 	}
 }
 

@@ -1609,6 +1609,11 @@ func (m *Machine) Run() (err error) {
 					}
 					rv = rv.Field(idx)
 				}
+				// A ptr-recv method needs the pointer in the cell: with the bare
+				// struct, passing the receiver to an inner call detaches a copy.
+				if method.PtrRecv && rv.Kind() != reflect.Pointer && rv.CanAddr() {
+					rv = rv.Addr()
+				}
 				*cell = FromReflect(rv)
 			} else if methodTyp == ifc.Typ.ElemType && !method.PtrRecv && ifc.Val.ref.Kind() == reflect.Pointer {
 				// Value-receiver method found by walking *T -> T (ResolveMethodType).
@@ -3700,6 +3705,11 @@ func (m *Machine) wrapForFunc(val Value, funcType reflect.Type) reflect.Value {
 	if rv.Kind() == reflect.Interface && rv.IsNil() {
 		return reflect.Zero(funcType)
 	}
+	// Unwrap an interface-boxed func: Elem() also detaches it from addressable
+	// storage (e.g. a loop-var slot), so the wrapper can't alias the live slot.
+	if rv.Kind() == reflect.Interface && rv.Elem().Kind() == reflect.Func {
+		rv = rv.Elem()
+	}
 	if rv.Kind() == reflect.Func {
 		if pf, ok := rv.Interface().(MvmFunc); ok {
 			return m.mvmFuncFor(pf, funcType)
@@ -4140,6 +4150,13 @@ func (m *Machine) makeCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 
 func (m *Machine) buildCallFunc(fval Value, fnType reflect.Type) reflect.Value {
 	rs := m.captureRunnerState() // also ensures m.funcFields is non-nil
+	// Snapshot addressable storage: the closure below captures fval for the
+	// wrapper's lifetime, and a live slot may be overwritten after the wrap.
+	if fval.ref.IsValid() && fval.ref.CanAddr() {
+		cp := reflect.New(fval.ref.Type()).Elem()
+		cp.Set(Exportable(fval.ref))
+		fval.ref = cp
+	}
 	ref := &funcRef{val: fval}
 	w := reflect.MakeFunc(fnType, func(args []reflect.Value) []reflect.Value {
 		runner := rs.acquireRunner()

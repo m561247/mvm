@@ -67,7 +67,9 @@ func (p *Parser) pkgKey(name string) string {
 // the two namespaces stay distinct.
 func isScopedKey(key string) bool { return strings.ContainsRune(key, '/') }
 
-func (p *Parser) labelName(name string) string { return p.funcScope + "/" + name }
+// The "#" keeps label keys disjoint from variable keys: Go labels live in
+// their own namespace, and identifiers cannot contain '#'.
+func (p *Parser) labelName(name string) string { return p.funcScope + "/#" + name }
 
 func (p *Parser) takePendingLabel() string {
 	l := p.pendingLabel

@@ -130,6 +130,9 @@ const (
 	ShapeS35 Shape = 34
 	// ShapeS36 is func() slog.Value. Covers slog.LogValuer.LogValue.
 	ShapeS36 Shape = 35
+
+	// ShapeS37 is func() (rune, int, error). Covers io.RuneReader.ReadRune.
+	ShapeS37 Shape = 36
 )
 
 // Method describes one method to install on a synthesized type.
@@ -371,6 +374,12 @@ func acquireSlot(m Method) (pc uintptr, release func(), err error) {
 			return 0, nil, errInvalidHandlerType
 		}
 		return acquireSlotS36(h)
+	case ShapeS37:
+		h, ok := m.Handler.(HandlerS37)
+		if !ok {
+			return 0, nil, errInvalidHandlerType
+		}
+		return acquireSlotS37(h)
 	}
 	return 0, nil, fmt.Errorf("stubs: unknown shape %d", m.Shape)
 }

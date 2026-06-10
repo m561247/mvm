@@ -278,6 +278,8 @@ func toSynthMethods(
 			handler = makeHandlerS35(m, t, s.method, s.name, s.ptrRecv)
 		case stubs.ShapeS36:
 			handler = makeHandlerS36(m, t, s.method, s.name, s.ptrRecv)
+		case stubs.ShapeS37:
+			handler = makeHandlerS37(m, t, s.method, s.name, s.ptrRecv)
 		}
 		out[i] = stubs.Method{
 			Name:     s.name,
@@ -487,6 +489,9 @@ func detectShape(sig reflect.Type) (stubs.Shape, bool) {
 	case nin == 1 && nout == 2 && isByteSlice(sig.In(0)) &&
 		sig.Out(0).Kind() == reflect.Int && isErrorType(sig.Out(1)):
 		return stubs.ShapeS13, true
+	case nin == 0 && nout == 3 && sig.Out(0).Kind() == reflect.Int32 &&
+		sig.Out(1).Kind() == reflect.Int && isErrorType(sig.Out(2)):
+		return stubs.ShapeS37, true
 	case nin == 2 && nout == 1 &&
 		sig.In(0).Kind() == reflect.Int && sig.In(1).Kind() == reflect.Int &&
 		sig.Out(0).Kind() == reflect.Bool:
@@ -820,6 +825,26 @@ func makeHandlerS13(m *Machine, t *Type, method Method, name string, ptrRecv boo
 			return 0, errors.New("synth: S13 dispatch produced wrong arity")
 		}
 		return int(out[0].Int()), reflectToError(out[1])
+	}
+}
+
+// makeHandlerS37 bridges shape S37: (T).ReadRune() (rune, int, error).
+func makeHandlerS37(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS37 {
+	methodSig := method.Rtype
+	return func(recv unsafe.Pointer) (rune, int, error) {
+		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
+		if err != nil {
+			var pe *PanicError
+			if errors.As(err, &pe) {
+				panic(reraisedPanic{pe})
+			}
+			return 0, 0, err
+		}
+		if len(out) != 3 {
+			return 0, 0, errors.New("synth: S37 dispatch produced wrong arity")
+		}
+		return rune(out[0].Int()), int(out[1].Int()), reflectToError(out[2])
 	}
 }
 

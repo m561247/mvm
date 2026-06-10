@@ -85,6 +85,7 @@ var shapes = []shape{
 	{ID: "S34", Params: ", attrs []slog.Attr", ArgList: ", attrs", Results: "slog.Handler", Imports: []string{"log/slog"}},                               // slog.Handler.WithAttrs
 	{ID: "S35", Params: ", name string", ArgList: ", name", Results: "slog.Handler", Imports: []string{"log/slog"}},                                      // slog.Handler.WithGroup
 	{ID: "S36", Results: "slog.Value", Imports: []string{"log/slog"}},                                                                                   // slog.LogValuer.LogValue
+	{ID: "S37", Results: "(rune, int, error)"}, // io.RuneReader.ReadRune
 }
 
 func main() {
