@@ -558,7 +558,12 @@ func (p *Parser) parseCaseClause(in Tokens, index, maximum int, condSwitch, prev
 		hasFallthrough = true
 		bodyRaw = bodyRaw[:fi]
 	}
-	if body, err = p.parseStmts(bodyRaw); err != nil {
+	// Per-case scope (Go: each clause is an implicit block), so a `v := ...`
+	// in one case body doesn't rebind v for sibling cases or shadow a param.
+	p.pushScope("c" + strconv.Itoa(index))
+	body, err = p.parseStmts(bodyRaw)
+	p.popScope()
+	if err != nil {
 		return nil, false, err
 	}
 

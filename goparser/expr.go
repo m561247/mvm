@@ -531,9 +531,12 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 				// For struct composite literals, the LHS of `field: value`
 				// is always a field NAME (not a value reference).
 				isStruct = true
-			case sym.Type.IsSlice():
+			case sym.Type.IsSlice(), sym.Type.Kind() == reflect.Array:
 				// Indexed-key slice literal: sliceLen must be highest index + 1
 				// per Go spec, otherwise Fnew allocates a zero-length slice.
+				// Arrays share the keyed-element handling (const-expr key
+				// normalization, mixed unkeyed synthesis); their Fnew is not
+				// nil-sentinel so the sliceLen patch below is a no-op for them.
 				isSlice = true
 			}
 		}
@@ -573,21 +576,36 @@ func (p *Parser) parseComposite(s, typ string, basePos int) (Tokens, int, error)
 			result = append(result, newColon(toks[0].Pos))
 			sliceLen++
 		} else {
-			if isSlice && sub.Index(lang.Colon) == -1 {
+			ci := sub.Index(lang.Colon)
+			constKey, haveConstKey := -1, false
+			if isSlice && ci > 0 {
+				constKey, haveConstKey = p.constIntKey(sub[:ci])
+			}
+			switch {
+			case isSlice && ci == -1:
 				// Unkeyed element in a MIXED slice literal: synthesize
 				// [curIdx, value..., colon] so the compiler emits IndexSet,
 				// matching the shape parseExpr produces for keyed elements.
 				result = append(result, newInt(curIdx, toks[0].Pos))
 				result = append(result, toks...)
 				result = append(result, newColon(toks[0].Pos))
-			} else {
+			case isSlice && haveConstKey && (ci != 1 || sub[0].Tok != lang.Int):
+				// Const-expression key (e.g. reflect.String: "string"): re-emit
+				// with a literal Int key, the only key shape the compiler's
+				// keyed-element codegen consumes.
+				valueToks, verr := p.parseExpr(sub[ci+1:], typ)
+				if verr != nil {
+					return result, 0, verr
+				}
+				result = append(result, newInt(constKey, sub[0].Pos))
+				result = append(result, valueToks...)
+				result = append(result, newColon(sub[ci].Pos))
+			default:
 				result = append(result, toks...)
 			}
 			if isSlice {
-				if ci := sub.Index(lang.Colon); ci > 0 {
-					if k, ok := p.constIntKey(sub[:ci]); ok {
-						curIdx = k
-					}
+				if haveConstKey {
+					curIdx = constKey
 				}
 				curIdx++
 				if curIdx > sliceLen {

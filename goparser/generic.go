@@ -1233,15 +1233,20 @@ func (p *Parser) postfixType(in Tokens) (*vm.Type, int) {
 // value or the canonical symbol. Generic members return nil: typing a nested
 // generic call's result reaches bad codegen (a known hang).
 func (p *Parser) pkgMemberType(pkgPath, member string) *vm.Type {
+	// Qualified symbol first: a package published by PublishCompiledPackage
+	// stores an interpreted func's Value as its code address (an int), so the
+	// Values branch below would mistype it.
+	if qs, ok := p.Symbols[pkgPath+"."+member]; ok && qs.Kind != symbol.Generic {
+		if t := symbol.Vtype(qs); t != nil {
+			return t
+		}
+	}
 	if pkg := p.Packages[pkgPath]; pkg != nil {
 		if v, ok := pkg.Values[member]; ok {
 			if rv := v.Reflect(); rv.IsValid() {
 				return &vm.Type{Rtype: rv.Type()}
 			}
 		}
-	}
-	if qs, ok := p.Symbols[pkgPath+"."+member]; ok && qs.Kind != symbol.Generic {
-		return symbol.Vtype(qs)
 	}
 	return nil
 }

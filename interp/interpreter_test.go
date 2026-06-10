@@ -403,6 +403,10 @@ func TestFunc(t *testing.T) {
 		{n: "nil_literal_slice_arg_range", src: `func f(xs []int) int { n := 0; for range xs { n++ }; return n }; f(nil)`, res: "0"},
 		{n: "nil_literal_map_arg_len", src: `func f(m map[string]int) int { return len(m) }; f(nil)`, res: "0"},
 		{n: "nil_literal_variadic_spread", src: `func f(xs ...int) int { return len(xs) }; f(nil...)`, res: "0"},
+		// An untyped const return adopts the declared return type; `return 1`
+		// in a float64 func was bit-reinterpreted (read back as 5e-324).
+		{n: "return_const_float", src: `func f() float64 { return 1 }; f() + 0.5`, res: "1.5"},
+		{n: "return_const_float_generic", src: `func one[T float64 | int]() T { return 1 }; one[float64]() + 0.5`, res: "1.5"},
 	})
 }
 
@@ -521,6 +525,10 @@ func TestVariadic(t *testing.T) {
 		{n: "#07", src: `func add(x int, rest ...int) int { s := x; for _, v := range rest { s += v }; return s }; r := []int{1, 2}; add(10, r...)`, res: "13"},
 		{n: "#08", src: `import "fmt"; var a, b string; dest := []interface{}{&a, &b}; fmt.Sscanf("hello world", "%s %s", dest...); a + " " + b`, res: "hello world"},
 		{n: "#09", src: `import "fmt"; f := fmt.Sprintf; f("hello %s", "world")`, res: "hello world"},
+		// Multi-line param list with a trailing comma: the ...T param is not
+		// the last Split element, but must still become []T (quicktest's
+		// CodecEquals signature shape).
+		{n: "trailing_comma", src: "func f(\n\ta int,\n\topts ...string,\n) int {\n\treturn a + len(opts)\n}\nf(1, \"x\", \"y\")", res: "3"},
 	})
 }
 
@@ -563,6 +571,10 @@ func TestGenericType(t *testing.T) {
 		{n: "union_iface_ok", src: `type Ord interface { ~int | ~string }; func F[T Ord](x T) T { return x }; F[int](42)`, res: "42"},
 		{n: "union_iface_ok_str", src: `type Ord interface { ~int | ~string }; func F[T Ord](x T) T { return x }; F[string]("hi")`, res: "hi"},
 		{n: "union_iface_reject", src: `type Ord interface { ~int | ~string }; func F[T Ord](x T) T { return x }; F[float64](1.0)`, err: "does not satisfy constraint"},
+		// A named constraint interface embedded as a union term contributes
+		// its own type elements (cast's Basic = string | bool | Number).
+		{n: "nested_union_ok", src: `type Number interface { int | float64 }; type Basic interface { string | Number }; func F[T Basic](x T) T { return x }; F(42)`, res: "42"},
+		{n: "nested_union_reject", src: `type Number interface { int | float64 }; type Basic interface { string | Number }; func F[T Basic](x T) T { return x }; F(true)`, err: "does not satisfy constraint"},
 		{n: "approx_named", src: `type Ord interface { ~int }; type MyInt int; func F[T Ord](x T) T { return x }; F[MyInt](MyInt(1))`, res: "1"},
 		{n: "typeparam_ref", src: `func F[T any, U T](x U) U { return x }; F[int, int](1)`, res: "1"},
 		{n: "comparable_iface_elem_ok", src: `type C interface { comparable }; func F[T C](x T) T { return x }; F[int](42)`, res: "42"},
@@ -667,6 +679,11 @@ func TestGenericInfer(t *testing.T) {
 		// References the rotateRight-using funcs (Insert/Replace) so a regression
 		// that breaks their compilation surfaces here, not silently in `mvm test`.
 		{n: "load_guard", src: `import ("slices"; "maps"); s := slices.Insert([]int{1, 5}, 1, 2, 3, 4); s = slices.Replace(s, 0, 1, 9); slices.Reverse(s); m := maps.Clone(map[int]int{1: 2}); len(s) + len(m)`, res: "6"},
+
+		// A pkg-qualified named type whose bare name matches a type param
+		// (testing.T vs param T) must not bind it; T comes from the func arg.
+		// Mirrors cast's runSliceTests[T](t *testing.T, ..., to func(i any) []T).
+		{n: "param_name_collides_named_type", src: `import "time"; func g[Time any](d time.Time, mk func() Time) Time { return mk() }; g(time.Time{}, func() int { return 3 })`, res: "3"},
 	})
 }
 
@@ -888,6 +905,12 @@ func TestSwitch(t *testing.T) {
 		{n: "comment_before_first_case", src: "func f(x int) string {\n\tswitch x {\n\t// leading comment\n\tcase 1: return \"one\"\n\tdefault: return \"other\"\n\t}\n}; f(1)", res: "one"},
 		{n: "comment_in_type_switch", src: "func f(v interface{}) string {\n\tswitch v.(type) {\n\t// numeric branch\n\tcase int: return \"int\"\n\tdefault: return \"other\"\n\t}\n}; f(42)", res: "int"},
 		{n: "comment_in_select", src: "func f() int {\n\tch := make(chan int, 1); ch <- 7\n\tselect {\n\t// pick from ch\n\tcase v := <-ch: return v\n\t}\n\treturn 0\n}; f()", res: "7"},
+
+		// Each case clause is its own implicit block: a `v := ...` in one case
+		// must not rebind v for sibling cases (go-cmp FormatValue shadows its
+		// param v inside case reflect.Struct).
+		{n: "case_shadow_param", src: "func f(v map[string]int, k int) bool {\n\tswitch k {\n\tcase 1:\n\t\tv := map[string]int{\"x\": 9}\n\t\t_ = v\n\tcase 2:\n\t\treturn v == nil\n\t}\n\treturn true\n}; f(map[string]int{\"a\": 1}, 2)", res: "false"},
+		{n: "case_shadow_sibling", src: "func f(k int) int {\n\tn := 7\n\tswitch k {\n\tcase 1:\n\t\tn := 1\n\t\t_ = n\n\tcase 2:\n\t\treturn n\n\t}\n\treturn 0\n}; f(2)", res: "7"},
 	})
 }
 
@@ -960,6 +983,9 @@ func TestArray(t *testing.T) {
 		{n: "ellipsis_keys", src: `a := [...]int{2: 10, 5: 20}; len(a)`, res: "6"},
 		{n: "ellipsis_const_key", src: `const (a = iota; b; c); x := [...]int{c: 99}; len(x)`, res: "3"},
 		{n: "ellipsis_const_expr_key", src: `const (a = iota; b; c); x := [...]int{c + 2: 99}; len(x)`, res: "5"},
+		// Length is highest index + 1, not last key + 1 (keys out of order).
+		{n: "ellipsis_keys_unordered", src: `a := [...]int{3: 30, 1: 10}; len(a)`, res: "4"},
+		{n: "ellipsis_keys_unordered_vals", src: `a := [...]int{3: 30, 1: 10}; a[3] + a[1]`, res: "40"},
 
 		{n: "2d_array", src: `a := [3][2]int{{1, 2}, {3, 4}, {5, 6}}; a[1][0]`, res: "3"},
 		{n: "2d_slice", src: `a := [][]int{{1, 2}, {3, 4}}; a[1][0]`, res: "3"},
@@ -977,6 +1003,16 @@ func TestArray(t *testing.T) {
 		{n: "slice_mixed_keys_value", src: `a := []int{2: 7, 9}; a[3]`, res: "9"},
 		{n: "slice_mixed_keys_leading_unkeyed", src: `a := []int{1, 2: 7, 9}; a[0]`, res: "1"},
 		{n: "slice_mixed_keys_leading_unkeyed_len", src: `a := []int{1, 2: 7, 9}; len(a)`, res: "4"},
+		// Const-expression keys (e.g. reflect.Bool) are normalized to literal
+		// Int keys at parse; the compiler only consumes Int-keyed elements.
+		{n: "slice_qualified_const_key", src: `import "reflect"; a := []string{reflect.Bool: "b"}; len(a)`, res: "2"},
+		{n: "slice_qualified_const_key_val", src: `import "reflect"; a := []string{reflect.Bool: "b", reflect.String: "s"}; a[1] + a[24]`, res: "bs"},
+		{n: "slice_local_const_key", src: `const k = 2; a := []string{k: "two", 0: "zero"}; len(a)`, res: "3"},
+		// Arrays share the slice keyed-element handling (const-expr key
+		// normalization and mixed unkeyed synthesis).
+		{n: "array_qualified_const_key", src: `import "reflect"; a := [3]string{reflect.Bool: "b"}; a[1]`, res: "b"},
+		{n: "array_ellipsis_qualified_const_key", src: `import "reflect"; a := [...]string{reflect.Bool: "b"}; a[1]`, res: "b"},
+		{n: "array_mixed_keys", src: `a := [5]int{1, 2: 7, 9}; a[0] + a[2] + a[3]`, res: "17"},
 		{n: "slice_after_make", src: `a := []int{1, 2, 3}; b := make([]int, 2); copy(b, a); b[1]`, res: "2"},
 		{n: "multi_slice_lit", src: `a := []int{1, 2, 3}; b := []int{4, 5}; a[2] + b[1]`, res: "8"},
 		{n: "2d_named", src: `type M [3][16]int; m := M{}; m[0][1] = 7; m[0][1]`, res: "7"},
@@ -2050,6 +2086,17 @@ type T int
 func (t T) String() string { return "hello" }
 var s Stringer = T(1)
 s.String()`, res: "hello"},
+		// Boxing copies the value (Go spec): reassigning a local map/slice var
+		// after it was stored in an interface must not change the boxed copy
+		// (IfaceWrap snapshots a settable slot, not just struct/array).
+		{n: "box_map_snapshot", src: `func f() int { x := map[string]int{"a": 1}; var i any = x; x = map[string]int{"b": 2, "c": 3}; _ = x; return len(i.(map[string]int)) }; f()`, res: "1"},
+		{n: "box_slice_snapshot", src: `func f() int { x := []int{1}; var i any = x; x = []int{2, 3}; _ = x; return len(i.([]int)) }; f()`, res: "1"},
+		{n: "box_range_append", src: `import "fmt"; func f() string { v := []map[string]int{{"a": 1}, {"b": 2}}; var s []any; for _, u := range v { s = append(s, u) }; return fmt.Sprint(s) }; f()`, res: "[map[a:1] map[b:2]]"},
+		// Numerics skip the IfaceWrap clone (payload lives in Value.num);
+		// the snapshot semantics must still hold.
+		{n: "box_int_snapshot", src: `func f() int { x := 1; var i any = x; x = 2; _ = x; return i.(int) }; f()`, res: "1"},
+		{n: "box_string_snapshot", src: `func f() string { x := "a"; var i any = x; x = "b"; _ = x; return i.(string) }; f()`, res: "a"},
+		{n: "box_named_int_method", src: `type N int; func (n N) Val() int { return int(n) }; type V interface{ Val() int }; func f() int { x := N(1); var v V = x; x = N(2); _ = x; return v.Val() }; f()`, res: "1"},
 
 		{n: "embed", src: `
 type Fooer interface { Foo() string }

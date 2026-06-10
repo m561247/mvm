@@ -10,13 +10,39 @@ import (
 )
 
 func checkConstraintElem(e constraintElem, arg *vm.Type, typeArgs []*vm.Type) bool {
+	return checkCElem(e, arg, typeArgs, nil)
+}
+
+func checkCElem(e constraintElem, arg *vm.Type, typeArgs []*vm.Type, seen map[*vm.Type]bool) bool {
 	switch e.kind {
 	case elemAny:
 		return true
 	case elemComparable:
 		return arg.IsComparable()
 	case elemExact:
-		return e.typ == nil || arg.Identical(e.typ)
+		if e.typ == nil || arg.Identical(e.typ) {
+			return true
+		}
+		// A named constraint interface as a union term (e.g. Number in
+		// string | bool | Number) contributes its own type elements.
+		// Recurse at check time: the term may have been a forward placeholder
+		// whose elements were filled in after the template was parsed.
+		if e.typ.IsInterface() && len(e.typ.TypeElems) > 0 && !seen[e.typ] {
+			if seen == nil {
+				seen = map[*vm.Type]bool{}
+			}
+			seen[e.typ] = true
+			for _, te := range e.typ.TypeElems {
+				kind := elemExact
+				if te.Approx {
+					kind = elemApprox
+				}
+				if checkCElem(constraintElem{kind: kind, typ: te.Type}, arg, typeArgs, seen) {
+					return true
+				}
+			}
+		}
+		return false
 	// elemInterface is handled by checkConstraint (it needs the parser's symbol
 	// table to see interpreted method sets), so it never reaches here.
 	case elemApprox:
@@ -198,7 +224,7 @@ func hasUnboundTP(t *vm.Type, tpNames map[string]bool, inferred map[string]*vm.T
 		}
 		return false
 	}
-	if !tpNames[t.Name] {
+	if !tpNames[t.Name] || t.PkgPath != "" {
 		return false
 	}
 	_, ok := inferred[t.Name]
@@ -281,8 +307,9 @@ func unifyTP(pType, argType *vm.Type, tpNames map[string]bool, inferred map[stri
 		return ok
 	}
 	// Leaf: bind if this is a type-param ident; otherwise a concrete leaf
-	// with no binding to make.
-	if tpNames[pType.Name] {
+	// with no binding to make. A pkg-qualified named type is never a type
+	// param even when its bare name collides (e.g. testing.T vs param T).
+	if tpNames[pType.Name] && pType.PkgPath == "" {
 		if _, ok := inferred[pType.Name]; !ok {
 			inferred[pType.Name] = argType
 		}

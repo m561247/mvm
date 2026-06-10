@@ -1469,13 +1469,18 @@ func (m *Machine) Run() (err error) {
 			typ := m.globals[int(c.A)].ref.Interface().(*Type)
 			idx := sp - int(c.B)
 			v := mem[idx]
-			// Assigning a struct/array value to an interface copies it (Go spec).
+			// Assigning a value to an interface copies it (Go spec).
 			// Without this clone, the wrapped Iface.Val.ref would alias the source
 			// slot's storage and later mutations to that slot would leak through
 			// the interface (e.g. compact.Make stores `tag.full = t` and a caller
 			// mutating t later would see the change inside tag.full).
+			// Struct/array always copy; other kinds (map/slice headers in an
+			// addressable local cell) copy when the slot is writable, else a
+			// later reassignment of the local mutates the boxed value.
+			// Numeric kinds are exempt: their payload is snapshotted in v.num
+			// (ref is type metadata), so cloning would only waste an alloc.
 			if v.ref.IsValid() {
-				if k := v.ref.Kind(); k == reflect.Struct || k == reflect.Array {
+				if k := v.ref.Kind(); k == reflect.Struct || k == reflect.Array || (!isNum(k) && v.ref.CanSet()) {
 					nv := reflect.New(v.ref.Type()).Elem()
 					nv.Set(Exportable(v.ref))
 					v.ref = nv

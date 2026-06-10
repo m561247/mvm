@@ -68,7 +68,7 @@ func (p *Parser) resolveEllipsisArray(elemTyp *vm.Type, toks Tokens, braceIdx in
 	if err != nil {
 		return nil, err
 	}
-	idx := 0
+	idx, maxLen := 0, 0
 	for _, item := range tokens.Split(lang.Comma) {
 		if len(item) == 0 {
 			continue
@@ -79,8 +79,11 @@ func (p *Parser) resolveEllipsisArray(elemTyp *vm.Type, toks Tokens, braceIdx in
 			}
 		}
 		idx++
+		if idx > maxLen {
+			maxLen = idx
+		}
 	}
-	return vm.SymArray(idx, elemTyp), nil
+	return vm.SymArray(maxLen, elemTyp), nil
 }
 
 // constIntKey evaluates `keyToks` as a constant integer expression
@@ -515,8 +518,10 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 			}
 		}
 		// Detect variadic parameter: ...T becomes []T.
+		ellipsis := false
 		if len(t) > 0 && t[0].Tok == lang.Ellipsis {
 			variadic = true
+			ellipsis = true
 			t = t[1:]
 		}
 		// typeOnly: a func-typed param's result names must not leak into the
@@ -528,7 +533,8 @@ func (p *Parser) parseParamTypes(in Tokens, flag typeFlag) (types []*vm.Type, va
 		if err != nil {
 			return nil, nil, false, err
 		}
-		if variadic && i == len(list)-1 {
+		// Index can't be used here: a trailing comma adds an empty last element.
+		if ellipsis {
 			typ = vm.SymSlice(typ)
 		}
 		if param != "" {
