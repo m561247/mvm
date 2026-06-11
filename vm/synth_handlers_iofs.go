@@ -23,10 +23,10 @@ func ifaceResult(v reflect.Value) any {
 }
 
 // makeHandlerS22 bridges S22: (T).Size() int64 (fs.FileInfo.Size).
-func makeHandlerS22(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS22 {
+func makeHandlerS22(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS22 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer) int64 {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
 		if err != nil || len(out) != 1 {
 			return 0
@@ -36,10 +36,10 @@ func makeHandlerS22(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS23 bridges S23: (T).Mode()/Type() fs.FileMode.
-func makeHandlerS23(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS23 {
+func makeHandlerS23(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS23 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer) fs.FileMode {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
 		if err != nil || len(out) != 1 {
 			return 0
@@ -49,10 +49,10 @@ func makeHandlerS23(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS24 bridges S24: (T).ModTime() time.Time (fs.FileInfo.ModTime).
-func makeHandlerS24(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS24 {
+func makeHandlerS24(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS24 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer) time.Time {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
 		if err != nil || len(out) != 1 {
 			return time.Time{}
@@ -63,10 +63,10 @@ func makeHandlerS24(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS25 bridges S25: (T).Info()/Stat() (fs.FileInfo, error).
-func makeHandlerS25(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS25 {
+func makeHandlerS25(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS25 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer) (fs.FileInfo, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
 		if err != nil {
 			return nil, err
@@ -80,10 +80,10 @@ func makeHandlerS25(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS26 bridges S26: (T).Open(string) (fs.File, error) (fs.FS.Open).
-func makeHandlerS26(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS26 {
+func makeHandlerS26(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS26 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, arg string) (fs.File, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(arg)})
 		if err != nil {
 			return nil, err
@@ -97,10 +97,10 @@ func makeHandlerS26(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS27 bridges S27: (T).Stat(string) (fs.FileInfo, error) (fs.StatFS.Stat).
-func makeHandlerS27(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS27 {
+func makeHandlerS27(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS27 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, arg string) (fs.FileInfo, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(arg)})
 		if err != nil {
 			return nil, err
@@ -114,10 +114,10 @@ func makeHandlerS27(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS28 bridges S28: (T).Sub(string) (fs.FS, error) (fs.SubFS.Sub).
-func makeHandlerS28(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS28 {
+func makeHandlerS28(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS28 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, arg string) (fs.FS, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(arg)})
 		if err != nil {
 			return nil, err
@@ -131,10 +131,10 @@ func makeHandlerS28(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS29 bridges S29: (T).Glob(string) ([]string, error) (fs.GlobFS.Glob).
-func makeHandlerS29(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS29 {
+func makeHandlerS29(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS29 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, arg string) ([]string, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(arg)})
 		if err != nil {
 			return nil, err
@@ -148,10 +148,10 @@ func makeHandlerS29(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS30 bridges S30: (T).ReadDir(string) ([]fs.DirEntry, error) (fs.ReadDirFS.ReadDir).
-func makeHandlerS30(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS30 {
+func makeHandlerS30(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS30 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, arg string) ([]fs.DirEntry, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(arg)})
 		if err != nil {
 			return nil, err
@@ -165,10 +165,10 @@ func makeHandlerS30(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS31 bridges S31: (T).ReadFile(string) ([]byte, error) (fs.ReadFileFS.ReadFile).
-func makeHandlerS31(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS31 {
+func makeHandlerS31(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS31 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, arg string) ([]byte, error) {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(arg)})
 		if err != nil {
 			return nil, err

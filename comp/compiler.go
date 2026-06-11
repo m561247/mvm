@@ -1594,6 +1594,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 				if typ == nil {
 					return c.errUndef(t, s.Name)
 				}
+				if typ.Kind() != reflect.Func {
+					return c.errAt(t, "internal: call of non-func %s (type %v)", s.Name, typ)
+				}
 				// Wrap concrete args in Iface when the parameter expects an interface type.
 				// Use mvm-level Params types (which carry IfaceMethods) when available.
 				nIn := typ.NumIn()
@@ -1950,6 +1953,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			n := t.Arg[0].(int)
 			if err := checkTopN(t, n); err != nil {
 				return err
+			}
+			if len(stack) < 2*n {
+				return c.errAt(t, "internal: define stack underflow (have %d symbols, need %d)", len(stack), 2*n)
 			}
 			l := len(stack)
 			rhs := stack[l-n:]

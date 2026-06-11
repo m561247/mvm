@@ -21,10 +21,10 @@ func ctxArg(ctx context.Context) reflect.Value {
 }
 
 // makeHandlerS32 bridges S32: (T).Enabled(context.Context, slog.Level) bool.
-func makeHandlerS32(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS32 {
+func makeHandlerS32(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS32 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, ctx context.Context, level slog.Level) bool {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		argv := []reflect.Value{ctxArg(ctx), reflect.ValueOf(level)}
 		out, err := callMethod(m, t, name, rv, method, methodSig, argv)
 		if err != nil || len(out) != 1 {
@@ -35,10 +35,10 @@ func makeHandlerS32(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS33 bridges S33: (T).Handle(context.Context, slog.Record) error.
-func makeHandlerS33(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS33 {
+func makeHandlerS33(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS33 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, ctx context.Context, record slog.Record) error {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		argv := []reflect.Value{ctxArg(ctx), reflect.ValueOf(record)}
 		out, err := callMethod(m, t, name, rv, method, methodSig, argv)
 		if err != nil {
@@ -52,10 +52,10 @@ func makeHandlerS33(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS34 bridges S34: (T).WithAttrs([]slog.Attr) slog.Handler.
-func makeHandlerS34(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS34 {
+func makeHandlerS34(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS34 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, attrs []slog.Attr) slog.Handler {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(attrs)})
 		if err != nil || len(out) != 1 {
 			return nil
@@ -66,10 +66,10 @@ func makeHandlerS34(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS36 bridges S36: (T).LogValue() slog.Value (slog.LogValuer).
-func makeHandlerS36(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS36 {
+func makeHandlerS36(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS36 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer) slog.Value {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, nil)
 		if err != nil || len(out) != 1 {
 			return slog.Value{}
@@ -80,10 +80,10 @@ func makeHandlerS36(m *Machine, t *Type, method Method, name string, ptrRecv boo
 }
 
 // makeHandlerS35 bridges S35: (T).WithGroup(string) slog.Handler.
-func makeHandlerS35(m *Machine, t *Type, method Method, name string, ptrRecv bool) stubs.HandlerS35 {
+func makeHandlerS35(m *Machine, t *Type, method Method, name string, form recvForm) stubs.HandlerS35 {
 	methodSig := method.Rtype
 	return func(recv unsafe.Pointer, name2 string) slog.Handler {
-		rv := makeRecvValue(t.Rtype, recv, ptrRecv)
+		rv := makeRecvValue(t.Rtype, recv, form)
 		out, err := callMethod(m, t, name, rv, method, methodSig, []reflect.Value{reflect.ValueOf(name2)})
 		if err != nil || len(out) != 1 {
 			return nil

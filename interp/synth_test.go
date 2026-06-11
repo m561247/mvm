@@ -532,3 +532,60 @@ func main() {
 		t.Errorf("stdout = %q, want %q\nstderr: %s", got, want, stderr.String())
 	}
 }
+
+// TestSynthPtrIdentValueRecvDirectIface covers a VALUE-receiver method reached
+// through the *T identity of a direct-iface struct (flag's ExampleValue:
+// fs.Var(&URLValue{u}, ...) with String/Set on URLValue = struct{*url.URL}).
+// The stub recv is the *T pointer and must be dereferenced; reinterpreting it
+// as the receiver word (correct only on T's own value identity) reconstructs a
+// bogus inner pointer and faults.
+func TestSynthPtrIdentValueRecvDirectIface(t *testing.T) {
+	const src = `package main
+
+import (
+	"flag"
+	"fmt"
+	"net/url"
+)
+
+type URLValue struct {
+	URL *url.URL
+}
+
+func (v URLValue) String() string {
+	if v.URL != nil {
+		return v.URL.String()
+	}
+	return ""
+}
+
+func (v URLValue) Set(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return err
+	}
+	*v.URL = *u
+	return nil
+}
+
+func main() {
+	u := &url.URL{}
+	fs := flag.NewFlagSet("v", flag.ExitOnError)
+	fs.Var(&URLValue{u}, "url", "URL to parse")
+	if err := fs.Parse([]string{"-url", "https://golang.org/pkg/flag/"}); err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s %s %s", u.Scheme, u.Host, u.Path)
+}
+`
+	var stdout, stderr bytes.Buffer
+	i := NewInterpreter(golang.GoSpec)
+	i.ImportPackageValues(stdlib.Values)
+	i.SetIO(os.Stdin, &stdout, &stderr)
+	if _, err := i.Eval("a.go", src); err != nil {
+		t.Fatalf("Eval: %v\nstderr: %s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "https golang.org /pkg/flag/"; got != want {
+		t.Errorf("stdout = %q, want %q\nstderr: %s", got, want, stderr.String())
+	}
+}
