@@ -84,6 +84,10 @@ func ReserveMethods(layout reflect.Type, name, pkgPath string) (*Reservation, er
 		return reserveMap(layout, name, pkgPath)
 	case k == reflect.Func:
 		return reserveFunc(layout, name, pkgPath)
+	case k == reflect.Pointer:
+		return reservePtr(layout, name, pkgPath)
+	case k == reflect.Chan:
+		return reserveChan(layout, name, pkgPath)
 	}
 	return nil, ErrKindUnsupported
 }
@@ -164,6 +168,48 @@ func reserveFunc(layout reflect.Type, name, pkgPath string) (*Reservation, error
 	return &Reservation{rt: asReflectType(&b.t.abiType), u: &b.u, m: b.m[:]}, nil
 }
 
+// reservePtr clones a *T layout under a new name.
+// Unlike ReservePtrMethods it leaves the donor elem untouched; SetElem patches it later.
+func reservePtr(layout reflect.Type, name, pkgPath string) (*Reservation, error) {
+	src := (*abiPtrType)(unsafe.Pointer(rtypePtr(layout)))
+	b := new(synthPtr)
+	b.t = src.abiType
+	b.elem = src.Elem
+	stampHeader(&b.t, name)
+	moff := unsafe.Offsetof(b.m) - unsafe.Offsetof(b.u)
+	b.u = makeUncommon(pkgPath, uint32(moff))
+	registerLayout(&b.t, &src.abiType)
+	return &Reservation{rt: asReflectType(&b.t), u: &b.u, m: b.m[:]}, nil
+}
+
+func reserveChan(layout reflect.Type, name, pkgPath string) (*Reservation, error) {
+	src := (*abiChanType)(unsafe.Pointer(rtypePtr(layout)))
+	b := new(synthChan)
+	b.t = *src
+	stampHeader(&b.t.abiType, name)
+	moff := unsafe.Offsetof(b.m) - unsafe.Offsetof(b.u)
+	b.u = makeUncommon(pkgPath, uint32(moff))
+	registerLayout(&b.t.abiType, &src.abiType)
+	return &Reservation{rt: asReflectType(&b.t.abiType), u: &b.u, m: b.m[:]}, nil
+}
+
+// SetElem repoints a composite rtype's Elem in place (self-referential type P *P).
+// The rtype must be a reservation or synth derive, never native.
+func SetElem(t, elem reflect.Type) {
+	rt := rtypePtr(t)
+	ert := rtypePtr(elem)
+	switch t.Kind() {
+	case reflect.Pointer:
+		(*abiPtrType)(unsafe.Pointer(rt)).Elem = ert
+	case reflect.Slice:
+		(*abiSliceType)(unsafe.Pointer(rt)).Elem = ert
+	case reflect.Chan:
+		(*abiChanType)(unsafe.Pointer(rt)).Elem = ert
+	case reflect.Map:
+		(*abiMapType)(unsafe.Pointer(rt)).Elem = ert
+	}
+}
+
 // ReservePtrMethods reserves a *T identity carrying eventual ptr-receiver
 // methods and wires elem.PtrToThis so reflect.PointerTo(elem) returns it, all
 // before Fill.
@@ -179,7 +225,7 @@ func ReservePtrMethods(elem reflect.Type, name, pkgPath string) (*Reservation, e
 		Size:       unsafe.Sizeof(uintptr(0)),
 		PtrBytes:   unsafe.Sizeof(uintptr(0)),
 		Hash:       nextSyntheticHash(),
-		TFlag:      tflagUncommon | tflagNamed | tflagDirectIface,
+		TFlag:      tflagUncommon | tflagNamed | tflagDirectIface | tflagRegularMemory,
 		Align:      uint8(unsafe.Alignof(uintptr(0))),
 		FieldAlign: uint8(unsafe.Alignof(uintptr(0))),
 		Kind:       kindPointer,

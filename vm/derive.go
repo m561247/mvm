@@ -243,7 +243,7 @@ func hasSynthTableMethods(t *mtype.Type) bool {
 		if sig == nil {
 			return true // unknown sig: assume table method, don't share
 		}
-		if _, ok := detectShape(sig); ok {
+		if _, ok := detectShape(eraseSynthIfaceParams(sig)); ok {
 			return true
 		}
 	}
@@ -522,6 +522,9 @@ func materialize(t *mtype.Type) reflect.Type {
 			return rt
 		}
 	}
+	if rt, handled := materializeSelfRef(t); handled {
+		return rt
+	}
 	var rt reflect.Type
 	switch t.Kind() {
 	case reflect.Pointer:
@@ -564,14 +567,14 @@ func materialize(t *mtype.Type) reflect.Type {
 		}
 		in := make([]reflect.Type, len(t.Params))
 		for i, p := range t.Params {
-			if in[i] = materialize(p); in[i] == nil {
+			if in[i] = materializeFuncIO(p); in[i] == nil {
 				t.Rtype = nil
 				return nil
 			}
 		}
 		out := make([]reflect.Type, len(t.Returns))
 		for i, r := range t.Returns {
-			if out[i] = materialize(r); out[i] == nil {
+			if out[i] = materializeFuncIO(r); out[i] == nil {
 				t.Rtype = nil
 				return nil
 			}
@@ -687,6 +690,151 @@ func materialize(t *mtype.Type) reflect.Type {
 	rt = maybeReserve(t, rt)
 	t.Rtype = rt
 	return rt
+}
+
+// compositeReachesSelf reports whether x's elem/key graph reaches target
+// without crossing a struct, interface, or func (those break their own cycles).
+func compositeReachesSelf(x, target *mtype.Type, seen map[*mtype.Type]bool) bool {
+	for x != nil {
+		if x == target {
+			return true
+		}
+		if seen[x] {
+			return false
+		}
+		seen[x] = true
+		switch x.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
+			x = x.ElemType
+		case reflect.Map:
+			if compositeReachesSelf(x.KeyType, target, seen) {
+				return true
+			}
+			x = x.ElemType
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// materializeSelfRef materializes a named composite whose elem graph reaches t
+// (type P *P / S []S / M map[int]M), which neither elem-first recursion nor reflect can build.
+// It reserves t's identity over an elem-independent donor layout, sets t.Rtype so the self-reference resolves to it, then patches the reserved rtype's Elem in place.
+// handled=true means do not fall through; rt may still be nil for unsupported shapes.
+func materializeSelfRef(t *mtype.Type) (rt reflect.Type, handled bool) {
+	if t.Name == "" || t.ElemType == nil {
+		return nil, false
+	}
+	k := t.Kind()
+	switch k {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan:
+	default:
+		return nil, false
+	}
+	if !compositeReachesSelf(t.ElemType, t, map[*mtype.Type]bool{}) {
+		if k != reflect.Map {
+			return nil, false
+		}
+		if !compositeReachesSelf(t.KeyType, t, map[*mtype.Type]bool{}) {
+			return nil, false
+		}
+		return nil, true // self-referential map key: not materializable
+	}
+	var donor reflect.Type
+	switch k {
+	case reflect.Pointer:
+		donor = reflect.TypeFor[*int]()
+	case reflect.Slice:
+		donor = reflect.TypeFor[[]int]()
+	case reflect.Chan:
+		donor = reflect.ChanOf(t.ChanDir, reflect.TypeFor[int]())
+	case reflect.Map:
+		if compositeReachesSelf(t.KeyType, t, map[*mtype.Type]bool{}) {
+			return nil, true // self-referential map key: not materializable
+		}
+		key := materialize(t.KeyType)
+		standIn := selfRefStandIn(t.ElemType)
+		if key == nil || standIn == nil {
+			return nil, true
+		}
+		donor = runtype.MapOf(key, standIn)
+	}
+	rt = reserveSelfRef(t, donor)
+	if rt == nil {
+		return nil, true
+	}
+	t.Rtype = rt // the self-reference below resolves to the reserved identity
+	elem := materialize(t.ElemType)
+	if elem == nil {
+		t.Rtype = nil
+		return nil, true
+	}
+	runtype.SetElem(rt, elem)
+	return rt, true
+}
+
+// reserveSelfRef reserves t's named identity over the donor layout, never via
+// the shared-carrier cache: the donor erases the real layout, so same-named
+// self-ref types would collide and the second SetElem would corrupt the first.
+// The reservations entry makes a deferred retry reuse the same identity.
+func reserveSelfRef(t *mtype.Type, donor reflect.Type) reflect.Type {
+	if res := lookupReservation(t); res != nil {
+		return res.value.Type()
+	}
+	if hasReservableMethods(t) {
+		return reserveValueAndPtr(t, donor)
+	}
+	vr, err := runtype.ReserveMethods(donor, qualifiedTypeName(t), t.PkgPath)
+	if err != nil {
+		return nil
+	}
+	// Carriers never fill methods; see ClearUncommon for the StructOf constraint.
+	runtype.ClearUncommon(vr.Type())
+	derivedMu.Lock()
+	reservations[t] = &synthReservation{value: vr}
+	derivedMu.Unlock()
+	return vr.Type()
+}
+
+// selfRefStandIn returns a native type with the same size and pointer shape
+// as et, usable as the donor map-elem while the real elem is in a cycle.
+func selfRefStandIn(et *mtype.Type) reflect.Type {
+	switch et.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return reflect.TypeFor[*int]()
+	case reflect.Slice:
+		return reflect.TypeFor[[]int]()
+	case reflect.Array:
+		// type M map[int][2]M: same-shape array of stand-ins.
+		if e := selfRefStandIn(et.ElemType); e != nil {
+			return reflect.ArrayOf(et.ArrayLen, e)
+		}
+	}
+	return nil
+}
+
+// materializeFuncIO materializes a func param/return type.
+// A named interpreted interface yields its synth rtype, so the func signature exposes the method set to reflect (go-cmp probes In(0).NumMethod()); the interface itself still materializes to any for value storage.
+func materializeFuncIO(p *mtype.Type) reflect.Type {
+	// Native-bridged interfaces (error, io.Writer) keep their rtype.
+	// Unexported methods never enter synth tables, so such an interface could never build an itab; keep it as any.
+	if p != nil && p.Name != "" && p.Kind() == reflect.Interface && len(p.IfaceMethods) > 0 &&
+		(p.Rtype == nil || p.Rtype == mtype.AnyRtype) && allIfaceMethodsExported(p) {
+		if rt := synthIfaceRtype(p); rt != nil {
+			return rt
+		}
+	}
+	return materialize(p)
+}
+
+func allIfaceMethodsExported(p *mtype.Type) bool {
+	for _, im := range p.IfaceMethods {
+		if !isExportedName(im.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func fieldsMaterialized(fields []*mtype.Type) bool {

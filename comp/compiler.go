@@ -11,6 +11,7 @@ import (
 	"path"
 	"reflect"
 	"runtime"
+	rtdebug "runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +23,12 @@ import (
 )
 
 const debug = false
+
+// Debug env flags, read once: generate runs per declaration.
+var (
+	debugTokens = os.Getenv("MVM_DEBUG_TOKENS") != ""
+	debugPanic  = os.Getenv("MVM_DEBUG_PANIC") != ""
+)
 
 var builtinDeferOp = map[string]vm.Op{
 	"print":   vm.Print,
@@ -919,6 +926,9 @@ func (c *Compiler) emitTypeOrGlobal(t goparser.Token, sym *symbol.Symbol, index 
 
 // generate generates vm code and data from parsed tokens, or returns an error.
 func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
+	if debugTokens {
+		fmt.Printf("== generate tokens: %v\n", tokens)
+	}
 	// In lenient mode, turn a codegen panic into a located error (at the current
 	// token) so the external-test loader can drop the file; else crash loudly.
 	var cur goparser.Token
@@ -927,6 +937,9 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			return
 		}
 		if r := recover(); r != nil {
+			if debugPanic {
+				rtdebug.PrintStack()
+			}
 			err = c.errAt(cur, "internal compile error: %v", r)
 		}
 	}()
@@ -1802,6 +1815,12 @@ func (c *Compiler) generate(tokens goparser.Tokens) (err error) {
 			if ts.Type != nil && ts.Type.Kind() == reflect.Map {
 				elemTyp := ts.Type.Elem()
 				c.emitNumConvert(t, ts.Type.Key(), ks.Type, 1)
+				// Elided composite key for a *T key type denotes &T{...}; key is at depth 1.
+				if ts.Type.Key().IsPtr() && ks.Kind == symbol.Type {
+					c.emit(t, vm.Swap, 0, 1)
+					c.emit(t, vm.Addr)
+					c.emit(t, vm.Swap, 0, 1)
+				}
 				if elemTyp.IsPtr() && vs.Kind == symbol.Type {
 					c.emit(t, vm.Addr)
 				}

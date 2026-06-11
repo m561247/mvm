@@ -126,6 +126,12 @@ type synthSlice struct {
 	m [maxMethods]abiMethod
 }
 
+type synthChan struct {
+	t abiChanType
+	u abiUncommon
+	m [maxMethods]abiMethod
+}
+
 type synthArray struct {
 	t abiArrayType
 	u abiUncommon

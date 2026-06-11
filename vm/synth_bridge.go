@@ -127,7 +127,14 @@ func synthIfaceRtype(t *Type) reflect.Type {
 		if len(ims) == 0 {
 			return nil
 		}
-		return runtype.InterfaceOf(t.Rtype.String(), t.PkgPath, ims)
+		name := qualifiedTypeName(t)
+		if name == "" {
+			if t.Rtype == nil {
+				return nil
+			}
+			name = t.Rtype.String()
+		}
+		return runtype.InterfaceOf(name, t.PkgPath, ims)
 	})
 }
 
@@ -354,6 +361,9 @@ func (m *Machine) allSynthMethods(
 		if method.PtrRecv && !includePtr {
 			continue
 		}
+		// Method tables erase synth-iface params to any: stubs decode an eface,
+		// and a precise sig would make reflect.Call pack itab+data instead.
+		method.Rtype = eraseSynthIfaceParams(method.Rtype)
 		shape, ok := detectShape(method.Rtype)
 		if !ok {
 			continue
@@ -420,6 +430,34 @@ func (m *Machine) promotedSynthMethods(t *Type, includePtr bool, seen map[string
 		}
 	}
 	return specs
+}
+
+// eraseSynthIfaceParams maps synth non-empty interface params/returns back to
+// any; see its allSynthMethods call site.
+func eraseSynthIfaceParams(sig reflect.Type) reflect.Type {
+	if sig == nil || sig.Kind() != reflect.Func {
+		return sig
+	}
+	changed := false
+	conv := func(t reflect.Type) reflect.Type {
+		if t.Kind() == reflect.Interface && t.NumMethod() > 0 && runtype.IsSynth(t) {
+			changed = true
+			return anyIface
+		}
+		return t
+	}
+	in := make([]reflect.Type, sig.NumIn())
+	for i := range in {
+		in[i] = conv(sig.In(i))
+	}
+	out := make([]reflect.Type, sig.NumOut())
+	for i := range out {
+		out[i] = conv(sig.Out(i))
+	}
+	if !changed {
+		return sig
+	}
+	return reflect.FuncOf(in, out, sig.IsVariadic())
 }
 
 // isDirectIface reports whether a value of rt is stored directly in an interface

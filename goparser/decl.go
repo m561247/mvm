@@ -1187,13 +1187,17 @@ func (p *Parser) parseTypeLine(in Tokens) (out Tokens, err error) {
 			// Self-referential func type (type parseFn func() parseFn): a
 			// placeholder lets the self-reference resolve during the body parse,
 			// filled in place after to keep the *Type identity.
-			//
-			// Don't add BracketBlock/Map/Mul/Chan here without a matching cycle
-			// break in vm.MaterializeRtype (Func case + reachesSelf): reflect can't
-			// build a self-referential slice/ptr/map/chan rtype either, so a
-			// placeholder alone turns the clean "undefined: T" error into an
-			// infinite-recursion stack overflow.
 			compositePh = p.registerNamedPlaceholder(name, in[0].Str)
+		case lang.Mul, lang.Map, lang.Chan:
+			// Self-referential composite (type P *P / S []S / M map[int]M).
+			// Kinds here need the matching cycle break in vm.materializeSelfRef.
+			compositePh = p.registerNamedPlaceholder(name, in[0].Str)
+		case lang.BracketBlock:
+			// Slices only: arrays have no cycle break, so `type A [2]A` keeps its clean undefined error.
+			// Detecting size cycles at parse time is wrong anyway: `type A [2]map[string]A` is legal Go.
+			if len(toks[0].Block()) == 0 {
+				compositePh = p.registerNamedPlaceholder(name, in[0].Str)
+			}
 		}
 	}
 

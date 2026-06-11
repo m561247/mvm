@@ -455,6 +455,16 @@ func (v Value) Equal(u Value) bool {
 	if !v.ref.IsValid() {
 		return nilEqual(u)
 	}
+	// Mixed named/unnamed operands with identical underlying (assignable, so
+	// comparable in Go) carry distinct rtypes that reflect.Value.Equal rejects.
+	if v.ref.Kind() == u.ref.Kind() && v.ref.Type() != u.ref.Type() {
+		switch v.ref.Kind() {
+		case reflect.Struct, reflect.Array:
+			if u.ref.Type().AssignableTo(v.ref.Type()) {
+				u.ref = Exportable(u.ref).Convert(v.ref.Type())
+			}
+		}
+	}
 	// For structs, walk fields and recurse so that interface-typed fields
 	// (stored as mvm Iface inside an `any` slot) get mvm's iface-aware
 	// comparison instead of reflect.Value.Equal's structural compare. The
@@ -471,6 +481,12 @@ func (v Value) Equal(u Value) bool {
 			}
 		}
 		return true
+	}
+	// Same-pointee pointers compare by address (P vs *P with `type P *P`
+	// carry distinct rtypes); unrelated pointees stay inequal, as in Go.
+	if v.ref.Kind() == reflect.Pointer && u.ref.Kind() == reflect.Pointer &&
+		v.ref.Type().Elem() == u.ref.Type().Elem() {
+		return v.ref.Pointer() == u.ref.Pointer()
 	}
 	return v.ref.Equal(u.ref)
 }

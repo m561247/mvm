@@ -72,7 +72,9 @@ func buildPointerTo(elem reflect.Type, elemRT *abiType) reflect.Type {
 
 	b := new(abiPtrType)
 	b.abiType = intPtrRT.abiType
-	b.TFlag = tflagDirectIface // anonymous derived; clear Uncommon/Named/ExtraStar
+	// Anonymous derived; clear Uncommon/Named/ExtraStar.
+	// RegularMemory must stay or runtime.typehash treats *T as unhashable.
+	b.TFlag = tflagDirectIface | tflagRegularMemory
 	b.Hash = nextSyntheticHash()
 	b.PtrToThis = 0
 	b.Str = addReflectOff(unsafe.Pointer(
@@ -142,7 +144,7 @@ func buildChanOf(dir reflect.ChanDir, elem reflect.Type, elemRT *abiType) reflec
 
 	b := new(abiChanType)
 	b.abiType = intChanRT.abiType
-	b.TFlag = 0
+	b.TFlag = tflagRegularMemory // chans hash by ref; see buildPointerTo
 	b.Hash = nextSyntheticHash()
 	b.PtrToThis = 0
 	b.Str = addReflectOff(unsafe.Pointer(

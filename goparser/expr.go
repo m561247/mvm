@@ -346,6 +346,9 @@ func (p *Parser) parseExpr(in Tokens, typeStr string) (out Tokens, err error) {
 				return out, err
 			}
 			ops = append(ops, newComposite(ctype, t.Pos, sliceLen))
+			// Reset the consumed type so a later elided brace ({k}: {v} map
+			// pairs) re-infers its own instead of inheriting this one.
+			ctype = ""
 
 		case lang.BracketBlock:
 			if isUnaryCtx(i) {

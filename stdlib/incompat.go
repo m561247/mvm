@@ -96,6 +96,11 @@ var Incompat = map[string]map[string]string{
 		"TestStringAllocs": "testing.AllocsPerRun observes mvm interpreter allocations; native expects 0 (escape-analysis assertion)",
 	},
 
+	"github.com/google/go-cmp/cmp": {
+		"TestDiff/Transformer/CyclicString":  "cmp's recursive-transformer guard fires only after 65536 path steps; interpreted transforms exhaust memory first",
+		"TestDiff/Transformer/CyclicComplex": "cmp's recursive-transformer guard fires only after 65536 path steps; interpreted transforms exhaust memory first",
+	},
+
 	"github.com/google/btree": {
 		"TestBTreeG":                     "stress test: builds a 10000-key B-tree x10 iterations; minutes under the interpreter (no testing.Short path)",
 		"TestBTree":                      "stress test: builds a 10000-key B-tree x10 iterations; minutes under the interpreter (no testing.Short path)",

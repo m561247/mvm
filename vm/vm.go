@@ -2760,7 +2760,9 @@ func (m *Machine) Run() (err error) {
 				continue
 			}
 			mt := mapVal.Type()
-			mapVal.SetMapIndex(mapKeyReflect(mt.Key(), mem[sp-1]), m.wrapForFunc(mem[sp], mt.Elem()))
+			// Exportable: key or value may carry flagRO from an unexported field read.
+			mapVal.SetMapIndex(Exportable(mapKeyReflect(mt.Key(), mem[sp-1])),
+				Exportable(m.wrapForFunc(mem[sp], mt.Elem())))
 			sp -= 2
 		case SetS:
 			n := int(c.A)
