@@ -196,7 +196,11 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 			if recvRt != nil && recvRt.Kind() == reflect.Pointer {
 				recvRt = recvRt.Elem()
 			}
-			var firstName string
+			// Candidates rank by closeness: exact *Type identity beats a
+			// same-Name canonical match (a clone), which beats any other
+			// canonical match (e.g. `type Y X` and X share a canonical but
+			// Y's methods are NOT X's; map order must not pick between them).
+			var firstName, exactName, namedName, canonName string
 			for k, s := range sm {
 				if s.Kind != Type || s.Type == nil || k == "" {
 					continue
@@ -207,12 +211,29 @@ func (sm SymMap) MethodByName(sym *Symbol, name string) (*Symbol, []int) {
 				if firstName == "" {
 					firstName = k
 				}
-				if methodLookup(sm, k, name) != nil || methodLookup(sm, "*"+k, name) != nil {
-					typName = k
+				if methodLookup(sm, k, name) == nil && methodLookup(sm, "*"+k, name) == nil {
+					continue
+				}
+				switch {
+				case s.Type == recv:
+					exactName = k
+				case s.Type.Name == recv.Name && namedName == "":
+					namedName = k
+				case canonName == "":
+					canonName = k
+				}
+				if exactName != "" {
 					break
 				}
 			}
-			if typName == "" {
+			switch {
+			case exactName != "":
+				typName = exactName
+			case namedName != "":
+				typName = namedName
+			case canonName != "":
+				typName = canonName
+			default:
 				typName = firstName
 			}
 		}
