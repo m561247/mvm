@@ -4791,6 +4791,16 @@ func (m *Machine) assignSlot(dst *Value, src Value) {
 		return
 	}
 	if !dst.ref.CanSet() {
+		// Adopting a settable ref would alias storage owned elsewhere (e.g. a
+		// global whose value was returned by a callee); a later assignment to
+		// this slot would then write through it. Detach into fresh storage.
+		// Reached when the slot was never materialized by New, e.g. a named
+		// return whose first executed assignment is not the first textual one.
+		if src.ref.CanSet() {
+			r := reflect.New(src.ref.Type()).Elem()
+			r.Set(src.ref)
+			src.ref = r
+		}
 		dst.ref = src.ref
 		return
 	}

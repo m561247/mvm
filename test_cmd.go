@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -612,7 +613,9 @@ func compileTestFilters(args []string) (run, skip *regexp.Regexp) {
 // name. Benchmarks run only when -bench is given; testing filters them by that
 // flag, so the full Benchmark* list is passed unfiltered. See ADR-019.
 func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
-	testNames := excludeTestMain(filterTopLevelTests(i.FuncNames("Test"), os.Args[1:]))
+	allTests := i.FuncNames("Test")
+	hasTestMain := slices.Contains(allTests, "TestMain")
+	testNames := excludeTestMain(filterTopLevelTests(allTests, os.Args[1:]))
 	benchNames := i.FuncNames("Benchmark")
 	examples := collectExamples(i)
 	if len(testNames)+len(benchNames)+len(examples) == 0 {
@@ -632,14 +635,28 @@ func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
 	}
 
 	var exitCode int
+	runSuite := func(testMain func(*testing.M), tests []testing.InternalTest, benches []testing.InternalBenchmark, exs []testing.InternalExample) {
+		for n := range tests {
+			tests[n].F = withPanicDiag(tests[n].F)
+		}
+		m := testing.MainStart(statDeps{}, tests, benches, nil, exs)
+		if testMain == nil {
+			exitCode = m.Run()
+			return
+		}
+		testMain(m)
+		// TestMain returned without os.Exit; read the code m.Run recorded,
+		// mirroring cmd/go's generated _testmain (see go.dev/issue/34129).
+		exitCode = int(reflect.ValueOf(m).Elem().FieldByName("exitCode").Int())
+	}
 	i.ImportPackageValues(map[string]map[string]reflect.Value{
 		"mvmtest": {
 			"Run": reflect.ValueOf(func(tests []testing.InternalTest, benches []testing.InternalBenchmark, exs []testing.InternalExample) {
-				for n := range tests {
-					tests[n].F = withPanicDiag(tests[n].F)
-				}
-				exitCode = testing.MainStart(statDeps{}, tests, benches, nil, exs).Run()
+				runSuite(nil, tests, benches, exs)
 			}),
+			// RunMain drives a package TestMain(m), which owns fixture setup
+			// and calls m.Run itself.
+			"RunMain": reflect.ValueOf(runSuite),
 			// SkipFn builds a *native* t.Skip(reason) closure, so the skip path
 			// stays entirely outside the interpreter (an interpreted shim
 			// crashes inside makeCallFunc when invoked with the bridged
@@ -652,7 +669,11 @@ func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
 	i.AutoImportPackages()
 
 	var driver strings.Builder
-	driver.WriteString("mvmtest.Run([]testing.InternalTest{")
+	if hasTestMain {
+		driver.WriteString("mvmtest.RunMain(TestMain, []testing.InternalTest{")
+	} else {
+		driver.WriteString("mvmtest.Run([]testing.InternalTest{")
+	}
 	for _, name := range testNames {
 		if reason := stdlib.SkipReason(pkgPath, name); reason != "" {
 			// Architectural-limit skiplist: route through mvmtest.SkipFn so
@@ -684,6 +705,12 @@ func runTestDriver(i *interp.Interp, pkgPath string, flushStats func()) error {
 	i.SetGoroutineFaultContinue(true)
 	_, err := i.Eval("_testmain", driver.String())
 	flushStats()
+	// TestMain conventionally ends in os.Exit(m.Run()); the virtualized
+	// os.Exit surfaces that as an ExitError, which is the suite result.
+	var xe *interp.ExitError
+	if hasTestMain && errors.As(err, &xe) {
+		exitCode, err = xe.Code, nil
+	}
 	if err != nil {
 		return err
 	}

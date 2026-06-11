@@ -443,3 +443,75 @@ func BenchmarkBoom(b *testing.B) { b.Fatal("boom") }
 		})
 	}
 }
+
+// TestMain in the package under test must drive the suite (fixture setup runs,
+// its os.Exit(m.Run()) code becomes the run's exit code), mirroring go test's
+// generated _testmain. Regression: doublestar's fixtures were never created.
+func TestTestMainDriver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short")
+	}
+
+	const exitSrc = `package x
+import (
+	"os"
+	"testing"
+)
+func TestFixture(t *testing.T) {
+	if _, err := os.Stat("made-by-testmain"); err != nil {
+		t.Fatal("TestMain setup missing")
+	}
+	BODY
+}
+func TestMain(m *testing.M) {
+	f, err := os.Create("made-by-testmain")
+	if err != nil {
+		os.Exit(2)
+	}
+	f.Close()
+	os.Exit(m.Run())
+}
+`
+	const returnSrc = `package x
+import (
+	"os"
+	"testing"
+)
+func TestFixture(t *testing.T) {
+	if _, err := os.Stat("made-by-testmain"); err != nil {
+		t.Fatal("TestMain setup missing")
+	}
+}
+func TestMain(m *testing.M) {
+	f, _ := os.Create("made-by-testmain")
+	f.Close()
+	m.Run() // exit code read back from m, as in go test's _testmain
+}
+`
+	bin := buildMvm(t)
+	cases := []struct {
+		name     string
+		src      string
+		wantExit int
+		wantSub  string
+	}{
+		{"setup and exit code", strings.ReplaceAll(exitSrc, "BODY", ""), 0, "PASS"},
+		{"failing suite exits 1", strings.ReplaceAll(exitSrc, "BODY", `t.Error("boom")`), 1, "FAIL"},
+		{"return without os.Exit", returnSrc, 0, "PASS"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fixture := writeFixture(t, c.src)
+			gotExit, s := runMvmTest(t, bin, fixture)
+			if gotExit != c.wantExit {
+				t.Errorf("exit = %d, want %d:\n%s", gotExit, c.wantExit, s)
+			}
+			if !strings.Contains(s, c.wantSub) {
+				t.Errorf("expected %q in output:\n%s", c.wantSub, s)
+			}
+			if strings.Contains(s, "TestMain") && strings.Contains(s, "--- ") {
+				t.Errorf("TestMain ran as an ordinary test:\n%s", s)
+			}
+		})
+	}
+}
